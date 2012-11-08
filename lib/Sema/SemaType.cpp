@@ -1862,7 +1862,10 @@ static QualType GetDeclSpecTypeForDeclarator(TypeProcessingState &state,
     case Declarator::ObjCParameterContext:
     case Declarator::ObjCResultContext:
     case Declarator::PrototypeContext:
-      Error = 0; // Function prototype
+      // Function prototype
+      // Generic Lambdas allow auto in the parameter context
+      if (!D.isAutoAllowedAsParameter())
+        Error = 0; // Function prototype - no auto, except if generic lambdas
       break;
     case Declarator::MemberContext:
       if (D.getDeclSpec().getStorageClassSpec() == DeclSpec::SCS_static)

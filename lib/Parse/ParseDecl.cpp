@@ -4888,6 +4888,11 @@ void Parser::ParseParameterDeclarationClause(
     Declarator ParmDecl(DS, Declarator::PrototypeContext);
     ParseDeclarator(ParmDecl);
 
+    //FVADDED, FV let auto be a parameter for generic lambdas
+    if (getLangOpts().GenericLambda)
+        ParmDecl.setAutoAllowedAsParameter(D.getContext() 
+                                    == Declarator::LambdaExprContext);
+
     // Parse GNU attributes, if present.
     MaybeParseGNUAttributes(ParmDecl);
 
