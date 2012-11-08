@@ -602,6 +602,11 @@ ExprResult Parser::ParseLambdaExpression() {
   // Parse lambda-introducer.
   LambdaIntroducer Intro;
 
+  // FVTODO, FV,
+  // This needs to be removed - just enabled for development
+  assert( getLangOpts().GenericLambda && 
+    "Generic Lambda Support should be enabled in this experimental version");
+
   llvm::Optional<unsigned> DiagID(ParseLambdaIntroducer(Intro));
   if (DiagID) {
     Diag(Tok, DiagID.getValue());
