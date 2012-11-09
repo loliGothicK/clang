@@ -18,6 +18,10 @@
 #include "clang/Sema/SemaInternal.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/AST/ExprCXX.h"
+#include "clang/AST/TypeLoc.h"
+
+#include "TreeTransform.h"
+
 using namespace clang;
 using namespace sema;
 
@@ -51,11 +55,371 @@ static bool isInInlineFunction(const DeclContext *DC) {
   return false;
 }
 
+
+// Check if there is an auto parameter - and if so, we have a generic lambda
+static bool IsGenericLambda( 
+      llvm::ArrayRef<ParmVarDecl *> Params)
+{
+  bool HasGenericAutoParameter = false;
+  // FVTODO: This will need to check if there is a template parameter list, once 
+  // we get fully generic lambdas
+  for (size_t i = 0; i < Params.size(); ++i)
+  {
+    // Get the type*, this contains the full info i.e. auto*, int& etc.
+    const Type* ty = Params[i]->getOriginalType().getTypePtr(); 
+    // This only returns non-null if 'auto' is within the type pattern
+    AutoType* at = ty->getContainedAutoType(); 
+    if (at)
+    {
+      HasGenericAutoParameter = true;
+      break;
+    }
+  }
+  return HasGenericAutoParameter;
+}
+
+namespace {
+
+  /// Substitute the 'auto' type specifier within a type for a given replacement
+  /// type.
+  class SubstituteAutoTransform :
+    public TreeTransform<SubstituteAutoTransform> {
+    QualType Replacement;
+  public:
+    SubstituteAutoTransform(Sema &SemaRef, QualType Replacement) :
+      TreeTransform<SubstituteAutoTransform>(SemaRef), Replacement(Replacement) {
+    }
+    QualType TransformAutoType(TypeLocBuilder &TLB, AutoTypeLoc TL) {
+      // If we're building the type pattern to deduce against, don't wrap the
+      // substituted type in an AutoType. Certain template deduction rules
+      // apply only when a template type parameter appears directly (and not if
+      // the parameter is found through desugaring). For instance:
+      //   auto &&lref = lvalue;
+      // must transform into "rvalue reference to T" not "rvalue reference to
+      // auto type deduced as T" in order for [temp.deduct.call]p3 to apply.
+      if (isa<TemplateTypeParmType>(Replacement)) {
+        QualType Result = Replacement;
+        TemplateTypeParmTypeLoc NewTL = TLB.push<TemplateTypeParmTypeLoc>(Result);
+        NewTL.setNameLoc(TL.getNameLoc());
+        return Result;
+      } else {
+        QualType Result = RebuildAutoType(Replacement);
+        AutoTypeLoc NewTL = TLB.push<AutoTypeLoc>(Result);
+        NewTL.setNameLoc(TL.getNameLoc());
+        return Result;
+      }
+    }
+
+    ExprResult TransformLambdaExpr(LambdaExpr *E) {
+      // Lambdas never need to be transformed.
+      return E;
+    }
+  };
+} // End Namespace anon
+
+CXXMethodDecl *startGenericLambdaDefinition(CXXRecordDecl *Class,
+                 SourceRange IntroducerRange,
+                 TypeSourceInfo *MethodTSI,
+                 SourceLocation EndLoc,
+                 llvm::ArrayRef<ParmVarDecl *> Params,
+                 Sema& S)
+{
+  ASTContext& Context = S.Context;
+  
+  //-----------------------------------------------------------
+  // Constructuct a template parameter list, corresponding to each
+  // auto parameter
+  // (auto a, auto* b) ==>
+  //   template<class $a, class $b> ($a a, $b* b)
+
+  SmallVector<TemplateTypeParmDecl*, 4> TemplateParams;
+  SmallVector<ParmVarDecl*, 4> FuncParamsWithAutoReplaced;
+  // We 
+  size_t CurrentInventedTemplateParameterIndex = 0;
+
+  for (size_t i = 0; i < Params.size(); ++i)
+  {
+    ParmVarDecl* AutoParam = Params[i];
+    QualType AutoParamQType = AutoParam->getOriginalType();
+
+    // get the the full param info i.e. auto* etc.
+    const Type* AutoParamType = AutoParamQType.getTypePtr(); 
+   
+    if (AutoParamType->getContainedAutoType())
+    {  
+      // FVQUESTION? We might not need to invent a parameter identifier 
+      // for this invented parameter
+      // Is there a way to get clang to generate a unique ID?
+      // Currently we just ask the IdentifierTable for the ID
+      // that we generate - this becomes the name of our 
+      // "template type"
+      std::string InventedTemplateParamName = "_$";
+      InventedTemplateParamName = AutoParam->getNameAsString();
+      IdentifierInfo& TemplateParamII = Context.Idents.get(
+                                  InventedTemplateParamName.c_str());
+      
+      // Invent a template type parameter - corresponding to the Auto 
+      // containing parameters
+      TemplateTypeParmDecl *TemplateParam =
+        TemplateTypeParmDecl::Create(Context, 
+                  Class, SourceLocation(), 
+                  AutoParam->getLocation(), 0, 
+                  CurrentInventedTemplateParameterIndex++, 
+                  &TemplateParamII, false, false);
+      
+      TemplateParams.push_back(TemplateParam);
+
+      // Now replace the 'auto' in the function parameter
+      // with this invented type name
+      // getTypeForDecl returns the InventedTemplateParamName as a type
+      QualType TemplParamType = QualType(TemplateParam->getTypeForDecl(), 0);
+      
+      // FVQUESTION? Should I be passing in the location of the original parameter??
+      //   Is this the best way to create the TypeSourceInfo that will 
+      //     be transformed from auto a -> _$a a
+      TypeSourceInfo* AutoParamTSI = Context.getTrivialTypeSourceInfo(
+                                          AutoParam->getType(), 
+                                          AutoParam->getLocation());  
+      TypeSourceInfo *FuncParamWithAutoReplacedTSI =
+          SubstituteAutoTransform(S, TemplParamType).TransformType(AutoParamTSI);
+
+
+      QualType FuncParamWithAutoReplaced = 
+                              FuncParamWithAutoReplacedTSI->getType();
+      
+      // create a new parameter with 'auto' replaced by an invented 
+      // template parameter type such as _$a
+      ParmVarDecl* FuncParamWithAutoReplacedDecl = ParmVarDecl::Create(
+                      Context, AutoParam->getDeclContext(), 
+                      AutoParam->getLocStart(), AutoParam->getLocation(),
+                      AutoParam->getIdentifier(), FuncParamWithAutoReplaced, 
+                      FuncParamWithAutoReplacedTSI, AutoParam->getStorageClass(),
+                      AutoParam->getStorageClassAsWritten(), AutoParam->getDefaultArg());
+ 
+      // Set the depth and index of this parameter 
+      FuncParamWithAutoReplacedDecl->setScopeInfo(
+                                AutoParam->getFunctionScopeDepth(), 
+                                AutoParam->getFunctionScopeIndex());  
+      
+      FuncParamsWithAutoReplaced.push_back( FuncParamWithAutoReplacedDecl );
+
+    } 
+    else
+    {
+      // there was no auto within this parameter, so 
+      // don't transform it.
+      FuncParamsWithAutoReplaced.push_back(AutoParam);
+    }
+
+  }
+
+  // Create the corresponding template parameter list
+  //  with the invented parameter types for each use of auto
+  TemplateParameterList* InventedTemplateParamList = 
+                  TemplateParameterList::Create(Context, 
+                                        SourceLocation(), SourceLocation(),
+                                       (NamedDecl**)TemplateParams.data(), 
+                                       TemplateParams.size(), EndLoc);
+
+  // Now create the appropriate TypeSourceInfo for the function prototype
+  // i.e. (auto a, auto* b) with (_$a a, _$b* b)
+  
+  // Create a vector of the invented QualType of each parameter 
+  SmallVector<QualType,16> NewParamsType;
+  for (size_t i = 0; i < FuncParamsWithAutoReplaced.size(); ++i)
+  {
+    NewParamsType.push_back(FuncParamsWithAutoReplaced[i]->getType());
+  }
+
+  // FVTODO - this needs to check the method-type and make it 
+  // only const, if non-mutable, and set trailing return only
+  // if specified.
+  FunctionProtoType::ExtProtoInfo epi;
+  epi.HasTrailingReturn = 1;
+  epi.TypeQuals |= DeclSpec::TQ_const;  // i.e. auto (_$a) const -> int
+  const FunctionType* FT = dyn_cast<const FunctionType>(
+                              MethodTSI->getType().getTypePtr());
+  
+  QualType FunctionTypeWithAutoReplaced = S.Context.getFunctionType(
+        FT->getResultType(), 
+        NewParamsType.data(),
+        FuncParamsWithAutoReplaced.size(), epi); 
+
+  // This is somewhat of a kludge that is used to 
+  // create the appropriate FunctionProtoTypeLoc
+  //  - we inherit just to gain access to the 
+  //    void* Data protected property so we can
+  //     assign to it.
+  struct FPTLoc : InheritingConcreteTypeLoc<FunctionProtoTypeLoc,
+                                     FunctionProtoTypeLoc,
+                                     FunctionProtoType> {
+    FPTLoc(QualType ty, ASTContext& Context, size_t numArgs) 
+    { 
+      Ty = ty.getAsOpaquePtr();
+      Data = Context.Allocate(sizeof(FunctionLocInfo) 
+                           + (numArgs * sizeof(ParmVarDecl*)));
+    }
+
+  };
+  
+  // now assign the parameters to the functionprototypeLoc
+  FPTLoc Fptloc(FunctionTypeWithAutoReplaced, Context, FuncParamsWithAutoReplaced.size());
+  Fptloc.initializeLocal(Context, IntroducerRange.getBegin());
+  FunctionProtoTypeLoc* pr = dyn_cast<FunctionProtoTypeLoc>(&Fptloc);
+  for (size_t i = 0; i < FuncParamsWithAutoReplaced.size(); ++i)
+  {
+    pr->setArg(i, FuncParamsWithAutoReplaced[i]);
+  }  
+
+  // Now use the TypeLocBuilder to create the appropriate
+  // TypeSourceInfo
+  TypeLocBuilder TB;
+  TB.pushFullCopy(Fptloc);
+  TypeSourceInfo* NewTSI = 	TB.getTypeSourceInfo (Context, FunctionTypeWithAutoReplaced);
+  
+
+  // Get the DeclarationName associated with the function call operator
+  DeclarationName MethodName
+    = Context.DeclarationNames.getCXXOperatorName(OO_Call);
+  DeclarationNameLoc MethodNameLoc;
+  MethodNameLoc.CXXOperatorName.BeginOpNameLoc
+    = IntroducerRange.getBegin().getRawEncoding();
+  MethodNameLoc.CXXOperatorName.EndOpNameLoc
+    = IntroducerRange.getEnd().getRawEncoding();
+  CXXMethodDecl *Method
+    = CXXMethodDecl::Create(Context, Class, EndLoc,
+                            DeclarationNameInfo(MethodName, 
+                                                IntroducerRange.getBegin(),
+                                                MethodNameLoc),
+                            NewTSI->getType(), NewTSI,
+                            /*isStatic=*/false,
+                            SC_None,
+                            /*isInline=*/true,
+                            /*isConstExpr=*/false,
+                            EndLoc);
+  Method->setAccess(AS_public);
+  Method->setLexicalDeclContext(S.CurContext);
+  
+  FunctionTemplateDecl* TemplateMethod = 
+                  FunctionTemplateDecl::Create(Context, Class,
+                         Method->getLocation(), MethodName, 
+                         InventedTemplateParamList,
+                                                  Method);
+  TemplateMethod->setLexicalDeclContext(S.CurContext);
+  TemplateMethod->setAccess(AS_public);
+  Method->setDescribedFunctionTemplate(TemplateMethod);
+
+  Method->setAccess(AS_public);
+  // Add parameters.
+  if (!FuncParamsWithAutoReplaced.empty()) {
+    Method->setParams(FuncParamsWithAutoReplaced);
+    S.CheckParmsForFunctionDef(
+              const_cast<ParmVarDecl **>(
+                            FuncParamsWithAutoReplaced.begin()),
+              const_cast<ParmVarDecl **>(
+                            FuncParamsWithAutoReplaced.end()),
+                             /*CheckParameterNames=*/false);
+    
+    for (CXXMethodDecl::param_iterator P = Method->param_begin(), 
+                                    PEnd = Method->param_end();
+         P != PEnd; ++P)
+      (*P)->setOwningFunction(Method);
+  }
+
+  Decl *ContextDecl = S.ExprEvalContexts.back().LambdaContextDecl;
+  
+  
+  enum ContextKind {
+    Normal,
+    DefaultArgument,
+    DataMember,
+    StaticDataMember
+  } Kind = Normal;
+  
+  // Default arguments of member function parameters that appear in a class
+  // definition, as well as the initializers of data members, receive special
+  // treatment. Identify them.
+  if (ContextDecl) {
+    if (ParmVarDecl *Param = dyn_cast<ParmVarDecl>(ContextDecl)) {
+      if (const DeclContext *LexicalDC
+          = Param->getDeclContext()->getLexicalParent())
+        if (LexicalDC->isRecord())
+          Kind = DefaultArgument;
+    } else if (VarDecl *Var = dyn_cast<VarDecl>(ContextDecl)) {
+      if (Var->getDeclContext()->isRecord())
+        Kind = StaticDataMember;
+    } else if (isa<FieldDecl>(ContextDecl)) {
+      Kind = DataMember;
+    }
+  }
+
+  // Itanium ABI [5.1.7]:
+  //   In the following contexts [...] the one-definition rule requires closure
+  //   types in different translation units to "correspond":
+  bool IsInNonspecializedTemplate =
+    !S.ActiveTemplateInstantiations.empty() || S.CurContext->isDependentContext();
+  
+  // Allocate a mangling number for this lambda expression, if the ABI
+  // requires one.
+  
+  unsigned ManglingNumber;
+  switch (Kind) {
+  case Normal:
+    //  -- the bodies of non-exported nonspecialized template functions
+    //  -- the bodies of inline functions
+    if ((IsInNonspecializedTemplate &&
+         !(ContextDecl && isa<ParmVarDecl>(ContextDecl))) ||
+        isInInlineFunction(S.CurContext))
+      ManglingNumber = Context.getLambdaManglingNumber(Method);
+    else
+      ManglingNumber = 0;
+
+    // There is no special context for this lambda.
+    ContextDecl = 0;
+    break;
+
+  case StaticDataMember:
+    //  -- the initializers of nonspecialized static members of template classes
+    if (!IsInNonspecializedTemplate) {
+      ManglingNumber = 0;
+      ContextDecl = 0;
+      break;
+    }
+    // Fall through to assign a mangling number.
+
+  case DataMember:
+    //  -- the in-class initializers of class members
+  case DefaultArgument:
+    //  -- default arguments appearing in class definitions
+    ManglingNumber = S.ExprEvalContexts.back().getLambdaMangleContext()
+                       .getManglingNumber(Method);
+    break;
+  }
+
+  Class->setLambdaMangling(ManglingNumber, ContextDecl);
+  
+  return Method;
+}
+
+
+
+
 CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
                  SourceRange IntroducerRange,
                  TypeSourceInfo *MethodType,
                  SourceLocation EndLoc,
                  llvm::ArrayRef<ParmVarDecl *> Params) {
+ 
+    
+  bool GenericLambda = getLangOpts().GenericLambda &&
+                                          IsGenericLambda(Params);
+
+  if (GenericLambda)
+    return startGenericLambdaDefinition(Class, IntroducerRange,
+              MethodType, EndLoc, Params, *this); 
+
+                   
+                   
   // C++11 [expr.prim.lambda]p5:
   //   The closure type for a lambda-expression has a public inline function 
   //   call operator (13.5.4) whose parameters and return type are described by
@@ -832,7 +1196,21 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
     //   function-body (8.4) of the function call operator [...].
     ActOnFinishFunctionBody(CallOperator, Body, IsInstantiation);
     CallOperator->setLexicalDeclContext(Class);
-    Class->addDecl(CallOperator);
+    
+    //FVADDED Add generic call operator, if it exists
+    FunctionTemplateDecl* const GenericCallOperator = 
+                CallOperator->getDescribedFunctionTemplate();
+    
+    if (GenericCallOperator)
+    {
+      GenericCallOperator->setLexicalDeclContext(Class);
+      Class->addDecl(GenericCallOperator);
+    }
+    else
+    {
+      Class->addDecl(CallOperator);
+    }
+    
     PopExpressionEvaluationContext();
 
     // C++11 [expr.prim.lambda]p6:

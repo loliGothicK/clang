@@ -956,7 +956,15 @@ CXXMethodDecl *LambdaExpr::getCallOperator() const {
     = Record->getASTContext().DeclarationNames.getCXXOperatorName(OO_Call);
   DeclContext::lookup_result Calls = Record->lookup(Name);
   assert(Calls.first != Calls.second && "Missing lambda call operator!");
-  CXXMethodDecl *Result = cast<CXXMethodDecl>(*Calls.first++);
+ 
+  // FVADDED check if this method is a template decl or not 
+  Decl* FirstCallOp = *Calls.first++;
+  CXXMethodDecl *Result = 0;
+  if (FunctionTemplateDecl* FTD = dyn_cast<FunctionTemplateDecl>(FirstCallOp))
+    Result = cast<CXXMethodDecl>(FTD->getTemplatedDecl());
+  else
+    Result = cast<CXXMethodDecl>(FirstCallOp);
+
   assert(Calls.first == Calls.second && "More than lambda one call operator?");
   return Result;
 }
