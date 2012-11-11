@@ -117,24 +117,29 @@ namespace {
   };
 } // End Namespace anon
 
-CXXMethodDecl *startGenericLambdaDefinition(CXXRecordDecl *Class,
-                 SourceRange IntroducerRange,
-                 TypeSourceInfo *MethodTSI,
-                 SourceLocation EndLoc,
-                 llvm::ArrayRef<ParmVarDecl *> Params,
-                 Sema& S)
-{
-  ASTContext& Context = S.Context;
+// create a member template within the Closure class
+// with each use of auto generating a corresponding template type
+// parameter
+static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
+                            SourceRange IntroducerRange,
+                            TypeSourceInfo *MethodTSI,
+                            SourceLocation EndLoc,
+                            llvm::ArrayRef<ParmVarDecl *> Params,
+                            Sema &S) {
   
-  //-----------------------------------------------------------
-  // Constructuct a template parameter list, corresponding to each
+  ASTContext& Context = S.Context;
+
+  const FunctionProtoType *AutoMethodFPT = 
+              MethodTSI->getType()->castAs<FunctionProtoType>();
+  // Construct a template parameter list, corresponding to each
   // auto parameter
   // (auto a, auto* b) ==>
   //   template<class $a, class $b> ($a a, $b* b)
 
   SmallVector<TemplateTypeParmDecl*, 4> TemplateParams;
   SmallVector<ParmVarDecl*, 4> FuncParamsWithAutoReplaced;
-  // We 
+  
+   
   size_t CurrentInventedTemplateParameterIndex = 0;
 
   for (size_t i = 0; i < Params.size(); ++i)
@@ -231,19 +236,17 @@ CXXMethodDecl *startGenericLambdaDefinition(CXXRecordDecl *Class,
     NewParamsType.push_back(FuncParamsWithAutoReplaced[i]->getType());
   }
 
-  // FVTODO - this needs to check the method-type and make it 
-  // only const, if non-mutable, and set trailing return only
-  // if specified.
-  FunctionProtoType::ExtProtoInfo epi;
-  epi.HasTrailingReturn = 1;
-  epi.TypeQuals |= DeclSpec::TQ_const;  // i.e. auto (_$a) const -> int
+  // Copy the function prototype info (i.e. const, trailing return)
+  // from the original declaration
+  FunctionProtoType::ExtProtoInfo EPI = AutoMethodFPT->getExtProtoInfo();
+  
   const FunctionType* FT = dyn_cast<const FunctionType>(
                               MethodTSI->getType().getTypePtr());
   
   QualType FunctionTypeWithAutoReplaced = S.Context.getFunctionType(
         FT->getResultType(), 
         NewParamsType.data(),
-        FuncParamsWithAutoReplaced.size(), epi); 
+        FuncParamsWithAutoReplaced.size(), EPI); 
 
   // This is somewhat of a kludge that is used to 
   // create the appropriate FunctionProtoTypeLoc
@@ -297,6 +300,7 @@ CXXMethodDecl *startGenericLambdaDefinition(CXXRecordDecl *Class,
                             /*isInline=*/true,
                             /*isConstExpr=*/false,
                             EndLoc);
+  
   Method->setAccess(AS_public);
   Method->setLexicalDeclContext(S.CurContext);
   
@@ -307,9 +311,9 @@ CXXMethodDecl *startGenericLambdaDefinition(CXXRecordDecl *Class,
                                                   Method);
   TemplateMethod->setLexicalDeclContext(S.CurContext);
   TemplateMethod->setAccess(AS_public);
+  
   Method->setDescribedFunctionTemplate(TemplateMethod);
 
-  Method->setAccess(AS_public);
   // Add parameters.
   if (!FuncParamsWithAutoReplaced.empty()) {
     Method->setParams(FuncParamsWithAutoReplaced);
@@ -325,101 +329,18 @@ CXXMethodDecl *startGenericLambdaDefinition(CXXRecordDecl *Class,
          P != PEnd; ++P)
       (*P)->setOwningFunction(Method);
   }
-
-  Decl *ContextDecl = S.ExprEvalContexts.back().LambdaContextDecl;
-  
-  
-  enum ContextKind {
-    Normal,
-    DefaultArgument,
-    DataMember,
-    StaticDataMember
-  } Kind = Normal;
-  
-  // Default arguments of member function parameters that appear in a class
-  // definition, as well as the initializers of data members, receive special
-  // treatment. Identify them.
-  if (ContextDecl) {
-    if (ParmVarDecl *Param = dyn_cast<ParmVarDecl>(ContextDecl)) {
-      if (const DeclContext *LexicalDC
-          = Param->getDeclContext()->getLexicalParent())
-        if (LexicalDC->isRecord())
-          Kind = DefaultArgument;
-    } else if (VarDecl *Var = dyn_cast<VarDecl>(ContextDecl)) {
-      if (Var->getDeclContext()->isRecord())
-        Kind = StaticDataMember;
-    } else if (isa<FieldDecl>(ContextDecl)) {
-      Kind = DataMember;
-    }
-  }
-
-  // Itanium ABI [5.1.7]:
-  //   In the following contexts [...] the one-definition rule requires closure
-  //   types in different translation units to "correspond":
-  bool IsInNonspecializedTemplate =
-    !S.ActiveTemplateInstantiations.empty() || S.CurContext->isDependentContext();
-  
-  // Allocate a mangling number for this lambda expression, if the ABI
-  // requires one.
-  
-  unsigned ManglingNumber;
-  switch (Kind) {
-  case Normal:
-    //  -- the bodies of non-exported nonspecialized template functions
-    //  -- the bodies of inline functions
-    if ((IsInNonspecializedTemplate &&
-         !(ContextDecl && isa<ParmVarDecl>(ContextDecl))) ||
-        isInInlineFunction(S.CurContext))
-      ManglingNumber = Context.getLambdaManglingNumber(Method);
-    else
-      ManglingNumber = 0;
-
-    // There is no special context for this lambda.
-    ContextDecl = 0;
-    break;
-
-  case StaticDataMember:
-    //  -- the initializers of nonspecialized static members of template classes
-    if (!IsInNonspecializedTemplate) {
-      ManglingNumber = 0;
-      ContextDecl = 0;
-      break;
-    }
-    // Fall through to assign a mangling number.
-
-  case DataMember:
-    //  -- the in-class initializers of class members
-  case DefaultArgument:
-    //  -- default arguments appearing in class definitions
-    ManglingNumber = S.ExprEvalContexts.back().getLambdaMangleContext()
-                       .getManglingNumber(Method);
-    break;
-  }
-
-  Class->setLambdaMangling(ManglingNumber, ContextDecl);
-  
   return Method;
 }
 
 
+static CXXMethodDecl* createNonGenericLambdaMethod(CXXRecordDecl *Class,
+                                    SourceRange IntroducerRange,
+                                    TypeSourceInfo *MethodType,
+                                    SourceLocation EndLoc,
+                                    llvm::ArrayRef<ParmVarDecl *> Params,
+                                    Sema &S) {
 
-
-CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
-                 SourceRange IntroducerRange,
-                 TypeSourceInfo *MethodType,
-                 SourceLocation EndLoc,
-                 llvm::ArrayRef<ParmVarDecl *> Params) {
- 
-    
-  bool GenericLambda = getLangOpts().GenericLambda &&
-                                          IsGenericLambda(Params);
-
-  if (GenericLambda)
-    return startGenericLambdaDefinition(Class, IntroducerRange,
-              MethodType, EndLoc, Params, *this); 
-
-                   
-                   
+  ASTContext& Context = S.Context;
   // C++11 [expr.prim.lambda]p5:
   //   The closure type for a lambda-expression has a public inline function 
   //   call operator (13.5.4) whose parameters and return type are described by
@@ -434,105 +355,127 @@ CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
     = IntroducerRange.getEnd().getRawEncoding();
   CXXMethodDecl *Method
     = CXXMethodDecl::Create(Context, Class, EndLoc,
-                            DeclarationNameInfo(MethodName, 
-                                                IntroducerRange.getBegin(),
-                                                MethodNameLoc),
-                            MethodType->getType(), MethodType,
-                            /*isStatic=*/false,
-                            SC_None,
-                            /*isInline=*/true,
-                            /*isConstExpr=*/false,
-                            EndLoc);
+    DeclarationNameInfo(MethodName, 
+    IntroducerRange.getBegin(),
+    MethodNameLoc),
+    MethodType->getType(), MethodType,
+    /*isStatic=*/false,
+    SC_None,
+    /*isInline=*/true,
+    /*isConstExpr=*/false,
+    EndLoc);
   Method->setAccess(AS_public);
-  
+
   // Temporarily set the lexical declaration context to the current
   // context, so that the Scope stack matches the lexical nesting.
-  Method->setLexicalDeclContext(CurContext);  
-  
+  Method->setLexicalDeclContext(S.CurContext);  
+
   // Add parameters.
   if (!Params.empty()) {
     Method->setParams(Params);
-    CheckParmsForFunctionDef(const_cast<ParmVarDecl **>(Params.begin()),
-                             const_cast<ParmVarDecl **>(Params.end()),
-                             /*CheckParameterNames=*/false);
-    
+      S.CheckParmsForFunctionDef(const_cast<ParmVarDecl **>(Params.begin()),
+      const_cast<ParmVarDecl **>(Params.end()),
+      /*CheckParameterNames=*/false);
+
     for (CXXMethodDecl::param_iterator P = Method->param_begin(), 
-                                    PEnd = Method->param_end();
-         P != PEnd; ++P)
+      PEnd = Method->param_end();
+      P != PEnd; ++P)
       (*P)->setOwningFunction(Method);
   }
-
-  // Allocate a mangling number for this lambda expression, if the ABI
-  // requires one.
-  Decl *ContextDecl = ExprEvalContexts.back().LambdaContextDecl;
-
-  enum ContextKind {
-    Normal,
-    DefaultArgument,
-    DataMember,
-    StaticDataMember
-  } Kind = Normal;
-
-  // Default arguments of member function parameters that appear in a class
-  // definition, as well as the initializers of data members, receive special
-  // treatment. Identify them.
-  if (ContextDecl) {
-    if (ParmVarDecl *Param = dyn_cast<ParmVarDecl>(ContextDecl)) {
-      if (const DeclContext *LexicalDC
-          = Param->getDeclContext()->getLexicalParent())
-        if (LexicalDC->isRecord())
-          Kind = DefaultArgument;
-    } else if (VarDecl *Var = dyn_cast<VarDecl>(ContextDecl)) {
-      if (Var->getDeclContext()->isRecord())
-        Kind = StaticDataMember;
-    } else if (isa<FieldDecl>(ContextDecl)) {
-      Kind = DataMember;
-    }
-  }
-
-  // Itanium ABI [5.1.7]:
-  //   In the following contexts [...] the one-definition rule requires closure
-  //   types in different translation units to "correspond":
-  bool IsInNonspecializedTemplate =
-    !ActiveTemplateInstantiations.empty() || CurContext->isDependentContext();
-  unsigned ManglingNumber;
-  switch (Kind) {
-  case Normal:
-    //  -- the bodies of non-exported nonspecialized template functions
-    //  -- the bodies of inline functions
-    if ((IsInNonspecializedTemplate &&
-         !(ContextDecl && isa<ParmVarDecl>(ContextDecl))) ||
-        isInInlineFunction(CurContext))
-      ManglingNumber = Context.getLambdaManglingNumber(Method);
-    else
-      ManglingNumber = 0;
-
-    // There is no special context for this lambda.
-    ContextDecl = 0;
-    break;
-
-  case StaticDataMember:
-    //  -- the initializers of nonspecialized static members of template classes
-    if (!IsInNonspecializedTemplate) {
-      ManglingNumber = 0;
-      ContextDecl = 0;
-      break;
-    }
-    // Fall through to assign a mangling number.
-
-  case DataMember:
-    //  -- the in-class initializers of class members
-  case DefaultArgument:
-    //  -- default arguments appearing in class definitions
-    ManglingNumber = ExprEvalContexts.back().getLambdaMangleContext()
-                       .getManglingNumber(Method);
-    break;
-  }
-
-  Class->setLambdaMangling(ManglingNumber, ContextDecl);
-
   return Method;
 }
+
+CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
+  SourceRange IntroducerRange,
+  TypeSourceInfo *MethodType,
+  SourceLocation EndLoc,
+  llvm::ArrayRef<ParmVarDecl *> Params) {
+
+
+    bool GenericLambda = getLangOpts().GenericLambda &&
+      IsGenericLambda(Params);
+    
+    CXXMethodDecl *Method = 0; 
+    if (GenericLambda)
+      Method = createGenericLambdaMethod(Class, IntroducerRange,
+                                    MethodType, EndLoc, Params, *this); 
+    else
+      Method = createNonGenericLambdaMethod(Class, IntroducerRange,
+                                    MethodType, EndLoc, Params, *this);
+
+    
+    // Allocate a mangling number for this lambda expression, if the ABI
+    // requires one.
+    Decl *ContextDecl = ExprEvalContexts.back().LambdaContextDecl;
+
+    enum ContextKind {
+      Normal,
+      DefaultArgument,
+      DataMember,
+      StaticDataMember
+    } Kind = Normal;
+
+    // Default arguments of member function parameters that appear in a class
+    // definition, as well as the initializers of data members, receive special
+    // treatment. Identify them.
+    if (ContextDecl) {
+      if (ParmVarDecl *Param = dyn_cast<ParmVarDecl>(ContextDecl)) {
+        if (const DeclContext *LexicalDC
+          = Param->getDeclContext()->getLexicalParent())
+          if (LexicalDC->isRecord())
+            Kind = DefaultArgument;
+      } else if (VarDecl *Var = dyn_cast<VarDecl>(ContextDecl)) {
+        if (Var->getDeclContext()->isRecord())
+          Kind = StaticDataMember;
+      } else if (isa<FieldDecl>(ContextDecl)) {
+        Kind = DataMember;
+      }
+    }
+
+    // Itanium ABI [5.1.7]:
+    //   In the following contexts [...] the one-definition rule requires closure
+    //   types in different translation units to "correspond":
+    bool IsInNonspecializedTemplate =
+      !ActiveTemplateInstantiations.empty() || CurContext->isDependentContext();
+    unsigned ManglingNumber;
+    switch (Kind) {
+    case Normal:
+      //  -- the bodies of non-exported nonspecialized template functions
+      //  -- the bodies of inline functions
+      if ((IsInNonspecializedTemplate &&
+        !(ContextDecl && isa<ParmVarDecl>(ContextDecl))) ||
+        isInInlineFunction(CurContext))
+        ManglingNumber = Context.getLambdaManglingNumber(Method);
+      else
+        ManglingNumber = 0;
+
+      // There is no special context for this lambda.
+      ContextDecl = 0;
+      break;
+
+    case StaticDataMember:
+      //  -- the initializers of nonspecialized static members of template classes
+      if (!IsInNonspecializedTemplate) {
+        ManglingNumber = 0;
+        ContextDecl = 0;
+        break;
+      }
+      // Fall through to assign a mangling number.
+
+    case DataMember:
+      //  -- the in-class initializers of class members
+    case DefaultArgument:
+      //  -- default arguments appearing in class definitions
+      ManglingNumber = ExprEvalContexts.back().getLambdaMangleContext()
+        .getManglingNumber(Method);
+      break;
+    }
+
+    Class->setLambdaMangling(ManglingNumber, ContextDecl);
+
+    return Method;
+}
+
 
 LambdaScopeInfo *Sema::enterLambdaScope(CXXMethodDecl *CallOperator,
                                         SourceRange IntroducerRange,
