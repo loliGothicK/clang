@@ -505,6 +505,9 @@ class CXXRecordDecl : public RecordDecl {
     /// \brief Whether this class describes a C++ lambda.
     bool IsLambda : 1;
 
+    /// \brief Whether this class describes a Generic C++ lambda
+    bool IsGenericLambda : 1;
+
     /// NumBases - The number of base class specifiers in Bases.
     unsigned NumBases;
 
@@ -565,9 +568,10 @@ class CXXRecordDecl : public RecordDecl {
     LambdaDefinitionData(CXXRecordDecl *D, TypeSourceInfo *Info, bool Dependent) 
       : DefinitionData(D), Dependent(Dependent), NumCaptures(0), 
         NumExplicitCaptures(0), ManglingNumber(0), ContextDecl(0), Captures(0),
-        MethodTyInfo(Info) 
+        MethodTyInfo(Info)  
     {
       IsLambda = true;
+      IsGenericLambda = false;
     }
 
     /// \brief Whether this lambda is known to be dependent, even if its
@@ -991,6 +995,13 @@ public:
   /// \brief Determine whether this class describes a lambda function object.
   bool isLambda() const { return hasDefinition() && data().IsLambda; }
   
+  /// \brief Determine whether this class describes a Generic 
+  /// lambda function object.
+  bool isGenericLambda() const { return hasDefinition() && 
+                                      data().IsGenericLambda; }
+  void setGenericLambda(bool b) {
+    data().IsGenericLambda = b;
+  }
   /// \brief For a closure type, retrieve the mapping from captured
   /// variables and this to the non-static data members that store the
   /// values or references of the captures.
