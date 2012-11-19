@@ -351,7 +351,8 @@ DeclRefExpr::DeclRefExpr(ASTContext &Ctx,
                          const DeclarationNameInfo &NameInfo,
                          NamedDecl *FoundD,
                          const TemplateArgumentListInfo *TemplateArgs,
-                         QualType T, ExprValueKind VK)
+                         QualType T, ExprValueKind VK,
+                         bool IsCapturedByClosure)
   : Expr(DeclRefExprClass, T, VK, OK_Ordinary, false, false, false, false),
     D(D), Loc(NameInfo.getLoc()), DNLoc(NameInfo.getInfo()) {
   DeclRefExprBits.HasQualifier = QualifierLoc ? 1 : 0;
@@ -377,7 +378,7 @@ DeclRefExpr::DeclRefExpr(ASTContext &Ctx,
     getTemplateKWAndArgsInfo()->initializeFrom(TemplateKWLoc);
   }
   DeclRefExprBits.HadMultipleCandidates = 0;
-
+  DeclRefExprBits.IsCapturedByClosure = IsCapturedByClosure;
   computeDependence(Ctx);
 }
 
@@ -406,7 +407,8 @@ DeclRefExpr *DeclRefExpr::Create(ASTContext &Context,
                                  QualType T,
                                  ExprValueKind VK,
                                  NamedDecl *FoundD,
-                                 const TemplateArgumentListInfo *TemplateArgs) {
+                                 const TemplateArgumentListInfo *TemplateArgs,
+                                 bool IsCapturedByClosure) {
   // Filter out cases where the found Decl is the same as the value refenenced.
   if (D == FoundD)
     FoundD = 0;
@@ -424,7 +426,8 @@ DeclRefExpr *DeclRefExpr::Create(ASTContext &Context,
   void *Mem = Context.Allocate(Size, llvm::alignOf<DeclRefExpr>());
   return new (Mem) DeclRefExpr(Context, QualifierLoc, TemplateKWLoc, D,
                                RefersToEnclosingLocal,
-                               NameInfo, FoundD, TemplateArgs, T, VK);
+                               NameInfo, FoundD, TemplateArgs, T, VK,
+                               IsCapturedByClosure);
 }
 
 DeclRefExpr *DeclRefExpr::CreateEmpty(ASTContext &Context,

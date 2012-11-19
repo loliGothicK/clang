@@ -2892,7 +2892,8 @@ public:
   ExprResult BuildDeclRefExpr(ValueDecl *D, QualType Ty,
                               ExprValueKind VK,
                               const DeclarationNameInfo &NameInfo,
-                              const CXXScopeSpec *SS = 0);
+                              const CXXScopeSpec *SS = 0,
+                              bool IsCapturableUse = false);
   ExprResult
   BuildAnonymousStructUnionMemberReference(const CXXScopeSpec &SS,
                                            SourceLocation nameLoc,

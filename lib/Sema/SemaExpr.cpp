@@ -267,8 +267,9 @@ bool Sema::DiagnoseUseOfDecl(NamedDecl *D, SourceLocation Loc,
     return true;
   }
 
-  // See if this is a deleted function.
+  
   if (FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
+  // See if this is a deleted function.
     if (FD->isDeleted()) {
       Diag(Loc, diag::err_deleted_function_use);
       NoteDeletedFunction(FD);
@@ -1401,7 +1402,8 @@ Sema::BuildDeclRefExpr(ValueDecl *D, QualType Ty, ExprValueKind VK,
 ExprResult
 Sema::BuildDeclRefExpr(ValueDecl *D, QualType Ty, ExprValueKind VK,
                        const DeclarationNameInfo &NameInfo,
-                       const CXXScopeSpec *SS) {
+                       const CXXScopeSpec *SS,
+                       bool IsCapturableUse) {
   if (getLangOpts().CUDA)
     if (const FunctionDecl *Caller = dyn_cast<FunctionDecl>(CurContext))
       if (const FunctionDecl *Callee = dyn_cast<FunctionDecl>(D)) {
@@ -1425,7 +1427,10 @@ Sema::BuildDeclRefExpr(ValueDecl *D, QualType Ty, ExprValueKind VK,
                                               : NestedNameSpecifierLoc(),
                                        SourceLocation(),
                                        D, refersToEnclosingScope,
-                                       NameInfo, Ty, VK);
+                                       NameInfo, Ty, VK, 
+                                       0,  // NamedDecl* FoundD
+                                       0,  // TemplateArgumentListInfo* TemplateArguments
+                                       IsCapturableUse);
 
   MarkDeclRefReferenced(E);
 
@@ -2395,7 +2400,8 @@ Sema::BuildDeclarationNameExpr(const CXXScopeSpec &SS,
     if (!indirectField->isCXXClassMember())
       return BuildAnonymousStructUnionMemberReference(SS, NameInfo.getLoc(),
                                                       indirectField);
-
+  // Is this a variable that is captured by a block or a lambda
+  bool IsCapturableUse = false;
   {
     QualType type = VD->getType();
     ExprValueKind valueKind = VK_RValue;
@@ -2474,7 +2480,10 @@ Sema::BuildDeclarationNameExpr(const CXXScopeSpec &SS,
       if (!isUnevaluatedContext()) {
         QualType CapturedType = getCapturedDeclRefType(cast<VarDecl>(VD), Loc);
         if (!CapturedType.isNull())
+        {
           type = CapturedType;
+          IsCapturableUse = true;
+        }
       }
       
       break;
@@ -2546,7 +2555,8 @@ Sema::BuildDeclarationNameExpr(const CXXScopeSpec &SS,
       break;
     }
 
-    return BuildDeclRefExpr(VD, type, valueKind, NameInfo, &SS);
+    return BuildDeclRefExpr(VD, type, valueKind, NameInfo, &SS, 
+      IsCapturableUse);
   }
 }
 
@@ -10577,7 +10587,9 @@ static ExprResult captureInLambda(Sema &S, LambdaScopeInfo *LSI,
   //   An entity captured by a lambda-expression is odr-used (3.2) in
   //   the scope containing the lambda-expression.
   Expr *Ref = new (S.Context) DeclRefExpr(Var, RefersToEnclosingLocal, 
-                                          DeclRefType, VK_LValue, Loc);
+                                          DeclRefType, VK_LValue, Loc,
+                                          DeclarationNameLoc(),
+                                          /* IsCapturedByClosure */ true);
   Var->setReferenced(true);
   Var->setUsed(true);
 
@@ -10662,6 +10674,19 @@ static ExprResult captureInLambda(Sema &S, LambdaScopeInfo *LSI,
   return Result;
 }
 
+// Check to see if the DeclContext DC is the body of a Lambda 
+// Expression, by checking the following
+//  1) Is it a Class Member Function
+//  2) Is the Member function the overloaded function call operator
+//  3) Is the Lambda property set in the containing/parent class
+static inline bool IsLambdaDeclContext(const DeclContext* DC)
+{
+  return isa<CXXMethodDecl>(DC) &&
+             cast<CXXMethodDecl>(DC)->getOverloadedOperator() == OO_Call &&
+             cast<CXXRecordDecl>(DC->getParent())->isLambda();
+}
+
+
 bool Sema::tryCaptureVariable(VarDecl *Var, SourceLocation Loc, 
                               TryCaptureKind Kind, SourceLocation EllipsisLoc,
                               bool BuildAndDiagnose, 
@@ -10689,9 +10714,7 @@ bool Sema::tryCaptureVariable(VarDecl *Var, SourceLocation Loc,
     DeclContext *ParentDC;
     if (isa<BlockDecl>(DC))
       ParentDC = DC->getParent();
-    else if (isa<CXXMethodDecl>(DC) &&
-             cast<CXXMethodDecl>(DC)->getOverloadedOperator() == OO_Call &&
-             cast<CXXRecordDecl>(DC->getParent())->isLambda())
+    else if (IsLambdaDeclContext(DC))
       ParentDC = DC->getParent()->getParent();
     else {
       if (BuildAndDiagnose)
@@ -11029,15 +11052,32 @@ void Sema::CleanupVarDeclMarking() {
   MaybeODRUseExprs.clear();
 }
 
+
+static inline bool IsGenericLambdaDeclContext(const DeclContext* DC)
+{
+  return IsLambdaDeclContext(DC) &&
+    cast<CXXRecordDecl>(DC->getParent())->isGenericLambda();
+}
+
 // Mark a VarDecl referenced, and perform the necessary handling to compute
 // odr-uses.
 static void DoMarkVarDeclReferenced(Sema &SemaRef, SourceLocation Loc,
                                     VarDecl *Var, Expr *E) {
   Var->setReferenced();
-
+  
   if (!IsPotentiallyEvaluatedContext(SemaRef))
-    return;
-
+  {
+    // If we are not in a potentially evaluated context
+    // but are within a generic lambda, and the Expression
+    // involves capturing a variable, then even though the
+    // CurContext is dependent, we still need to capture
+    // this variable and mark it used, since a generic 
+    // lambda does intialize its capture variables at 
+    // at definition of the lambda expression
+    if (!IsGenericLambdaDeclContext(SemaRef.CurContext)) return;
+    DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E);
+    if (!DRE || !DRE->isCapturedByClosure()) return; 
+  }
   // Implicit instantiation of static data members of class templates.
   if (Var->isStaticDataMember() && Var->getInstantiatedFromStaticDataMember()) {
     MemberSpecializationInfo *MSInfo = Var->getMemberSpecializationInfo();
