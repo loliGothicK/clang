@@ -701,9 +701,37 @@ SpecEntryTraits<FunctionTemplateSpecializationInfo> {
   }
 };
 
+// FVTODO: In order to prevent the ScopeInfo for generic lambdas from 
+// being completely lost, we cache the "Generic-ScopeInfo" object
+// within the FunctionTemplateDecl of the member template function
+// call operator that represents the generic lambda 
+//  - this is never deleted, and is later used to clone the 
+//    instantiation-specific CapturingScopeInfo during 
+//    instantiation of the template which then holds 
+//    the state for that particular specialization and can be
+//    pushed, popped and deleted once instantiation is complete
+//  Check with Doug or Richard to see if this is the best 
+//  place to cache this information - seems like it shouldn't be
+//  since it seems Sema-specific - but lets use it for now 
+//  since I think it works...
+
+namespace sema {
+ class CapturingScopeInfo;
+}
 /// Declaration of a template function.
 class FunctionTemplateDecl : public RedeclarableTemplateDecl {
   static void DeallocateCommon(void *Ptr);
+  // see comment at the forward declaration above for details
+  sema::CapturingScopeInfo* LambdaBlockScopeInfo;
+
+public:
+  /// Get the CachedCapturingScopeInfo
+  // see comment at the forward declaration of CapturingScopeInfo above 
+  // for more details ...
+  sema::CapturingScopeInfo* getCachedCapturingScopeInfo() 
+  { return LambdaBlockScopeInfo; }
+  void setCachedCapturingScopeInfo(sema::CapturingScopeInfo* CSI) 
+  { LambdaBlockScopeInfo = CSI; }
 
 protected:
   /// \brief Data that is common to all of the declarations of a given
@@ -727,7 +755,8 @@ protected:
 
   FunctionTemplateDecl(DeclContext *DC, SourceLocation L, DeclarationName Name,
                        TemplateParameterList *Params, NamedDecl *Decl)
-    : RedeclarableTemplateDecl(FunctionTemplate, DC, L, Name, Params, Decl) { }
+    : RedeclarableTemplateDecl(FunctionTemplate, DC, L, Name, Params, Decl),
+      LambdaBlockScopeInfo(0) { }
 
   CommonBase *newCommon(ASTContext &C);
 
@@ -756,6 +785,7 @@ public:
   FunctionDecl *getTemplatedDecl() const {
     return static_cast<FunctionDecl*>(TemplatedDecl);
   }
+ 
 
   /// Returns whether this template declaration defines the primary
   /// pattern.
