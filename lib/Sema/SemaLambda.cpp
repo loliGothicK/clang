@@ -612,6 +612,12 @@ static bool checkReturnValueType(const ASTContext &Ctx, const Expr *E,
   return false;
 }
 
+// deduceClosureReturnType iterates through all the returns
+// and makes sure there is coherence amongst all return types
+// Remember that as each return statement is acted upon
+// CSI.ReturnType gets set to the most recent
+// return statement's return type (to aid with diagnostics)
+// But that is a tentative return type of the function/lambda
 void Sema::deduceClosureReturnType(CapturingScopeInfo &CSI) {
   assert(CSI.HasImplicitReturnType);
 
@@ -620,18 +626,21 @@ void Sema::deduceClosureReturnType(CapturingScopeInfo &CSI) {
   if (CSI.Returns.empty()) {
     // It's possible there were simply no /valid/ return statements.
     // In this case, the first one we found may have at least given us a type.
-    // Do we really need this check here - can't we just assign to VoidTy
+    
+    // Do we really need this check here - can't we just assign to VoidTy ?
     if (CSI.ReturnType.isNull() || CSI.ReturnType->getContainedAutoType())
       CSI.ReturnType = Ctx.VoidTy;
     return;
   }
 
-  // Second case: at least one return statement has dependent type.
+  // Second case: at least one return statement (should be the most recent, 
+  //   unless the most recent was not well-formed and skipped so we
+  //   are just diagnosticating then ...) has dependent type.
   // Delay type checking until instantiation.
   assert(!CSI.ReturnType.isNull() && "We should have a tentative return type.");
   if (CSI.ReturnType->isDependentType())
     return;
-
+ 
   // Third case: only one return statement. Don't bother doing extra work!
   SmallVectorImpl<ReturnStmt*>::iterator I = CSI.Returns.begin(),
                                          E = CSI.Returns.end();

@@ -2281,6 +2281,9 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
   // For blocks/lambdas with implicit return types, we check each return
   // statement individually, and deduce the common return type when the block
   // or lambda is completed.
+  // We do assign the current return-type to CurCap->ReturnType even
+  // though the final deduction takes place at the end, because
+  // it helps with good diagnostics
   if (CurCap->HasImplicitReturnType) {
     if (RetValExp && !isa<InitListExpr>(RetValExp)) {
       ExprResult Result = DefaultFunctionArrayLvalueConversion(RetValExp);
@@ -2290,7 +2293,11 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
 
       if (!RetValExp->isTypeDependent())
         FnRetType = CurCap->ReturnType = RetValExp->getType();
-      else
+      else 
+        // FVTODO: This is why a generic-lambda 'auto' in return
+        // gets turned into a <dependent-type> - my initial
+        // kludge at resetting the return-type to 'auto'
+        // should be replaced by a fix over here. 
         FnRetType = CurCap->ReturnType = Context.DependentTy;
     } else {
       if (RetValExp) {
@@ -2301,7 +2308,7 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
           << RetValExp->getSourceRange();
       }
 
-      FnRetType = Context.VoidTy;
+      FnRetType = CurCap->ReturnType = Context.VoidTy;
     }
 
     // Although we'll properly infer the type of the block once it's completed,
