@@ -1365,6 +1365,8 @@ def err_auto_var_deduction_failure_from_init_list : Error<
   "cannot deduce actual type for variable %0 with type %1 from initializer list">;
 def err_auto_new_deduction_failure : Error<
   "new expression for type %0 has incompatible constructor argument of type %1">;
+def err_auto_different_deductions : Error<
+  "'auto' deduced as %0 in declaration of %1 and deduced as %2 in declaration of %3">;
 
 def err_implied_std_initializer_list_not_found : Error<
   "cannot deduce type of initializer list because std::initializer_list was "
@@ -1376,7 +1378,7 @@ def warn_dangling_std_initializer_list : Warning<
   "%select{the full-expression|the constructor}0">,
   InGroup<DiagGroup<"dangling-initializer-list">>;
 
-// C++1y auto type (by Richard Smith) & also used for generic lambdas
+// C++1y auto type (by Richard Smith) & generic lambda
 def err_auto_fn_deduction_failure : Error<
   "cannot deduce return type %0 from returned value of type %1">;
 def err_auto_fn_deduction_failure_from_init_list : Error<

@@ -7760,8 +7760,57 @@ Decl *Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Decl *D) {
   else
     FD = cast<FunctionDecl>(D);
 
-  // Enter a new function scope
-  PushFunctionScope();
+  // We need to push a function scope info object onto the stack
+  // but for generic lambdas, we start of by cloning
+  // the cached LambdaScopeInfo that was associated with 
+  // the member template function call operator and use that
+  // as the starting point
+  if (getLangOpts().GenericLambda)
+  {
+    // Is this a Generic Lambda generated function?
+    CXXMethodDecl *const GLambdaCallOperator = dyn_cast<CXXMethodDecl>(FD);
+    CXXRecordDecl *const GLambdaClass = GLambdaCallOperator ? 
+                                        GLambdaCallOperator->getParent() : 0;
+    const bool isGenericLambda = GLambdaClass ? 
+                                    GLambdaClass->isGenericLambda() : 0;
+    if (isGenericLambda)
+    {
+      const FunctionDecl *PatternDecl = 
+                      GLambdaCallOperator->getTemplateInstantiationPattern();
+      assert(PatternDecl && "No Template Instantiation found for "
+            " a specialization of a Generic Lambda!");
+      FunctionTemplateDecl *TemplateOperator = 
+                         PatternDecl->getDescribedFunctionTemplate();
+      
+      LambdaScopeInfo *CachedLSI = dyn_cast<LambdaScopeInfo>(
+                      TemplateOperator->getCachedCapturingScopeInfo());
+      
+      assert(CachedLSI 
+                     && "No CachedCapturingScopeInfo for a generic lambda!");
+      
+      // Make a copy of the LSI associated with the template member operator
+      LambdaScopeInfo *ReifiedLSI = new LambdaScopeInfo(*CachedLSI);
+      // Now clear out all the information we will be re-calculating
+      // for this specialization
+      ReifiedLSI->Lambda = GLambdaClass;
+      ReifiedLSI->CallOperator = GLambdaCallOperator;
+      ReifiedLSI->SwitchStack.clear();
+      ReifiedLSI->Returns.clear();
+      ReifiedLSI->CompoundScopes.clear();
+      ReifiedLSI->PossiblyUnreachableDiags.clear();
+      
+      FunctionScopes.push_back(ReifiedLSI);
+           
+    }
+    else // is Not a generic lambda, so enter new function scope from scratch
+      PushFunctionScope();
+  }
+  else
+  {
+    // Generic Lambdas not enabled, Enter a new function scope from scratch
+    PushFunctionScope();
+  }
+ 
 
   // See if this is a redefinition.
   if (!FD->isLateTemplateParsed())
@@ -7965,11 +8014,8 @@ Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body,
         computeNRVO(Body, getCurFunction());
     }
     
-    //FVTODO: Just comment this for now - this assertion will need to be 
-    // restated - but for now, when instantiating genericLambdas
-    //  at the end of the translation unit, getCurLambda() returns null!
-    //assert((FD == getCurFunctionDecl() || getCurLambda()->CallOperator == FD) &&
-    //       "Function parsing confused");
+    assert((FD == getCurFunctionDecl() || getCurLambda()->CallOperator == FD) &&
+           "Function parsing confused");
   } else if (ObjCMethodDecl *MD = dyn_cast_or_null<ObjCMethodDecl>(dcl)) {
     assert(MD == getCurMethodDecl() && "Method parsing confused");
     MD->setBody(Body);

@@ -23,6 +23,8 @@
 #include "clang/AST/TypeLoc.h"
 #include "clang/Lex/Preprocessor.h"
 
+#include "clang/Sema/ScopeInfo.h"
+
 using namespace clang;
 
 bool TemplateDeclInstantiator::SubstQualifier(const DeclaratorDecl *OldDecl,
@@ -1617,6 +1619,17 @@ TemplateDeclInstantiator::VisitCXXMethodDecl(CXXMethodDecl *D,
            "should not implicitly default uninstantiated function");
   }
 
+  // If this method has an 'auto' in its result type
+  // then we need to instantiate this early so we can 
+  // deduce the return type - otherwise this will
+  // happen at the end of the translation unit
+  // and codegen errors tend to occur because
+  // of the 'auto' persisting until then 
+  if (SemaRef.getLangOpts().GenericLambda &&
+      Method->getResultType()->getContainedAutoType())
+    SemaRef.InstantiateFunctionDefinition(Method->getPointOfInstantiation(),
+                                          Method, false, true);
+  
   return Method;
 }
 
@@ -2828,7 +2841,46 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
 
     if (Body.isInvalid())
       Function->setInvalidDecl();
+    
+    //FVTODO: This should really be using C++1y machinery
+    // to deduce the return type of any function
+    // For now we just have it deduce the return type 
+    // for a generic lambda, since getCurLambda
+    // can only imply that we are in the context
+    // of a generic lambda, once we get here
+    if (getLangOpts().GenericLambda)
+    {
+      // C++11 [expr.prim.lambda]p4:
+      //   If a lambda-expression does not include a
+      //   trailing-return-type, it is as if the trailing-return-type
+      //   denotes the following type:
+      // FIXME: Assumes current resolution to core issue 975.
+      if ( sema::LambdaScopeInfo* LSI = getCurLambda() )
+      {
+        if (LSI->HasImplicitReturnType) {
+          deduceClosureReturnType(*LSI);
 
+          //   - if there are no return statements in the
+          //     compound-statement, or all return statements return
+          //     either an expression of type void or no expression or
+          //     braced-init-list, the type void;
+          if (LSI->ReturnType.isNull()) {
+            LSI->ReturnType = Context.VoidTy;
+          }
+          
+          // Create a function type with the inferred return type.
+          const FunctionProtoType *Proto
+            = Function->getType()->getAs<FunctionProtoType>();
+          QualType FunctionTy
+            = Context.getFunctionType(LSI->ReturnType,
+                                      Proto->arg_type_begin(),
+                                      Proto->getNumArgs(),
+                                      Proto->getExtProtoInfo());
+          Function->setType(FunctionTy);
+          
+        }
+      }
+    }
     ActOnFinishFunctionBody(Function, Body.get(),
                             /*IsInstantiation=*/true);
   }

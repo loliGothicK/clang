@@ -1004,7 +1004,28 @@ void Sema::PopFunctionScopeInfo(const AnalysisBasedWarnings::Policy *WP,
   }
 
   if (FunctionScopes.back() != Scope) {
-    delete Scope;
+    // If this is a generic lambda expression - cache the 
+    // lambdaScopeInfo so that when specializations are
+    // instantiated, we can reuse the LambdaScopeInfo
+    // as a starting point for each new specialization
+    // FVTODO: This could be generalized once support
+    // for return type deduction for functions is 
+    // implemented
+    const CXXMethodDecl* const GLambdaCallOp = D ?
+                                  dyn_cast<const CXXMethodDecl>(D) : 0;
+    const CXXRecordDecl* const GLambdaClass  = GLambdaCallOp ? 
+            GLambdaCallOp->getParent() : 0;
+    if (GLambdaClass && GLambdaClass->isGenericLambda())
+    {
+      FunctionTemplateDecl* const TemplateCallOp = 
+                  GLambdaCallOp->getDescribedFunctionTemplate();
+      //assert(TemplateCallOp && "No template call operator in generic lambda!");
+
+      if (TemplateCallOp)
+          TemplateCallOp->setCachedCapturingScopeInfo(dyn_cast<CapturingScopeInfo>(Scope));
+    }
+    else
+        delete Scope;
   }
 }
 

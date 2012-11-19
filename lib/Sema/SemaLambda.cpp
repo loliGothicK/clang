@@ -337,6 +337,7 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
          P != PEnd; ++P)
       (*P)->setOwningFunction(Method);
   }
+  Class->setGenericLambda(true);
   return Method;
 }
 
@@ -515,7 +516,14 @@ LambdaScopeInfo *Sema::enterLambdaScope(CXXMethodDecl *CallOperator,
       }
     }
   } else {
-    LSI->HasImplicitReturnType = true;
+    LSI->HasImplicitReturnType = true;  
+    // For implicitly deduced generic lambdas, the return type
+    // is 'auto', so make sure that LSI->ReturnType
+    // reflects that - 
+    // FVTODO: this may seem unnecessary, but it is currently necessary
+    if (getLangOpts().GenericLambda && 
+                   CallOperator->getResultType()->getContainedAutoType())
+      LSI->ReturnType = CallOperator->getResultType();
   }
 
   return LSI;
@@ -1130,16 +1138,40 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
       if (LSI->ReturnType.isNull()) {
         LSI->ReturnType = Context.VoidTy;
       }
-
-      // Create a function type with the inferred return type.
-      const FunctionProtoType *Proto
-        = CallOperator->getType()->getAs<FunctionProtoType>();
-      QualType FunctionTy
-        = Context.getFunctionType(LSI->ReturnType,
-                                  Proto->arg_type_begin(),
-                                  Proto->getNumArgs(),
-                                  Proto->getExtProtoInfo());
-      CallOperator->setType(FunctionTy);
+      
+      // FVTODO
+      // for now, until we can figure out how LSI's ReturnType
+      // gets switched to <dependent-type> during parsing of
+      // the compound-statement that is the body
+      // we need to check to see if this is a generic lambda
+      // with an undeduced return type, and if it is
+      // then leave it alone (since LSI's ReturnType gets
+      //   out of sync i.e. becomes <dependent-type> and
+      //   does not remain as auto - without this fix
+      //   codegen/mangling of name becomes an issue - fairly
+      //   sure i don't understand all the details here)
+      
+      // so if the return is not dependent or this is not
+      // a generic lambda - reset the function type
+      // with the deduced return type, which could
+      // be <dependent type> - we disable this for 
+      // generic lambdas,  because it messes with the 
+      // 'auto' that we insert as the return type for 
+      // generic lambdas - this will need to be made
+      // symmetric for non-generics too
+      if (!LSI->ReturnType->isDependentType() || 
+        !Class->isGenericLambda())
+      {
+        // Create a function type with the inferred return type.
+        const FunctionProtoType *Proto
+          = CallOperator->getType()->getAs<FunctionProtoType>();
+        QualType FunctionTy
+          = Context.getFunctionType(LSI->ReturnType,
+                                    Proto->arg_type_begin(),
+                                    Proto->getNumArgs(),
+                                    Proto->getExtProtoInfo());
+        CallOperator->setType(FunctionTy);
+      }
     }
 
     // C++ [expr.prim.lambda]p7:

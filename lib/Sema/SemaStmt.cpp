@@ -2289,7 +2289,7 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
       RetValExp = Result.take();
 
       if (!RetValExp->isTypeDependent())
-        FnRetType = RetValExp->getType();
+        FnRetType = CurCap->ReturnType = RetValExp->getType();
       else
         FnRetType = CurCap->ReturnType = Context.DependentTy;
     } else {
