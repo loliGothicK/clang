@@ -620,7 +620,8 @@ void Sema::deduceClosureReturnType(CapturingScopeInfo &CSI) {
   if (CSI.Returns.empty()) {
     // It's possible there were simply no /valid/ return statements.
     // In this case, the first one we found may have at least given us a type.
-    if (CSI.ReturnType.isNull())
+    // Do we really need this check here - can't we just assign to VoidTy
+    if (CSI.ReturnType.isNull() || CSI.ReturnType->getContainedAutoType())
       CSI.ReturnType = Ctx.VoidTy;
     return;
   }
