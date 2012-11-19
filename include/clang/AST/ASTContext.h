@@ -819,6 +819,10 @@ public:
   /// \brief Change the ExtInfo on a function type.
   const FunctionType *adjustFunctionType(const FunctionType *Fn,
                                          FunctionType::ExtInfo EInfo);
+  /// \brief Set the return type of the function to the deduced
+  ///  result type
+  void adjustDeducedFunctionResultType(FunctionDecl *FD,
+    QualType ResultType);
 
   /// \brief Return the uniqued reference to the type for a complex
   /// number with the specified element type.

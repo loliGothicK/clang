@@ -159,7 +159,7 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
       // that we generate - this becomes the name of our 
       // "template type"
       std::string InventedTemplateParamName = "_$";
-      InventedTemplateParamName = AutoParam->getNameAsString();
+      InventedTemplateParamName += AutoParam->getNameAsString();
       IdentifierInfo& TemplateParamII = Context.Idents.get(
                                   InventedTemplateParamName.c_str());
       
@@ -242,11 +242,19 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
   
   const FunctionType* FT = dyn_cast<const FunctionType>(
                               MethodTSI->getType().getTypePtr());
-  
+  // If there is no trailing return type, make the return
+  // type auto - so we can use the C++1y auto deduction for all functions
+  // feature to deduce the return type
+  QualType ResultType;
+  if (EPI.HasTrailingReturn)
+    ResultType = FT->getResultType().getCanonicalType();
+  else
+    ResultType = Context.getAutoType(ResultType);
+
   QualType FunctionTypeWithAutoReplaced = S.Context.getFunctionType(
-        FT->getResultType(), 
-        NewParamsType.data(),
-        FuncParamsWithAutoReplaced.size(), EPI); 
+    ResultType, 
+    NewParamsType.data(),
+    FuncParamsWithAutoReplaced.size(), EPI); 
 
   // This is somewhat of a kludge that is used to 
   // create the appropriate FunctionProtoTypeLoc

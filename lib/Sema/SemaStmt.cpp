@@ -2387,6 +2387,56 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
   return Owned(Result);
 }
 
+// From Richard Smith's https://github.com/zygoloid/clang/commits/n3386
+bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
+  SourceLocation ReturnLoc,
+  Expr *&RetExpr,
+  AutoType *AT) {
+    QualType OrigResultType = FD->getTypeSourceInfo()->getType()->
+      castAs<FunctionProtoType>()->getResultType();
+    QualType Deduced;
+
+    if (RetExpr) {
+      DeduceAutoResult DAR = DeduceAutoType(OrigResultType, RetExpr, Deduced);
+
+      if (DAR == DAR_Failed && !FD->isInvalidDecl()) {
+        if (isa<InitListExpr>(RetExpr))
+          Diag(RetExpr->getExprLoc(),
+          diag::err_auto_fn_deduction_failure_from_init_list)
+          << OrigResultType;
+        else
+          Diag(RetExpr->getExprLoc(), diag::err_auto_fn_deduction_failure)
+          << OrigResultType << RetExpr->getType();
+      }
+
+      if (DAR != DAR_Succeeded)
+        return true;
+    } else {
+      if (!OrigResultType->getAs<AutoType>()) {
+        Diag(ReturnLoc, diag::err_auto_fn_return_void_but_not_auto)
+          << OrigResultType;
+        return true;
+      }
+      Deduced = SubstAutoType(OrigResultType, Context.VoidTy);
+      if (Deduced.isNull())
+        return true;
+    }
+
+    if (AT->isDeduced() && !FD->isInvalidDecl()) {
+      AutoType *NewAT = Deduced->getContainedAutoType();
+      if (!Context.hasSameType(AT->getDeducedType(), NewAT->getDeducedType())) {
+        Diag(ReturnLoc, diag::err_auto_fn_different_deductions)
+          << NewAT->getDeducedType() << AT->getDeducedType();
+        return true;
+      }
+    }
+
+    Context.adjustDeducedFunctionResultType(FD, Deduced);
+    return false;
+}
+
+
+
 StmtResult
 Sema::ActOnReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
   // Check for unexpanded parameter packs.

@@ -5455,6 +5455,17 @@ public:
 
   DeduceAutoResult DeduceAutoType(TypeSourceInfo *AutoType, Expr *&Initializer,
                                   TypeSourceInfo *&Result);
+
+  DeduceAutoResult DeduceAutoType(QualType AutoType, Expr *&Initializer,
+                                  QualType &Result, TypeSourceInfo **TSI = 0);
+
+  QualType SubstAutoType(QualType TypeWithAuto, QualType Replacement);
+
+  bool DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD, 
+                                           SourceLocation ReturnLoc, 
+                                           Expr *&RetExpr,
+                                           AutoType *AT);
+
   void DiagnoseAutoDeductionFailure(VarDecl *VDecl, Expr *Init);
 
   FunctionTemplateDecl *getMoreSpecializedTemplate(FunctionTemplateDecl *FT1,
