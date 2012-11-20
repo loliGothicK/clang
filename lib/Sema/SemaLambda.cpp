@@ -21,6 +21,7 @@
 #include "clang/AST/TypeLoc.h"
 
 #include "TreeTransform.h"
+#include "clang/AST/RecursiveASTVisitor.h" 
 
 using namespace clang;
 using namespace sema;
@@ -142,11 +143,13 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
    
   size_t CurrentInventedTemplateParameterIndex = 0;
 
-  for (size_t i = 0; i < Params.size(); ++i)
+  for (size_t CurrentParameterIndex = 0; 
+          CurrentParameterIndex < Params.size(); 
+          ++CurrentParameterIndex)
   {
-    ParmVarDecl* AutoParam = Params[i];
+    ParmVarDecl* AutoParam = Params[CurrentParameterIndex];
     QualType AutoParamQType = AutoParam->getOriginalType();
-
+    ParmVarDecl* OrigOrNewParam = AutoParam;
     // get the the full param info i.e. auto* etc.
     const Type* AutoParamType = AutoParamQType.getTypePtr(); 
    
@@ -158,6 +161,7 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
       // Currently we just ask the IdentifierTable for the ID
       // that we generate - this becomes the name of our 
       // "template type"
+      //  Is it safe to prefix with _$ ?
       std::string InventedTemplateParamName = "_$";
       InventedTemplateParamName += AutoParam->getNameAsString();
       IdentifierInfo& TemplateParamII = Context.Idents.get(
@@ -207,15 +211,66 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
                                 AutoParam->getFunctionScopeIndex());  
       
       FuncParamsWithAutoReplaced.push_back( FuncParamWithAutoReplacedDecl );
-
+      OrigOrNewParam = FuncParamWithAutoReplacedDecl;
     } 
     else
     {
-      // there was no auto within this parameter, so 
+      // Since there was no auto within this parameter, 
       // don't transform it.
-      FuncParamsWithAutoReplaced.push_back(AutoParam);
-    }
 
+      FuncParamsWithAutoReplaced.push_back(OrigOrNewParam);
+    }
+    // Check if this param references a prior parameter.
+    // (i.e.decltype (a) b) and rewire it to refer to the new invented 
+    // parameter - otherwise it will not be linked to the corresponding
+    // template parameter during instantiation.
+    
+    // Since we can not be sure of how deeply nested the reference 
+    // might be, or whether we are referring to multiple previous params
+    // we use a Visitor to comprehensively adjust all the pointers.
+   
+    // If we find any references to the prior parameters we use the new 
+    // renditions that we invented above (i.e. those not containing 'auto') 
+    // instead
+    // i.e. [](auto a, auto* a2, decltype(a) b, X<sizeof(a)> x, 
+    //          Y<decltype(a)> y,  int c, Z<decltype(x)> z, 
+    //          auto (*b)(decltype(a), decltype(a2)) ) 
+    //
+    // FVQUESTION: Is it safe to just reset the Decl within the DeclRefExpr
+    //   of the old parameter to the new one?
+    //   2) Is using the visitor the best way to do this?
+       
+    struct FixReferencesToPreviousParametersVisitor
+      : RecursiveASTVisitor<FixReferencesToPreviousParametersVisitor> {
+          
+        // The Parameter Index we are currently processing
+        const size_t CurIndex;
+        const llvm::ArrayRef<ParmVarDecl *> &OriginalParams;
+        const SmallVector<ParmVarDecl*, 4>  &NewParams;
+      public:
+        FixReferencesToPreviousParametersVisitor(size_t CurIndex,
+            const llvm::ArrayRef<ParmVarDecl *> &OriginalParams,
+            const SmallVector<ParmVarDecl*, 4>  &NewParams) :
+            CurIndex(CurIndex), OriginalParams(OriginalParams),
+            NewParams(NewParams) { }
+        // Get the Decl referenced by the expression within the
+        // parameter, and check to see if it needs to be 
+        // adjusted           
+        bool VisitDeclRefExpr(DeclRefExpr *DRE) {
+          ValueDecl* VD = DRE->getDecl();
+          for (size_t i = 0; i < CurIndex; ++i )
+          {
+            if (VD == cast<ValueDecl>(OriginalParams[i]))
+              DRE->setDecl(NewParams[i]);
+          } 
+          return true;
+        }
+    };
+      
+    FixReferencesToPreviousParametersVisitor visitor(CurrentParameterIndex, 
+                                Params, FuncParamsWithAutoReplaced);
+    visitor.TraverseDecl(OrigOrNewParam);
+      
   }
 
   // Create the corresponding template parameter list
