@@ -161,9 +161,13 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
       // Currently we just ask the IdentifierTable for the ID
       // that we generate - this becomes the name of our 
       // "template type"
-      //  Is it safe to prefix with _$ ?
+      //  Is it safe to prefix with _$n ?
       std::string InventedTemplateParamName = "_$";
-      InventedTemplateParamName += AutoParam->getNameAsString();
+      llvm::raw_string_ostream ss(InventedTemplateParamName);
+      ss << CurrentParameterIndex;  // identify unnamed [](auto, auto) by idx
+      ss << AutoParam->getNameAsString();
+      ss.flush();
+
       IdentifierInfo& TemplateParamII = Context.Idents.get(
                                   InventedTemplateParamName.c_str());
       
