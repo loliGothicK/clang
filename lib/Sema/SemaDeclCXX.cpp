@@ -9021,10 +9021,9 @@ bool Sema::isImplicitlyDeleted(FunctionDecl *FD) {
 
 /// \brief Mark the call operator of the given lambda closure type as "used".
 static void markLambdaCallOperatorUsed(Sema &S, CXXRecordDecl *Lambda) {
-  CXXMethodDecl *CallOperator 
-    = cast<CXXMethodDecl>(
-        *Lambda->lookup(
-          S.Context.DeclarationNames.getCXXOperatorName(OO_Call)).first);
+  assert(Lambda->isLambda());
+  CXXMethodDecl *CallOperator = Lambda->getLambdaCallOperator();
+
   CallOperator->setReferenced();
   CallOperator->setUsed();
 }
