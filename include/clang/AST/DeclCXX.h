@@ -568,7 +568,8 @@ class CXXRecordDecl : public RecordDecl {
     LambdaDefinitionData(CXXRecordDecl *D, TypeSourceInfo *Info, bool Dependent) 
       : DefinitionData(D), Dependent(Dependent), NumCaptures(0), 
         NumExplicitCaptures(0), ManglingNumber(0), ContextDecl(0), Captures(0),
-        MethodTyInfo(Info)  
+        MethodTyInfo(Info), CallOperator(0), ConversionOperator(0),
+        StaticInvoker(0)  
     {
       IsLambda = true;
       IsGenericLambda = false;
@@ -606,6 +607,15 @@ class CXXRecordDecl : public RecordDecl {
 
     /// \brief The type of the call method.
     TypeSourceInfo *MethodTyInfo;
+
+    /// \brief The Lambda call method
+    CXXMethodDecl *CallOperator;  
+
+    /// \brief The Lambda conversion operator, for non-capturing lambdas
+    CXXConversionDecl *ConversionOperator;
+
+    /// \brief The Lambda static method invoker, for non-capturing lambdas
+    CXXMethodDecl *StaticInvoker;
   };
 
   struct DefinitionData &data() {
@@ -1002,6 +1012,47 @@ public:
   void setGenericLambda(bool b) {
     data().IsGenericLambda = b;
   }
+
+  /// \brief set the LambdaCallOperator - only if isLambda is true
+  void setLambdaCallOperator(CXXMethodDecl *M) {
+    getLambdaData().CallOperator = M;
+  }
+
+  /// \brief get the LambdaCallOperator - only if isLambda is true
+  CXXMethodDecl* getLambdaCallOperator() const {
+    return getLambdaData().CallOperator;
+  }
+
+  /// \brief set the LambdaCallOperator - only if isLambda is true
+  void setLambdaConversionOperator(CXXConversionDecl *C) {
+    getLambdaData().ConversionOperator = C;
+  }
+
+  /// \brief get the LambdaCallOperator - only if isLambda is true
+  CXXConversionDecl* getLambdaConversionOperator() const {
+    return getLambdaData().ConversionOperator;
+  }
+  /// \brief set the LambdaCallOperator - only if isLambda is true
+  void setLambdaStaticInvoker(CXXMethodDecl *M) {
+    getLambdaData().StaticInvoker = M;
+  }
+
+  /// \brief get the LambdaCallOperator - only if isLambda is true
+  CXXMethodDecl* getLambdaStaticInvoker() const {
+    return getLambdaData().StaticInvoker;
+  }
+
+  const char* getGenericLambdaStaticInvokerString() const {
+    return "__invokeGenericL";
+  }
+
+  const char* getNonGenericLambdaStaticInvokerString() const {
+    return "__invoke";
+  }
+
+
+
+
   /// \brief For a closure type, retrieve the mapping from captured
   /// variables and this to the non-static data members that store the
   /// values or references of the captures.
