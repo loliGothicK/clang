@@ -1619,17 +1619,25 @@ TemplateDeclInstantiator::VisitCXXMethodDecl(CXXMethodDecl *D,
            "should not implicitly default uninstantiated function");
   }
 
-  // If this method has an 'auto' in its result type
+  
+  // If this is the lambda function call operator
+  // And it has an 'auto' in its result type
   // then we need to instantiate this early so we can 
   // deduce the return type - otherwise this will
   // happen at the end of the translation unit
   // and codegen errors tend to occur because
   // of the 'auto' persisting until then 
-  if (SemaRef.getLangOpts().GenericLambda &&
-      Method->getResultType()->getContainedAutoType())
-    SemaRef.InstantiateFunctionDefinition(Method->getPointOfInstantiation(),
+  // FVTODO/ FVQUESTION: Not sure I understand exactly why this 
+  //  can't be fixed downstream - will have to check with Richard or Doug
+  if (SemaRef.getLangOpts().GenericLambda)
+  {
+    CXXRecordDecl *LambdaClass = Method->getParent();
+    if (LambdaClass->isGenericLambda() && 
+              D == LambdaClass->getLambdaCallOperator() && 
+              Method->getResultType()->getContainedAutoType())
+      SemaRef.InstantiateFunctionDefinition(Method->getPointOfInstantiation(),
                                           Method, false, true);
-  
+  }
   return Method;
 }
 
