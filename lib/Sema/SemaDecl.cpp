@@ -7768,15 +7768,19 @@ Decl *Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Decl *D) {
   if (getLangOpts().GenericLambda)
   {
     // Is this a Generic Lambda generated function?
-    CXXMethodDecl *const GLambdaCallOperator = dyn_cast<CXXMethodDecl>(FD);
-    CXXRecordDecl *const GLambdaClass = GLambdaCallOperator ? 
-                                        GLambdaCallOperator->getParent() : 0;
+    CXXMethodDecl *const GLambdaCallOperatorSpec = 
+                                                 dyn_cast<CXXMethodDecl>(FD);
+    CXXRecordDecl *const GLambdaClass = GLambdaCallOperatorSpec ? 
+                         GLambdaCallOperatorSpec->getParent() : 0;
+
     const bool isGenericLambda = GLambdaClass ? 
                                     GLambdaClass->isGenericLambda() : 0;
-    if (isGenericLambda)
+    // is this specialized from the original call operator?
+    if (isGenericLambda && GLambdaClass->getLambdaCallOperator() ==
+                GLambdaCallOperatorSpec->getTemplateInstantiationPattern()) 
     {
       const FunctionDecl *PatternDecl = 
-                      GLambdaCallOperator->getTemplateInstantiationPattern();
+                      GLambdaCallOperatorSpec->getTemplateInstantiationPattern();
       assert(PatternDecl && "No Template Instantiation found for "
             " a specialization of a Generic Lambda!");
       FunctionTemplateDecl *TemplateOperator = 
@@ -7793,7 +7797,7 @@ Decl *Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Decl *D) {
       // Now clear out all the information we will be re-calculating
       // for this specialization
       ReifiedLSI->Lambda = GLambdaClass;
-      ReifiedLSI->CallOperator = GLambdaCallOperator;
+      ReifiedLSI->CallOperator = GLambdaCallOperatorSpec;
       ReifiedLSI->SwitchStack.clear();
       ReifiedLSI->Returns.clear();
       ReifiedLSI->CompoundScopes.clear();
