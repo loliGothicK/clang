@@ -1490,9 +1490,49 @@ bool CXXMethodDecl::hasInlineBody() const {
   return CheckFn->hasBody(fn) && !fn->isOutOfLine();
 }
 
+// This is currently called by Codegen to check
+// if a member function is a lambda static invoker
+// (i.e. the function that is returned as the address
+//  by the conversion to function-ptr)
+//
+// This is handled specially by codegen since the body
+//  is an empty stub, and so once the codegen
+//  recognizes this as the lambda static invoker
+//  it ignores the stubbed body and forwards the call 
+//  to the body of the corresponding function call operator
+//  specialization
 bool CXXMethodDecl::isLambdaStaticInvoker() const {
-  return getParent()->isLambda() && 
-         getIdentifier() && getIdentifier()->getName() == "__invoke";
+  const CXXRecordDecl *Class = getParent();
+  if ( Class->isLambda() )
+  {
+    CXXMethodDecl *StaticInvoker = Class->getLambdaStaticInvoker(); 
+    // in non-generic lambdas, the static invoker is not a
+    // generic template - so just compare it to the single
+    // static invoker
+    if (StaticInvoker == this ) return true;
+
+    // For generic lambdas, the getLambdaStaticInvoker refers to a template
+    // and isLambdaStaticInvoker() is called on a specialization
+    // so we just check 
+    // a) is this instantiated from a template
+    // b) and is the primary template the same as the static invoker template
+    if (StaticInvoker && Class->isGenericLambda()) {
+      if (this->isTemplateInstantiation())
+      {
+        FunctionTemplateDecl *TemplateStaticInvoker = StaticInvoker->
+          getDescribedFunctionTemplate();
+        FunctionTemplateDecl *PrimaryTemplate = this->getPrimaryTemplate();
+        return PrimaryTemplate == TemplateStaticInvoker;
+      }
+      return false;
+    }
+
+    //FVTODO: can we simply avoid using hard coded string names?
+    // and just use the getLambdaStaticInvoker?
+    //const char* invokeName = Class->getNonGenericLambdaStaticInvokerString();
+    if (getIdentifier() && getIdentifier()->getName() == "__invoke") return true;
+  }
+  return false;
 }
 
 
