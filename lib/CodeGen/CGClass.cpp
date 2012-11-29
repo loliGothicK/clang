@@ -1751,6 +1751,51 @@ CodeGenFunction::EmitCXXOperatorMemberCallee(const CXXOperatorCallExpr *E,
   return CGM.GetAddrOfFunction(MD, fnType);
 }
 
+// FVTODO: This function shares a lot in commong with the 
+// non-genericLambda forwarding function
+// we need to refactor the common code
+void CodeGenFunction::EmitForwardingCallToGenericLambda(
+                          const CXXMethodDecl *StaticInvokerSpec,
+                          const CXXRecordDecl *LambdaClass,
+                          CallArgList &callArgs) {
+  
+  const CXXMethodDecl *CallOpSpec = 
+      LambdaClass->getLambdaCallOpSpecFromStaticInvokerSpec(
+                                    StaticInvokerSpec);
+
+  CXXMethodDecl *callOperator = const_cast<CXXMethodDecl *>(CallOpSpec);
+  // Get the address of the call operator.
+  const CGFunctionInfo &calleeFnInfo =
+      CGM.getTypes().arrangeCXXMethodDeclaration(callOperator);
+  llvm::Value *callee =
+      CGM.GetAddrOfFunction(GlobalDecl(callOperator),
+                          CGM.getTypes().GetFunctionType(calleeFnInfo));
+
+  // Prepare the return slot.
+  const FunctionProtoType *FPT =
+    callOperator->getType()->castAs<FunctionProtoType>();
+  QualType resultType = FPT->getResultType();
+  ReturnValueSlot returnSlot;
+  if (!resultType->isVoidType() &&
+      calleeFnInfo.getReturnInfo().getKind() == ABIArgInfo::Indirect &&
+        hasAggregateLLVMType(calleeFnInfo.getReturnType()))
+    returnSlot = ReturnValueSlot(ReturnValue, resultType.isVolatileQualified());
+
+  // We don't need to separately arrange the call arguments because
+  // the call can't be variadic anyway --- it's impossible to forward
+  // variadic arguments.
+  
+  // Now emit our call.
+  RValue RV = EmitCall(calleeFnInfo, callee, returnSlot,
+                       callArgs, callOperator);
+
+  // If necessary, copy the returned value into the slot.
+  if (!resultType->isVoidType() && returnSlot.isNull())
+    EmitReturnOfRValue(RV, resultType);
+
+
+}
+
 void CodeGenFunction::EmitForwardingCallToLambda(const CXXRecordDecl *lambda,
                                                  CallArgList &callArgs) {
   // Lookup the call operator
@@ -1838,8 +1883,10 @@ void CodeGenFunction::EmitLambdaDelegatingInvokeBody(const CXXMethodDecl *MD) {
     ParmVarDecl *param = *I;
     EmitDelegateCallArg(CallArgs, param);
   }
-
-  EmitForwardingCallToLambda(Lambda, CallArgs);
+  if (Lambda->isGenericLambda())
+    EmitForwardingCallToGenericLambda(MD, Lambda, CallArgs);
+  else
+    EmitForwardingCallToLambda(Lambda, CallArgs);
 }
 
 void CodeGenFunction::EmitLambdaStaticInvokeFunction(const CXXMethodDecl *MD) {

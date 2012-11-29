@@ -1401,6 +1401,11 @@ public:
 
   void EmitForwardingCallToLambda(const CXXRecordDecl *Lambda,
                                   CallArgList &CallArgs);
+
+  void EmitForwardingCallToGenericLambda(
+                          const CXXMethodDecl *StaticInvokerSpec,
+                          const CXXRecordDecl *LambdaClass,
+                          CallArgList &callArgs);
   void EmitLambdaToBlockPointerBody(FunctionArgList &Args);
   void EmitLambdaBlockInvokeBody();
   void EmitLambdaDelegatingInvokeBody(const CXXMethodDecl *MD);
