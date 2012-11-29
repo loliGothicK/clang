@@ -569,7 +569,7 @@ class CXXRecordDecl : public RecordDecl {
       : DefinitionData(D), Dependent(Dependent), NumCaptures(0), 
         NumExplicitCaptures(0), ManglingNumber(0), ContextDecl(0), Captures(0),
         MethodTyInfo(Info), CallOperator(0), ConversionOperator(0),
-        StaticInvoker(0)  
+        StaticInvoker(0), StaticInvokerSpecToCallOpSpecMapPtr(0)  
     {
       IsLambda = true;
       IsGenericLambda = false;
@@ -616,6 +616,14 @@ class CXXRecordDecl : public RecordDecl {
 
     /// \brief The Lambda static method invoker, for non-capturing lambdas
     CXXMethodDecl *StaticInvoker;
+
+   
+    typedef llvm::DenseMap<const CXXMethodDecl*, const CXXMethodDecl*> 
+                          StaticInvokerSpecToCallOpSpecMapType;
+    /// \brief In a generic lambda, we need to maps each static invoker 
+    /// specialization to the corresponding generic lambda specialization 
+    /// so that codegen can forward the call appropriately
+    StaticInvokerSpecToCallOpSpecMapType *StaticInvokerSpecToCallOpSpecMapPtr;
   };
 
   struct DefinitionData &data() {
@@ -1041,7 +1049,37 @@ public:
   CXXMethodDecl* getLambdaStaticInvoker() const {
     return getLambdaData().StaticInvoker;
   }
-
+  
+  /// \brief In a generic non-capturing Lambda, associate the static
+  ///  invoker specialization to the corresponding CallOperator
+  ///  specialization, for later lookup during codegen
+  ///  so that we can forward the call to the appropriate CallOperator
+  void mapLambdaStaticInvokerSpecToCallOpSpec(
+                  const CXXMethodDecl *StaticInvokerSpecialization,
+                  const CXXMethodDecl *CallOperatorSpecialization)
+  {
+    typedef LambdaDefinitionData::StaticInvokerSpecToCallOpSpecMapType MapTy;
+    if (!getLambdaData().StaticInvokerSpecToCallOpSpecMapPtr)
+      getLambdaData().StaticInvokerSpecToCallOpSpecMapPtr = new MapTy();
+    MapTy &Map = *getLambdaData().StaticInvokerSpecToCallOpSpecMapPtr;
+    Map[StaticInvokerSpecialization] = CallOperatorSpecialization;
+  }
+  /// \brief In a generic non-capturing Lambda, each static
+  ///   invoker (whose address the conversion function ptr operator
+  ///   returns) specialization is mapped to the corresponding
+  ///   Call Operator specialization.  This function, when supplied
+  ///  the static Invoker Specialization, will return the corresponding
+  ///  Call operator speicalization.
+  const CXXMethodDecl* getLambdaCallOpSpecFromStaticInvokerSpec(
+                                                    const CXXMethodDecl* SI) const
+  {
+    typedef LambdaDefinitionData::StaticInvokerSpecToCallOpSpecMapType MapTy;
+    if (!getLambdaData().StaticInvokerSpecToCallOpSpecMapPtr) return 0;
+    MapTy &Map = *getLambdaData().StaticInvokerSpecToCallOpSpecMapPtr;
+    MapTy::iterator it = Map.find(SI);
+    if (it != Map.end()) return it->second;
+    return 0;
+  }
   const char* getGenericLambdaStaticInvokerString() const {
     return "__invokeGenericL";
   }
