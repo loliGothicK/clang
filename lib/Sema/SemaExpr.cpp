@@ -10429,7 +10429,8 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func) {
       CXXConversionDecl *Conversion = cast<CXXConversionDecl>(MethodDecl);
       if (Conversion->isLambdaToBlockPointerConversion())
         DefineImplicitLambdaToBlockPointerConversion(Loc, Conversion);
-      else
+      // if this was not instantiated from a template, it is non-generic
+      else if (!Conversion->getTemplateInstantiationPattern()) 
         DefineImplicitLambdaToFunctionPointerConversion(Loc, Conversion);
     } else if (MethodDecl->isVirtual())
       MarkVTableUsed(Loc, MethodDecl->getParent());
