@@ -58,7 +58,7 @@ static bool isInInlineFunction(const DeclContext *DC) {
 
 
 // Check if there is an auto parameter - and if so, we have a generic lambda
-static bool IsGenericLambda( 
+static bool containsAutoParameter( 
       llvm::ArrayRef<ParmVarDecl *> Params)
 {
   bool HasGenericAutoParameter = false;
@@ -118,29 +118,20 @@ namespace {
   };
 } // End Namespace anon
 
-// create a member template within the Closure class
-// with each use of auto generating a corresponding template type
-// parameter
-static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
-                            SourceRange IntroducerRange,
-                            TypeSourceInfo *MethodTSI,
-                            SourceLocation EndLoc,
-                            llvm::ArrayRef<ParmVarDecl *> Params,
-                            Sema &S) {
-  
-  ASTContext& Context = S.Context;
 
-  const FunctionProtoType *AutoMethodFPT = 
-              MethodTSI->getType()->castAs<FunctionProtoType>();
-  // Construct a template parameter list, corresponding to each
-  // auto parameter
-  // (auto a, auto* b) ==>
-  //   template<class $a, class $b> ($a a, $b* b)
-
-  SmallVector<TemplateTypeParmDecl*, 4> TemplateParams;
-  SmallVector<ParmVarDecl*, 4> FuncParamsWithAutoReplaced;
-  
-   
+// Takes the parameters of a generic lambda, checks them 
+// for the presence of Auto, and generates corresponding
+// parameters with an appropraite tempalte parameter list
+//FVTODO This function will need to be cleaned up and refactored
+template<class ContainerT1, class ContainerT2, class ContainerT3>
+static void createTemplateVersionsOfAutoParameters(
+                              CXXRecordDecl *Class,
+                              const ContainerT1 &Params,       //OriginalParamsIn,
+                              ContainerT2 &TemplateParams,             //TemplateTypeParametersOut,
+                              ContainerT3 &FuncParamsWithAutoReplaced,
+                              Sema &S)            //NewParamsWithAutoReplacedOut)
+{
+  ASTContext &Context = S.Context; 
   size_t CurrentInventedTemplateParameterIndex = 0;
 
   for (size_t CurrentParameterIndex = 0; 
@@ -276,6 +267,36 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
     visitor.TraverseDecl(OrigOrNewParam);
       
   }
+    
+}
+
+// FVTODO: This function needs to be refactored and cleaned up
+// create a member template within the Closure class
+// with each use of auto generating a corresponding template type
+// parameter
+static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
+                            SourceRange IntroducerRange,
+                            TypeSourceInfo *MethodTSI,
+                            SourceLocation EndLoc,
+                            llvm::ArrayRef<ParmVarDecl *> Params,
+                            Sema &S) {
+  
+  ASTContext &Context = S.Context;
+
+  const FunctionProtoType *AutoMethodFPT = 
+              MethodTSI->getType()->castAs<FunctionProtoType>();
+  
+  SmallVector<TemplateTypeParmDecl*, 4> TemplateParams;
+  SmallVector<ParmVarDecl*, 4> FuncParamsWithAutoReplaced;
+  
+  
+  // Construct a template parameter list, corresponding to each
+  // auto parameter
+  // (auto a, auto* b) ==>
+  //   template<class $a, class $b> ($a a, $b* b)
+  createTemplateVersionsOfAutoParameters(Class, 
+                                      Params, TemplateParams, 
+                                      FuncParamsWithAutoReplaced, S);
 
   // Create the corresponding template parameter list
   //  with the invented parameter types for each use of auto
@@ -461,7 +482,7 @@ CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
 
 
     bool GenericLambda = getLangOpts().GenericLambda &&
-      IsGenericLambda(Params);
+      containsAutoParameter(Params);
     
     CXXMethodDecl *Method = 0; 
     if (GenericLambda)
@@ -822,7 +843,7 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
 
   CXXMethodDecl *Method = startLambdaDefinition(Class, Intro.Range,
                                                 MethodTyInfo, EndLoc, Params);
-  
+  Class->setLambdaCallOperator(Method);
   if (ExplicitParams)
     CheckCXXDefaultArguments(Method);
   
@@ -1006,12 +1027,131 @@ void Sema::ActOnLambdaError(SourceLocation StartLoc, Scope *CurScope,
   PopFunctionScopeInfo();
 }
 
+// For non-capturing generic lambdas, 
+// we need to add a template conversion
+// operator to function-ptr that returns the address of 
+// a template static function (__invoke?) that will 
+// forward the call to the corresponding generic
+// function call operator.
+// FVTODO: This needs to be refactored and cleaned up
+static void addGenericFunctionPointerConversion(Sema &S, 
+                                         SourceRange IntroducerRange,
+                                         CXXRecordDecl *Class,
+                                         CXXMethodDecl *CallOperator) {
+
+  ASTContext &Context = S.Context;
+  FunctionTemplateDecl* TemplateCallOperator = CallOperator->
+                                        getDescribedFunctionTemplate();
+  
+  const FunctionProtoType *Proto
+    = CallOperator->getType()->getAs<FunctionProtoType>(); 
+  QualType FunctionPtrTy;
+  QualType FunctionTy;
+  {
+    // Get rid of the member-const qualification since
+    // it is irrelevant for the RETURN type of 
+    // a non-capturing lambda's conversion to function pointer
+    FunctionProtoType::ExtProtoInfo ExtInfo = Proto->getExtProtoInfo();
+    ExtInfo.TypeQuals = 0;
+    FunctionTy = S.Context.getFunctionType(Proto->getResultType(),
+                                           Proto->arg_type_begin(),
+                                           Proto->getNumArgs(),
+                                           ExtInfo);
+    FunctionPtrTy = S.Context.getPointerType(FunctionTy);
+  }
+  
+  // The type of the conversion operator is still const
+  FunctionProtoType::ExtProtoInfo ExtInfo;
+  ExtInfo.TypeQuals = Qualifiers::Const;
+  QualType ConvTy = S.Context.getFunctionType(FunctionPtrTy, 0, 0, ExtInfo);
+  
+  SourceLocation Loc = IntroducerRange.getBegin();
+  DeclarationName Name
+    = S.Context.DeclarationNames.getCXXConversionFunctionName(
+        S.Context.getCanonicalType(FunctionPtrTy));
+  DeclarationNameLoc NameLoc;
+  NameLoc.NamedType.TInfo = S.Context.getTrivialTypeSourceInfo(FunctionPtrTy,
+                                                               Loc);
+  CXXConversionDecl *Conversion 
+    = CXXConversionDecl::Create(S.Context, Class, Loc, 
+                                DeclarationNameInfo(Name, Loc, NameLoc),
+                                ConvTy, 
+                                S.Context.getTrivialTypeSourceInfo(ConvTy, 
+                                                                   Loc),
+                                /*isInline=*/false, /*isExplicit=*/false,
+                                /*isConstexpr=*/false, 
+                                CallOperator->getBody()->getLocEnd());
+  Conversion->setAccess(AS_public);
+  Conversion->setImplicit(true);
+  
+  // Create a template version of the conversion operator, using the template 
+  // parameter list of the function call operator
+  FunctionTemplateDecl* TemplateConversion = 
+                  FunctionTemplateDecl::Create(Context, Class,
+                                      Loc, Name, 
+                                      TemplateCallOperator->getTemplateParameters(),
+                                      Conversion);
+  // FVTODO: should this be private?
+  TemplateConversion->setAccess(AS_public);
+
+  Conversion->setDescribedFunctionTemplate(TemplateConversion);
+  
+  //FVTODO: Should we add the TemplateConversion
+  Class->addDecl(TemplateConversion);
+
+  Class->setLambdaConversionOperator(Conversion);
+
+  // Add a non-static member function ?"__invoke" that will be the result of
+  // the conversion.
+  Name = &S.Context.Idents.get(Class->getGenericLambdaStaticInvokerString());
+  CXXMethodDecl *Invoke
+    = CXXMethodDecl::Create(S.Context, Class, Loc, 
+                            DeclarationNameInfo(Name, Loc), FunctionTy, 
+                            CallOperator->getTypeSourceInfo(),
+                            /*IsStatic=*/true, SC_Static, /*IsInline=*/true,
+                            /*IsConstexpr=*/false, 
+                            CallOperator->getBody()->getLocEnd());
+  SmallVector<ParmVarDecl *, 4> InvokeParams;
+  for (unsigned I = 0, N = CallOperator->getNumParams(); I != N; ++I) {
+    ParmVarDecl *From = CallOperator->getParamDecl(I);
+    InvokeParams.push_back(ParmVarDecl::Create(S.Context, Invoke,
+                                               From->getLocStart(),
+                                               From->getLocation(),
+                                               From->getIdentifier(),
+                                               From->getType(),
+                                               From->getTypeSourceInfo(),
+                                               From->getStorageClass(),
+                                               From->getStorageClassAsWritten(),
+                                               /*DefaultArg=*/0));
+  }
+  Invoke->setParams(InvokeParams);
+  Invoke->setAccess(AS_public);
+  Invoke->setImplicit(true);
+   // Fill in the __invoke function with a dummy implementation. IR generation
+  // will fill in the actual details.
+  Invoke->setBody(new (S.Context) CompoundStmt(Loc));
+  
+  FunctionTemplateDecl* TemplateInvoke = 
+                  FunctionTemplateDecl::Create(Context, Class,
+                                      Loc, Name, 
+                                      TemplateCallOperator->getTemplateParameters(),
+                                      Invoke);
+  TemplateInvoke->setAccess(AS_public);
+  Invoke->setDescribedFunctionTemplate(TemplateInvoke);
+  Class->addDecl(TemplateInvoke);
+  Class->setLambdaStaticInvoker(Invoke);
+}
+
 /// \brief Add a lambda's conversion to function pointer, as described in
 /// C++11 [expr.prim.lambda]p6.
 static void addFunctionPointerConversion(Sema &S, 
                                          SourceRange IntroducerRange,
                                          CXXRecordDecl *Class,
                                          CXXMethodDecl *CallOperator) {
+  if (Class->isGenericLambda())
+    return addGenericFunctionPointerConversion(S, IntroducerRange,
+                  Class, CallOperator);
+
   // Add the conversion to function pointer.
   const FunctionProtoType *Proto
     = CallOperator->getType()->getAs<FunctionProtoType>(); 
@@ -1050,7 +1190,7 @@ static void addFunctionPointerConversion(Sema &S,
   Conversion->setAccess(AS_public);
   Conversion->setImplicit(true);
   Class->addDecl(Conversion);
-  
+  Class->setLambdaConversionOperator(Conversion);
   // Add a non-static member function "__invoke" that will be the result of
   // the conversion.
   Name = &S.Context.Idents.get("__invoke");
@@ -1078,6 +1218,7 @@ static void addFunctionPointerConversion(Sema &S,
   Invoke->setAccess(AS_private);
   Invoke->setImplicit(true);
   Class->addDecl(Invoke);
+  Class->setLambdaStaticInvoker(Invoke);
 }
 
 /// \brief Add a lambda's conversion to block pointer.
@@ -1252,17 +1393,11 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
     //FVADDED Add generic call operator, if it exists
     FunctionTemplateDecl* const GenericCallOperator = 
                 CallOperator->getDescribedFunctionTemplate();
-    
-    if (GenericCallOperator)
-    {
-      GenericCallOperator->setLexicalDeclContext(Class);
-      Class->addDecl(GenericCallOperator);
-    }
-    else
-    {
-      Class->addDecl(CallOperator);
-    }
-    
+    Decl *TheCallOp = GenericCallOperator ? 
+            GenericCallOperator : static_cast<Decl*>(CallOperator);
+    TheCallOp->setLexicalDeclContext(Class);
+    Class->addDecl(TheCallOp);
+   
     PopExpressionEvaluationContext();
 
     // C++11 [expr.prim.lambda]p6:
