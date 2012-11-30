@@ -990,16 +990,23 @@ void Sema::PopFunctionScopeInfo(const AnalysisBasedWarnings::Policy *WP,
   FunctionScopeInfo *Scope = FunctionScopes.pop_back_val();  
   assert(!FunctionScopes.empty() && "mismatched push/pop!");
   
-  // Issue any analysis-based warnings.
-  if (WP && D)
-    AnalysisWarnings.IssueWarnings(*WP, Scope, D, blkExpr);
-  else {
-    for (SmallVectorImpl<sema::PossiblyUnreachableDiag>::iterator
-         i = Scope->PossiblyUnreachableDiags.begin(),
-         e = Scope->PossiblyUnreachableDiags.end();
-         i != e; ++i) {
-      const sema::PossiblyUnreachableDiag &D = *i;
-      Diag(D.Loc, D.PD);
+  // If this is NOT a lambda static invoker that has
+  // a dummy body  
+  // (and thus should not be analyzed)
+  // Otherwise Issue any analysis-based warnings.
+  const CXXMethodDecl *Method = D ? dyn_cast<CXXMethodDecl>(D) : 0;
+  if (!(Method && Method->isLambdaStaticInvoker()))
+  {
+    if (WP && D)
+      AnalysisWarnings.IssueWarnings(*WP, Scope, D, blkExpr);
+    else {
+      for (SmallVectorImpl<sema::PossiblyUnreachableDiag>::iterator
+           i = Scope->PossiblyUnreachableDiags.begin(),
+           e = Scope->PossiblyUnreachableDiags.end();
+           i != e; ++i) {
+        const sema::PossiblyUnreachableDiag &D = *i;
+        Diag(D.Loc, D.PD);
+      }
     }
   }
 

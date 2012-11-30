@@ -330,7 +330,10 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
     ResultType = FT->getResultType().getCanonicalType();
   else
     ResultType = Context.getAutoType(ResultType);
-
+  
+  // We either have 'auto' as a return (deduce return type) type
+  // or a non-dependent type
+  EPI.HasTrailingReturn = false; 
   QualType FunctionTypeWithAutoReplaced = S.Context.getFunctionType(
     ResultType, 
     NewParamsType.data(),

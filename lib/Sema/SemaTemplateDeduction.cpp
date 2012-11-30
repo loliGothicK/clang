@@ -3294,6 +3294,32 @@ Sema::DeduceTemplateArguments(FunctionTemplateDecl *FunctionTemplate,
                                          Specialization, Info, &OriginalCallArgs);
 }
 
+// Replace the auto return type of a specialization
+// with a deduced return type
+// returns false if no auto found in the type
+// of the specialization
+static bool ReplaceAutoReturnTypeOfSpecialization(
+                            FunctionDecl* Specialization,
+                            QualType TypeToReplaceAutoWith,
+                            Sema &S)
+{
+  
+  QualType AutoContainingType = Specialization->getType();
+  
+  if (!AutoContainingType->getContainedAutoType()) return false;
+  
+  QualType CanonicalTypeToReplaceAutoWith = TypeToReplaceAutoWith->
+    getCanonicalTypeInternal();
+
+  QualType CanonicalAutoContainingType = AutoContainingType->
+                                              getCanonicalTypeInternal();
+  QualType AutoReplacedType = S.SubstAutoType(CanonicalAutoContainingType, 
+                                            CanonicalTypeToReplaceAutoWith);
+
+  Specialization->setType(AutoReplacedType);
+  return true;  
+}
+
 /// \brief Deduce template arguments when taking the address of a function
 /// template (C++ [temp.deduct.funcaddr]) or matching a specialization to
 /// a template.
@@ -3369,12 +3395,184 @@ Sema::DeduceTemplateArguments(FunctionTemplateDecl *FunctionTemplate,
     return Result;
 
   // If the requested function type does not match the actual type of the
-  // specialization, template argument deduction fails.
+  // specialization, template argument deduction fails unless...
   if (!ArgFunctionType.isNull() &&
       !Context.hasSameType(ArgFunctionType, Specialization->getType()))
-    return TDK_NonDeducedMismatch;
+  {
+    if (!getLangOpts().GenericLambda) return TDK_NonDeducedMismatch;
+    // If generic lambdas are available, lets make sure our specialization
+    // does not have an 'auto' return type, if it does, replace it with 
+    // the deduced generic lambdas return type - and then recompare for
+    // sameness.
+    // Check if this is the static invoker for a non-capturing generic lambda
+    // since in order for it to match the signature of the generic lambda
+    // we need to set its return-type from auto to the deduced return type
+    // of the generic lambda if instantiated with the appropriate template
+    // arguments
+    // i.e., auto L = [](auto a) { return a; };
+    // int (*fp)(int) = L;
+    //   ==> struct L_t { 
+    //           template<class T> static auto invoke(T a) {
+    //              ...
+    //           }
+    //   }
+    //  
+    CXXMethodDecl *StaticInvokerSpec = 
+                                dyn_cast<CXXMethodDecl>(Specialization);
+    CXXRecordDecl *LambdaClass = StaticInvokerSpec ? 
+                                     StaticInvokerSpec->getParent() : 0;
+    if (LambdaClass && LambdaClass->isGenericLambda())
+    {
+      FunctionDecl *F = StaticInvokerSpec->
+                                        getTemplateInstantiationPattern();
+      CXXMethodDecl *GenericStaticInvoker = dyn_cast<CXXMethodDecl>(F);
 
+      if (GenericStaticInvoker == LambdaClass->getLambdaStaticInvoker())
+      {
+        // Deduce the return type of the function call operator
+        // of the generic lambda, by supplying the same deduced
+        // template arguments - 
+        // FVTODO - seems like we're recomputing this - since
+        // we do it when we deduce the specialization of the
+        // conversion operator for noncapturing lambdas 
+        // maybe we can figure out a way to cache this
+        CXXMethodDecl *CallOp = LambdaClass->getLambdaCallOperator();
+
+        FunctionTemplateDecl* GenericCallOp = CallOp->
+                                      getDescribedFunctionTemplate();
+
+        LocalInstantiationScope InstScope(*this);
+
+        TemplateDeductionInfo OpInfo(Info.getLocation()); // = Info; // 
+        FunctionDecl *CallOpSpec = 0;
+        if ( TemplateDeductionResult Result
+          = FinishTemplateArgumentDeduction(GenericCallOp, Deduced, 0, 
+              CallOpSpec, OpInfo))
+          return Result;
+        
+        if ( StaticInvokerSpec->getResultType()->getContainedAutoType() )
+          ReplaceAutoReturnTypeOfSpecialization(StaticInvokerSpec, 
+                                                CallOpSpec->getResultType(),
+                                                *this);
+        
+        QualType StaticInvokerSpecType = StaticInvokerSpec->getType();
+        // get rid of the 'const' in: int (int) const
+        // since this is a static function, and a const member
+        // qualification is meaningless here 
+        // FVTODO: we should fix this when we create the generic
+        // static invoker.
+
+        const FunctionProtoType *StaticInvokerFPT = 
+          StaticInvokerSpecType->castAs<FunctionProtoType>();
+
+        FunctionProtoType::ExtProtoInfo EPI = StaticInvokerFPT->
+                                                      getExtProtoInfo();
+        EPI.TypeQuals = 0;
+        QualType StaticInvokerSpecTypeNoConst = Context.getFunctionType(
+                                          StaticInvokerFPT->getResultType(), 
+                                          StaticInvokerFPT->arg_type_begin(),
+                                          StaticInvokerFPT->getNumArgs(), EPI);
+        Specialization->setType(StaticInvokerSpecTypeNoConst);
+        if ( Context.hasSameType(ArgFunctionType, Specialization->getType()) )
+        {
+          
+          LambdaClass->mapLambdaStaticInvokerSpecToCallOpSpec(
+                                      StaticInvokerSpec,
+                                      dyn_cast<CXXMethodDecl>(CallOpSpec));
+          return TDK_Success;
+        }
+      }
+    }
+    
+    return TDK_NonDeducedMismatch;
+  }
   return TDK_Success;
+}
+
+
+static void DefineImplicitGenericLambdaToFunctionPointerConversion(
+       Sema &S,
+       SourceLocation CurrentLocation,
+       CXXRecordDecl *Lambda,
+       CXXMethodDecl *CallOpSpec,
+       FunctionTemplateDecl *GenericConv,
+       SmallVectorImpl<DeducedTemplateArgument> &Deduced)
+{
+
+  ASTContext &Context = S.Context;
+  // Make sure that the lambda call operator specialization is marked used.
+  // FVTODO: have this use the MarkReferenced Function
+  CallOpSpec->setReferenced();
+  CallOpSpec->setUsed();
+  CXXConversionDecl *Conv = Lambda->getLambdaConversionOperator(); 
+    
+  Conv->setUsed();  
+  
+  Sema::SynthesizedFunctionScope SynthesizedScope(S, Conv);
+  DiagnosticErrorTrap Trap(S.Diags);
+  CXXMethodDecl *StaticInvoker = Lambda->getLambdaStaticInvoker();
+  FunctionTemplateDecl *TemplateStaticInvoker = 
+                    StaticInvoker->getDescribedFunctionTemplate();
+  const char* StaticInvokerString = 
+    Lambda->getGenericLambdaStaticInvokerString();
+ 
+  // we need to create a template id, that will be returned
+  // by our conversion to function -ptr, whose template
+  // arguments our explicitly specified
+  // for e.g.
+  //   [](auto a) { return a; }
+  //   struct L {
+  //      template <class T> auto operator()(T a) const { return a; }
+  //      template <class T> static auto __invoke(T a) { ... }
+  //      template <class T> operator fxtype() const { return __invoke<T>; }
+  //  };
+  //  What we need to do, is create the __invoke<T>
+
+
+  // Fabricate a LookupResult which contains our lambda static invoker
+  DeclarationName Name = &Context.Idents.get(StaticInvokerString); 
+  DeclarationNameInfo NameInfo(Name, Conv->getLocation()); 
+  LookupResult R(S, NameInfo, Sema::LookupAnyName);
+  R.addDecl(TemplateStaticInvoker, AS_public);
+
+  // Create TemplateArguments, using the types from
+  // the template parameter list
+  TemplateParameterList *TPL = GenericConv->getTemplateParameters();
+  
+  // FVTODO: We need to pass in a valid location, because within OverloadExpr
+  //  if the location for the LAngle invoke<arg ...> is NOT valid
+  //  the Expr is not assumed to have explicit arguments
+  //  EVEN if explicit arguments are passed!! 
+  TemplateArgumentListInfo TemplateArgs(Conv->getLocation(), 
+                                          Conv->getLocation());
+  
+  for (size_t idx = 0; idx < TPL->size(); ++idx)
+  {
+    NamedDecl *TP = TPL->getParam(idx);
+    TemplateTypeParmDecl *TTPD = dyn_cast<TemplateTypeParmDecl>(TP);
+    assert(TTPD && "We only support template type parameters in generic lambdas for now!\n");
+
+    TemplateArgument TA(QualType(TTPD->getTypeForDecl(), 0));
+    TypeSourceInfo *TSI = Context.getTrivialTypeSourceInfo(TA.getAsType());
+    TemplateArgumentLocInfo TALI(TSI);
+    TemplateArgumentLoc TAL(TA, TALI);
+    TemplateArgs.addArgument(TAL);
+  }
+  // Now that TemplateArgs contains the corresponding types pulled out
+  // of the Template Parameter List, lets build our dependent 
+  // TemplateIDExpression, that will get implicitly specialized 
+  // when the conversion operator needs to be specialized/deduced
+  // create a __invoke<_a$0, _b$1> etc...
+  ExprResult ER = S.BuildTemplateIdExpr(CXXScopeSpec(), SourceLocation(), R, 
+                          false,  // RequiresADL 
+                          &TemplateArgs);
+  UnresolvedLookupExpr* ULE = dyn_cast<UnresolvedLookupExpr>(ER.take());
+
+  Stmt *Return = S.ActOnReturnStmt(Conv->getLocation(), ULE).take();
+
+  Conv->setBody(new (Context) CompoundStmt(Context, &Return, 1, 
+                                           Conv->getLocation(),
+                                           Conv->getLocation()));
 }
 
 /// \brief Deduce template arguments for a templated conversion
@@ -3474,13 +3672,116 @@ Sema::DeduceTemplateArguments(FunctionTemplateDecl *FunctionTemplate,
                                              P, A, Info, Deduced, TDF))
     return Result;
 
+  // ok so we have deduced all the parameters of the function-ptr that
+  // our conversion to function-ptr converts to.
+  // i.e. template<class T> operator id<auto(*)(T)>() const { ... };
+  // now we have to check if this is a conversion function within
+  // a generic lambda, and if so, if the return type is auto, we need to
+  // deduce the return type, and then check and see if it matches
+  // the ToType
+
+  const Type* FromTypePtr = P.getTypePtr(); 
+  const Type* ToTypePtr   = A.getTypePtr();
+
+  if (P->isPointerType())
+  {
+    QualType F = P->getPointeeType();
+    FromTypePtr = F.getTypePtr();
+  }
+  if (A->isPointerType())
+  {
+    QualType F = A->getPointeeType();  
+    ToTypePtr = F.getTypePtr();
+  }
+  // ok check to see if the result type of P is 'auto'
+ 
+  // check if we are a GenericLambda --
+  // FVTODO: We should add isLambdaCallOperator and isLambdaConversionOperator
+  //    into CXXMethodDecl - just like we have for isLambdaStaticInvoker ...
+
+  FunctionDecl  *PotentiallyConvOp = FunctionTemplate->getTemplatedDecl();
+  CXXMethodDecl *MemberConvOp = PotentiallyConvOp ? 
+    dyn_cast<CXXMethodDecl>(PotentiallyConvOp) : 0;
+  CXXRecordDecl *LambdaClass = MemberConvOp ? MemberConvOp->getParent() : 0;
+  CXXMethodDecl *LambdaCallOpSpec = 0;
+  if (getLangOpts().GenericLambda && LambdaClass && 
+                                      LambdaClass->isGenericLambda())
+  {
+    const FunctionType* FromFunType = 
+      FromTypePtr->isFunctionType() ? 
+      FromTypePtr->getAs<FunctionType>() : 0;
+    const FunctionType* ToFunType   = 
+      ToTypePtr->isFunctionType() ? 
+      ToTypePtr->getAs<FunctionType>() : 0;
+
+    QualType ReturnType = FromFunType ? 
+      FromFunType->getResultType() : QualType();
+    // The specialization of the Generic Lambda Call Op, instantiated
+    // using the deduced parameters from the conversion function
+    // i.e.
+    //  auto L = [](auto a) { return f(a); };
+    //  int (*fp)(int) = L;
+    //
+
+    CXXMethodDecl *CallOp = LambdaClass->getLambdaCallOperator();
+
+    FunctionTemplateDecl* TemplateCallOp = 
+                      CallOp->getDescribedFunctionTemplate();
+
+    LocalInstantiationScope InstScope(*this);
+
+    TemplateDeductionInfo OpInfo(Info.getLocation()); // = Info; // 
+    FunctionDecl *CallOpSpec = 0;
+    // Use the deduced arguments so far, to specialize our generic
+    // lambda's call operator - and deduce the return type.
+    if ( TemplateDeductionResult Result
+      = FinishTemplateArgumentDeduction(TemplateCallOp, Deduced, 0, 
+          CallOpSpec, OpInfo))
+      return Result;
+    // Make sure the call operator gets instantiated, since
+    // we are taking its "address" (not really, since we
+    //  implement it as returning the address of a static
+    //  function that then forwards to the call operator
+    InstantiateFunctionDefinition(
+                  CallOpSpec->getPointOfInstantiation(),
+                  CallOpSpec,  /* Recursive */ false, 
+                  /* DefinitionRequired */ true);
+
+    LambdaCallOpSpec = dyn_cast<CXXMethodDecl>(CallOpSpec);
+    // Check return types.
+    if (TemplateDeductionResult Result
+      = DeduceTemplateArgumentsByTypeMatch(*this, TemplateParams,
+                                LambdaCallOpSpec->getResultType(),
+                                ToFunType->getResultType(),
+                                Info, Deduced, 0))
+      return Result;
+      
+    // we've deduced the arguments, and the return type, now lets
+    // define the body of the generic conversion operator
+    DefineImplicitGenericLambdaToFunctionPointerConversion(*this,
+                                                      Conv->getLocStart(),
+                                                      LambdaClass,
+                                                      LambdaCallOpSpec,
+                                                      FunctionTemplate, Deduced);
+  } 
+
   // Finish template argument deduction.
   LocalInstantiationScope InstScope(*this);
-  FunctionDecl *Spec = 0;
+  FunctionDecl *ConversionSpec = 0;
   TemplateDeductionResult Result
-    = FinishTemplateArgumentDeduction(FunctionTemplate, Deduced, 0, Spec,
+    = FinishTemplateArgumentDeduction(FunctionTemplate, Deduced, 0, ConversionSpec,
                                       Info);
-  Specialization = cast_or_null<CXXConversionDecl>(Spec);
+  Specialization = cast_or_null<CXXConversionDecl>(ConversionSpec);
+  if (LambdaCallOpSpec)
+  {
+    // At this point, we need to set the return type of the conversion
+    // specialization, since even though we have ensured that the return
+    // types are compatible, if there is an auto in the return
+    // type of this conversion function, replace it with
+    // the return type of the deduced lambda
+    ReplaceAutoReturnTypeOfSpecialization(Specialization, 
+                                LambdaCallOpSpec->getResultType(), *this);
+  } 
   return Result;
 }
 
