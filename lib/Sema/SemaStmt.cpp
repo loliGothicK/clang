@@ -2278,6 +2278,15 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
   CapturingScopeInfo *CurCap = cast<CapturingScopeInfo>(getCurFunction());
   QualType FnRetType = CurCap->ReturnType;
 
+  if (getLangOpts().GenericLambda)
+  {
+    if (FunctionDecl *FD = dyn_cast<FunctionDecl>(CurContext))
+      if (AutoType *AT = FD->getResultType()->getContainedAutoType())
+        if (DeduceFunctionTypeFromReturnExpr(FD, ReturnLoc, RetValExp, AT)) {
+          FD->setInvalidDecl();
+          return StmtError();
+        }
+  }
   // For blocks/lambdas with implicit return types, we check each return
   // statement individually, and deduce the common return type when the block
   // or lambda is completed.
@@ -2396,9 +2405,18 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
 
 // From Richard Smith's https://github.com/zygoloid/clang/commits/n3386
 bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
-  SourceLocation ReturnLoc,
-  Expr *&RetExpr,
-  AutoType *AT) {
+                                            SourceLocation ReturnLoc,
+                                            Expr *&RetExpr,
+                                            AutoType *AT) {
+    
+    //Get the original result type (could be 'auto') even if
+    // we successfully deduced a non-dependent type from a 
+    // prior return statement and have reset the type
+    // of the function.
+    //  By using the TypeSourceInfo, we can get to the type
+    //  the original declaration was declared with
+    //  i.e. FD->getTypeSourceInfo()->getType() is different
+    //    from FD->getType()
     QualType OrigResultType = FD->getTypeSourceInfo()->getType()->
       castAs<FunctionProtoType>()->getResultType();
     QualType Deduced;
@@ -2431,7 +2449,25 @@ bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
 
     if (AT->isDeduced() && !FD->isInvalidDecl()) {
       AutoType *NewAT = Deduced->getContainedAutoType();
-      if (!Context.hasSameType(AT->getDeducedType(), NewAT->getDeducedType())) {
+      // If we were unable to deduce a type, then we have either
+      // 1) a dependent type which will be resolved during instantiation
+      // 2) or a recursive call
+      // 3) or ....
+      if (!NewAT->isDeduced())
+      {
+        // If we are recursing through, and this is a recursive branch.
+        // then it will be a dependent type, so just make sure that the 
+        // result types are the same
+        if (NewAT != OrigResultType->getContainedAutoType())
+        {
+          Diag(ReturnLoc, diag::err_auto_fn_different_deductions)
+            << NewAT->getDeducedType() << AT->getDeducedType();
+          return true;
+        }
+        // Return success, but do not adjust the result type ...
+        return false;
+      }
+      else if (!Context.hasSameType(AT->getDeducedType(), NewAT->getDeducedType())) {
         Diag(ReturnLoc, diag::err_auto_fn_different_deductions)
           << NewAT->getDeducedType() << AT->getDeducedType();
         return true;
