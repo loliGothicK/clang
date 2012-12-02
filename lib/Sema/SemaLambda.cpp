@@ -128,6 +128,7 @@ static void createTemplateVersionsOfAutoParameters(
                               ContainerT2 &TemplateParams,             //TemplateTypeParametersOut,
                               TemplateParameterList *OrigTemplateParamList,
                               ContainerT3 &FuncParamsWithAutoReplaced,
+                              unsigned int TemplateParamDepth,
                               Sema &S)            //NewParamsWithAutoReplacedOut)
 {
   ASTContext &Context = S.Context; 
@@ -140,6 +141,9 @@ static void createTemplateVersionsOfAutoParameters(
     for (size_t i = 0; i < OrigTemplateParamList->size(); ++i)
       TemplateParams.push_back(OrigTemplateParamList->getParam(i));
   }
+  // The depth of the template parameter list we will create
+  //unsigned int TemplateParamDepth = OrigTemplateParamList ? 
+  //                OrigTemplateParamList->getDepth() : 0;
   for (size_t CurrentParameterIndex = 0; 
           CurrentParameterIndex < Params.size(); 
           ++CurrentParameterIndex)
@@ -173,7 +177,8 @@ static void createTemplateVersionsOfAutoParameters(
       TemplateTypeParmDecl *TemplateParam =
         TemplateTypeParmDecl::Create(Context, 
                   Class, SourceLocation(), 
-                  AutoParam->getLocation(), 0, 
+                  AutoParam->getLocation(), 
+                  TemplateParamDepth, 
                   TemplateParams.size(),  // our template param index 
                   &TemplateParamII, false, false);
       
@@ -273,7 +278,7 @@ static void createTemplateVersionsOfAutoParameters(
     visitor.TraverseDecl(OrigOrNewParam);
       
   }
-    
+ 
 }
 
 // FVTODO: This function needs to be refactored and cleaned up
@@ -286,6 +291,7 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
                             SourceLocation EndLoc,
                             llvm::ArrayRef<ParmVarDecl *> Params,
                             TemplateParameterList *OrigTemplateParamList,
+                            unsigned int TemplateParameterDepth,
                             Sema &S) {
   
   ASTContext &Context = S.Context;
@@ -304,15 +310,23 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
   createTemplateVersionsOfAutoParameters(Class, 
                                       Params, TemplateParams, 
                                       OrigTemplateParamList,
-                                      FuncParamsWithAutoReplaced, S);
+                                      FuncParamsWithAutoReplaced, 
+                                      TemplateParameterDepth, S);
 
   // Create the corresponding template parameter list
   //  with the invented parameter types for each use of auto
+  SourceLocation LAngleLoc, RAngleLoc = EndLoc;
+  if (OrigTemplateParamList)
+  {
+    LAngleLoc = OrigTemplateParamList->getLAngleLoc();
+    //RAngleLoc = OrigTemplateParamList->getRAngleLoc();
+  }
   TemplateParameterList* InventedTemplateParamList = 
                   TemplateParameterList::Create(Context, 
-                                        SourceLocation(), SourceLocation(),
+                  /* Template kw loc */ SourceLocation(), 
+                                        LAngleLoc,
                                        (NamedDecl**)TemplateParams.data(), 
-                                       TemplateParams.size(), EndLoc);
+                                       TemplateParams.size(), RAngleLoc);
 
   // Now create the appropriate TypeSourceInfo for the function prototype
   // i.e. (auto a, auto* b) with (_$a a, _$b* b)
@@ -490,7 +504,8 @@ CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
   TypeSourceInfo *MethodType,
   SourceLocation EndLoc,
   llvm::ArrayRef<ParmVarDecl *> Params,
-  TemplateParameterList *TemplateParams) {
+  TemplateParameterList *TemplateParams,
+  unsigned int TemplateParameterDepth) {
 
 
     bool IsGenericLambda = getLangOpts().GenericLambda &&
@@ -500,7 +515,7 @@ CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
     if (IsGenericLambda)
       Method = createGenericLambdaMethod(Class, IntroducerRange,
                                     MethodType, EndLoc, Params, 
-                                    TemplateParams, *this); 
+                                    TemplateParams, TemplateParameterDepth, *this); 
     else
       Method = createNonGenericLambdaMethod(Class, IntroducerRange,
                                     MethodType, EndLoc, Params, *this);
@@ -789,7 +804,8 @@ void Sema::deduceClosureReturnType(CapturingScopeInfo &CSI) {
 void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
                                         Declarator &ParamInfo,
                                         Scope *CurScope,
-                                        TemplateParameterList *TemplateParams) {
+                                        TemplateParameterList *TemplateParams,
+                                        unsigned int TemplateParameterDepth) {
   // Determine if we're within a context where we know that the lambda will
   // be dependent, because there are template parameters in scope.
   bool KnownDependent = false;
@@ -868,7 +884,7 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
 
   CXXMethodDecl *Method = startLambdaDefinition(Class, Intro.Range,
                                                 MethodTyInfo, EndLoc, Params, 
-                                                TemplateParams);
+                                                TemplateParams, TemplateParameterDepth);
   Class->setLambdaCallOperator(Method);
   if (ExplicitParams)
     CheckCXXDefaultArguments(Method);
@@ -1305,6 +1321,8 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
   bool ContainsUnexpandedParameterPack;
   llvm::SmallVector<VarDecl *, 4> ArrayIndexVars;
   llvm::SmallVector<unsigned, 4> ArrayIndexStarts;
+  TemplateParameterList *TemplateParameters = 0;
+
   {
     LambdaScopeInfo *LSI = getCurLambda();
     CallOperator = LSI->CallOperator;
@@ -1419,6 +1437,9 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
     //FVADDED Add generic call operator, if it exists
     FunctionTemplateDecl* const GenericCallOperator = 
                 CallOperator->getDescribedFunctionTemplate();
+    
+    if (GenericCallOperator)
+      TemplateParameters = GenericCallOperator->getTemplateParameters();
     Decl *TheCallOp = GenericCallOperator ? 
             GenericCallOperator : static_cast<Decl*>(CallOperator);
     TheCallOp->setLexicalDeclContext(Class);
@@ -1448,6 +1469,7 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
     for (RecordDecl::field_iterator i = Class->field_begin(),
                                     e = Class->field_end(); i != e; ++i)
       Fields.push_back(*i);
+    
     ActOnFields(0, Class->getLocation(), Class, Fields, 
                 SourceLocation(), SourceLocation(), 0);
     CheckCompletedCXXClass(Class);
@@ -1461,7 +1483,8 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
                                           ExplicitParams, ExplicitResultType,
                                           CaptureInits, ArrayIndexVars, 
                                           ArrayIndexStarts, Body->getLocEnd(),
-                                          ContainsUnexpandedParameterPack);
+                                          ContainsUnexpandedParameterPack,
+                                          TemplateParameters);
 
   // C++11 [expr.prim.lambda]p2:
   //   A lambda-expression shall not appear in an unevaluated operand

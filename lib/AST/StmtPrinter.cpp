@@ -1355,7 +1355,19 @@ void StmtPrinter::VisitLambdaExpr(LambdaExpr *Node) {
     }
   }
   OS << ']';
+  if (TemplateParameterList *TPL = Node->getTemplateParameterList())
+  {
+    OS << '<';
+    for (size_t i = 0; i < TPL->size(); ++i)
+    {
+      if (i != 0)
+        OS << ", ";
+      NamedDecl *ND = TPL->getParam(i);
+      ND->print(OS);
+    }
+    OS << '>';
 
+  }
   if (Node->hasExplicitParameters()) {
     OS << " (";
     CXXMethodDecl *Method = Node->getCallOperator();

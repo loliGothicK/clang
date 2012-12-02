@@ -7875,13 +7875,15 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
         0, ParamTypes, &Params))
     return ExprError();
 
+  // FVTODO: The TemplateParameterList and Depth needs to be fixed here!
   // Build the call operator.
   CXXMethodDecl *CallOperator
     = getSema().startLambdaDefinition(Class, E->getIntroducerRange(),
                                       MethodTy,
                                       E->getCallOperator()->getLocEnd(),
                                       Params, 
-                                      0 /* TemplateParameterList */);
+                                      0 /* TemplateParameterList */
+                                      , 0 /* TemplateParameterDepth */);
   getDerived().transformAttrs(E->getCallOperator(), CallOperator);
 
   return getDerived().TransformLambdaScope(E, CallOperator);

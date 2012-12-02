@@ -806,6 +806,9 @@ LambdaCaptureKind LambdaExpr::Capture::getCaptureKind() const {
 
   return (VarAndBits.getInt() & Capture_ByCopy)? LCK_ByCopy : LCK_ByRef;
 }
+TemplateParameterList* LambdaExpr::getTemplateParameterList() const {
+  return TemplateParameters;
+}
 
 LambdaExpr::LambdaExpr(QualType T, 
                        SourceRange IntroducerRange,
@@ -817,7 +820,8 @@ LambdaExpr::LambdaExpr(QualType T,
                        ArrayRef<VarDecl *> ArrayIndexVars,
                        ArrayRef<unsigned> ArrayIndexStarts,
                        SourceLocation ClosingBrace,
-                       bool ContainsUnexpandedParameterPack)
+                       bool ContainsUnexpandedParameterPack,
+                       TemplateParameterList *TemplateParameters)
   : Expr(LambdaExprClass, T, VK_RValue, OK_Ordinary,
          T->isDependentType(), T->isDependentType(), T->isDependentType(),
          ContainsUnexpandedParameterPack),
@@ -826,7 +830,8 @@ LambdaExpr::LambdaExpr(QualType T,
     CaptureDefault(CaptureDefault),
     ExplicitParams(ExplicitParams),
     ExplicitResultType(ExplicitResultType),
-    ClosingBrace(ClosingBrace)
+    ClosingBrace(ClosingBrace),
+    TemplateParameters(TemplateParameters)
 {
   assert(CaptureInits.size() == Captures.size() && "Wrong number of arguments");
   CXXRecordDecl *Class = getLambdaClass();
@@ -878,7 +883,8 @@ LambdaExpr *LambdaExpr::Create(ASTContext &Context,
                                ArrayRef<VarDecl *> ArrayIndexVars,
                                ArrayRef<unsigned> ArrayIndexStarts,
                                SourceLocation ClosingBrace,
-                               bool ContainsUnexpandedParameterPack) {
+                               bool ContainsUnexpandedParameterPack,
+                               TemplateParameterList *TemplateParameters) {
   // Determine the type of the expression (i.e., the type of the
   // function object we're creating).
   QualType T = Context.getTypeDeclType(Class);
@@ -894,7 +900,8 @@ LambdaExpr *LambdaExpr::Create(ASTContext &Context,
   return new (Mem) LambdaExpr(T, IntroducerRange, CaptureDefault, 
                               Captures, ExplicitParams, ExplicitResultType,
                               CaptureInits, ArrayIndexVars, ArrayIndexStarts,
-                              ClosingBrace, ContainsUnexpandedParameterPack);
+                              ClosingBrace, ContainsUnexpandedParameterPack,
+                              TemplateParameters);
 }
 
 LambdaExpr *LambdaExpr::CreateDeserialized(ASTContext &C, unsigned NumCaptures,

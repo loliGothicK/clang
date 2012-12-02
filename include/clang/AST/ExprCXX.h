@@ -1163,6 +1163,8 @@ class LambdaExpr : public Expr {
   /// module file just to determine the source range.
   SourceLocation ClosingBrace;
 
+  /// \brief The Template Parameter List for Generic Lambdas
+  TemplateParameterList *TemplateParameters;
   // Note: The capture initializers are stored directly after the lambda
   // expression, along with the index variables used to initialize by-copy
   // array captures.
@@ -1254,13 +1256,15 @@ private:
              ArrayRef<VarDecl *> ArrayIndexVars,
              ArrayRef<unsigned> ArrayIndexStarts,
              SourceLocation ClosingBrace,
-             bool ContainsUnexpandedParameterPack);
+             bool ContainsUnexpandedParameterPack,
+             TemplateParameterList *TemplateParameters);
 
   /// \brief Construct an empty lambda expression.
   LambdaExpr(EmptyShell Empty, unsigned NumCaptures, bool HasArrayIndexVars)
     : Expr(LambdaExprClass, Empty),
       NumCaptures(NumCaptures), CaptureDefault(LCD_None), ExplicitParams(false),
-      ExplicitResultType(false), HasArrayIndexVars(true) { 
+      ExplicitResultType(false), HasArrayIndexVars(true), 
+      TemplateParameters(0) { 
     getStoredStmts()[NumCaptures] = 0;
   }
   
@@ -1296,7 +1300,8 @@ public:
                             ArrayRef<VarDecl *> ArrayIndexVars,
                             ArrayRef<unsigned> ArrayIndexStarts,
                             SourceLocation ClosingBrace,
-                            bool ContainsUnexpandedParameterPack);
+                            bool ContainsUnexpandedParameterPack,
+                            TemplateParameterList *TemplateParameters);
 
   /// \brief Construct a new lambda expression that will be deserialized from
   /// an external source.
@@ -1374,6 +1379,11 @@ public:
   /// \brief Retrieve the function call operator associated with this
   /// lambda expression. 
   CXXMethodDecl *getCallOperator() const;
+
+  /// \brief Retrieve the function call operator associated with this
+  /// lambda expression. 
+  TemplateParameterList *getTemplateParameterList() const;
+
 
   /// \brief Retrieve the body of the lambda.
   CompoundStmt *getBody() const;

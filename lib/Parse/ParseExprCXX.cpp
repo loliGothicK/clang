@@ -18,6 +18,7 @@
 #include "clang/Lex/LiteralSupport.h"
 #include "clang/Sema/DeclSpec.h"
 #include "clang/Sema/Scope.h"
+#include "clang/Sema/ScopeInfo.h"
 #include "clang/Sema/ParsedTemplate.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -794,6 +795,30 @@ ExprResult Parser::ParseLambdaTemplateParamsOrExpressionAfterIntroducer(
     return ParseLambdaExpressionAfterIntroducer(Intro, 0);
 }
 
+namespace {
+  //FVTODO: This is copied right out of ParseTemplate.cpp with code duplication
+  /// \brief RAII class that manages the template parameter depth.
+  class TemplateParameterDepthCounter {
+    unsigned &Depth;
+    unsigned AddedLevels;
+
+  public:
+    explicit TemplateParameterDepthCounter(unsigned &Depth)
+      : Depth(Depth), AddedLevels(0) { }
+
+    ~TemplateParameterDepthCounter() {
+      Depth -= AddedLevels;
+    }
+
+    void operator++() {
+      ++Depth;
+      ++AddedLevels;
+    }
+
+    operator unsigned() const { return Depth; }
+  };
+}
+
 ExprResult Parser::ParseLambdaTemplateParamsAfterIntroducer(
       LambdaIntroducer &Intro) {
   SourceLocation LambdaBeginLoc = Intro.Range.getBegin();
@@ -802,6 +827,10 @@ ExprResult Parser::ParseLambdaTemplateParamsAfterIntroducer(
   // following the introducer, that means we have a generic lambda
   // Enter template-parameter scope.
   ParseScope TemplateParmScope(this, Scope::TemplateParamScope);
+  
+ 
+  TemplateParameterDepthCounter Depth(TemplateParameterDepth);
+
   if (Tok.is(tok::less))
   {
     
@@ -811,33 +840,8 @@ ExprResult Parser::ParseLambdaTemplateParamsAfterIntroducer(
     ParsingDeclRAIIObject
       ParsingTemplateParams(*this, ParsingDeclRAIIObject::NoParent);
 
-    //FVTODO: This is copied right out of ParseTemplate.cpp
-    //  - we might not need to keep a track of depth here 
-    /// \brief RAII class that manages the template parameter depth.
-    class TemplateParameterDepthCounter {
-      unsigned &Depth;
-      unsigned AddedLevels;
-
-    public:
-      explicit TemplateParameterDepthCounter(unsigned &Depth)
-        : Depth(Depth), AddedLevels(0) { }
-
-      ~TemplateParameterDepthCounter() {
-        Depth -= AddedLevels;
-      }
-
-      void operator++() {
-        ++Depth;
-        ++AddedLevels;
-      }
-
-      operator unsigned() const { return Depth; }
-    };
-
-    TemplateParameterDepthCounter Depth(TemplateParameterDepth);
     SourceLocation LAngleLoc, RAngleLoc;
     SmallVector<Decl*, 4> TemplateParams;
-    //unsigned int Depth = 0;
     if (ParseTemplateParameters(Depth, TemplateParams, LAngleLoc,
       RAngleLoc)) {
         // Skip until the semi-colon or a }.
@@ -846,11 +850,12 @@ ExprResult Parser::ParseLambdaTemplateParamsAfterIntroducer(
           ConsumeToken();
         return ExprResult();
     }
-    ++Depth;
+    
     LambdaTPL = Actions.ActOnTemplateParameterList(Depth, SourceLocation(),
       LambdaBeginLoc, LAngleLoc,
       TemplateParams.data(),
       TemplateParams.size(), RAngleLoc);
+    ++Depth;
   }
   return ParseLambdaExpressionAfterIntroducer(Intro, LambdaTPL);
  
@@ -1010,9 +1015,20 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
   unsigned ScopeFlags = Scope::BlockScope | Scope::FnScope | Scope::DeclScope;
   ParseScope BodyScope(this, ScopeFlags);
 
-  Actions.ActOnStartOfLambdaDefinition(Intro, D, getCurScope(), LambdaTemplateParams);
-
+  TemplateParameterDepthCounter Depth(TemplateParameterDepth);
   
+  Actions.ActOnStartOfLambdaDefinition(Intro, D, getCurScope(), LambdaTemplateParams, 
+                                                                  TemplateParameterDepth);
+  sema::LambdaScopeInfo *LSI = Actions.getCurLambda();
+  // We need to adjust the template parameter depth, in case
+  // we have nested generic lambdas.
+  // But we should only do this, if there was no explicit template
+  // parameter list specified, since if there was, we have already
+  // adjusted the depth while parsing it
+  if (LSI->Lambda && LSI->Lambda->isGenericLambda() && !LambdaTemplateParams)
+  {
+    ++Depth;
+  }
   if (!Tok.is(tok::l_brace)) {
     // Try and parse a single expression that will become the return value
     // [](auto a) a;
