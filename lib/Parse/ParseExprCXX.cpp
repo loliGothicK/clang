@@ -1012,21 +1012,41 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
 
   Actions.ActOnStartOfLambdaDefinition(Intro, D, getCurScope(), LambdaTemplateParams);
 
-  // Parse compound-statement.
+  
   if (!Tok.is(tok::l_brace)) {
-    Diag(Tok, diag::err_expected_lambda_body);
+    // Try and parse a single expression that will become the return value
+    // [](auto a) a;
+    ExprResult SingleExpr(ParseExpression());
+    
+    BodyScope.Exit();
+
+    if (SingleExpr.isInvalid())
+    {
+      Diag(Tok, diag::err_expected_lambda_body);
+      Actions.ActOnLambdaError(LambdaBeginLoc, getCurScope());
+      return ExprError();
+    }
+    // Now create a compound body with a single return: { return a; }
+    Stmt *Return = Actions.ActOnReturnStmt(LambdaBeginLoc, 
+                                                  SingleExpr.get()).take();
+    ::CompoundStmt *ReturnCompoundStatement = new (Actions.Context) 
+                      ::CompoundStmt(Actions.Context, 
+                                    &Return, 1, LambdaBeginLoc, LambdaBeginLoc);
+    return Actions.ActOnLambdaExpr(LambdaBeginLoc, 
+                  ReturnCompoundStatement, getCurScope());
+
+  }
+  else {
+    // Parse compound-statement.
+    StmtResult Stmt(ParseCompoundStatementBody());
+    BodyScope.Exit();
+
+    if (!Stmt.isInvalid())
+      return Actions.ActOnLambdaExpr(LambdaBeginLoc, Stmt.take(), getCurScope());
+ 
     Actions.ActOnLambdaError(LambdaBeginLoc, getCurScope());
     return ExprError();
   }
-
-  StmtResult Stmt(ParseCompoundStatementBody());
-  BodyScope.Exit();
-
-  if (!Stmt.isInvalid())
-    return Actions.ActOnLambdaExpr(LambdaBeginLoc, Stmt.take(), getCurScope());
- 
-  Actions.ActOnLambdaError(LambdaBeginLoc, getCurScope());
-  return ExprError();
 }
 
 /// ParseCXXCasts - This handles the various ways to cast expressions to another
