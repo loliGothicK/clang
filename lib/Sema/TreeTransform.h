@@ -7880,7 +7880,8 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
     = getSema().startLambdaDefinition(Class, E->getIntroducerRange(),
                                       MethodTy,
                                       E->getCallOperator()->getLocEnd(),
-                                      Params);
+                                      Params, 
+                                      0 /* TemplateParameterList */);
   getDerived().transformAttrs(E->getCallOperator(), CallOperator);
 
   return getDerived().TransformLambdaScope(E, CallOperator);

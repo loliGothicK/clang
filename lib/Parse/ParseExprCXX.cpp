@@ -616,7 +616,7 @@ ExprResult Parser::ParseLambdaExpression() {
     return ExprError();
   }
 
-  return ParseLambdaExpressionAfterIntroducer(Intro);
+  return ParseLambdaTemplateParamsOrExpressionAfterIntroducer(Intro);
 }
 
 /// TryParseLambdaExpression - Use lookahead and potentially tentative
@@ -657,7 +657,7 @@ ExprResult Parser::TryParseLambdaExpression() {
   LambdaIntroducer Intro;
   if (TryParseLambdaIntroducer(Intro))
     return ExprEmpty();
-  return ParseLambdaExpressionAfterIntroducer(Intro);
+  return ParseLambdaTemplateParamsOrExpressionAfterIntroducer(Intro);
 }
 
 /// ParseLambdaExpression - Parse a lambda introducer.
@@ -785,10 +785,83 @@ bool Parser::TryParseLambdaIntroducer(LambdaIntroducer &Intro) {
   return false;
 }
 
+/// []<class T ...>(...) or [](...)
+ExprResult Parser::ParseLambdaTemplateParamsOrExpressionAfterIntroducer(
+                     LambdaIntroducer &Intro) {
+  if (Tok.is(tok::less) && getLangOpts().GenericLambda)
+    return ParseLambdaTemplateParamsAfterIntroducer(Intro);
+  else
+    return ParseLambdaExpressionAfterIntroducer(Intro, 0);
+}
+
+ExprResult Parser::ParseLambdaTemplateParamsAfterIntroducer(
+      LambdaIntroducer &Intro) {
+  SourceLocation LambdaBeginLoc = Intro.Range.getBegin();
+  TemplateParameterList *LambdaTPL = 0;
+  // check to see if there is a template parameter list
+  // following the introducer, that means we have a generic lambda
+  // Enter template-parameter scope.
+  ParseScope TemplateParmScope(this, Scope::TemplateParamScope);
+  if (Tok.is(tok::less))
+  {
+    
+
+    // Tell the action that names should be checked in the context of
+    // the declaration to come.
+    ParsingDeclRAIIObject
+      ParsingTemplateParams(*this, ParsingDeclRAIIObject::NoParent);
+
+    //FVTODO: This is copied right out of ParseTemplate.cpp
+    //  - we might not need to keep a track of depth here 
+    /// \brief RAII class that manages the template parameter depth.
+    class TemplateParameterDepthCounter {
+      unsigned &Depth;
+      unsigned AddedLevels;
+
+    public:
+      explicit TemplateParameterDepthCounter(unsigned &Depth)
+        : Depth(Depth), AddedLevels(0) { }
+
+      ~TemplateParameterDepthCounter() {
+        Depth -= AddedLevels;
+      }
+
+      void operator++() {
+        ++Depth;
+        ++AddedLevels;
+      }
+
+      operator unsigned() const { return Depth; }
+    };
+
+    TemplateParameterDepthCounter Depth(TemplateParameterDepth);
+    SourceLocation LAngleLoc, RAngleLoc;
+    SmallVector<Decl*, 4> TemplateParams;
+    //unsigned int Depth = 0;
+    if (ParseTemplateParameters(Depth, TemplateParams, LAngleLoc,
+      RAngleLoc)) {
+        // Skip until the semi-colon or a }.
+        SkipUntil(tok::r_brace, true, true);
+        if (Tok.is(tok::semi))
+          ConsumeToken();
+        return ExprResult();
+    }
+    ++Depth;
+    LambdaTPL = Actions.ActOnTemplateParameterList(Depth, SourceLocation(),
+      LambdaBeginLoc, LAngleLoc,
+      TemplateParams.data(),
+      TemplateParams.size(), RAngleLoc);
+  }
+  return ParseLambdaExpressionAfterIntroducer(Intro, LambdaTPL);
+ 
+}
+
+
 /// ParseLambdaExpressionAfterIntroducer - Parse the rest of a lambda
 /// expression.
 ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
-                     LambdaIntroducer &Intro) {
+                     LambdaIntroducer &Intro,
+                     TemplateParameterList *LambdaTemplateParams) {
   SourceLocation LambdaBeginLoc = Intro.Range.getBegin();
   Diag(LambdaBeginLoc, diag::warn_cxx98_compat_lambda);
 
@@ -802,7 +875,7 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
   if (Tok.is(tok::l_paren)) {
     ParseScope PrototypeScope(this,
                               Scope::FunctionPrototypeScope |
-                              Scope::DeclScope);
+                              Scope::DeclScope  );
 
     SourceLocation DeclEndLoc;
     BalancedDelimiterTracker T(*this, tok::l_paren);
@@ -937,7 +1010,7 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
   unsigned ScopeFlags = Scope::BlockScope | Scope::FnScope | Scope::DeclScope;
   ParseScope BodyScope(this, ScopeFlags);
 
-  Actions.ActOnStartOfLambdaDefinition(Intro, D, getCurScope());
+  Actions.ActOnStartOfLambdaDefinition(Intro, D, getCurScope(), LambdaTemplateParams);
 
   // Parse compound-statement.
   if (!Tok.is(tok::l_brace)) {

@@ -62,8 +62,6 @@ static bool containsAutoParameter(
       llvm::ArrayRef<ParmVarDecl *> Params)
 {
   bool HasGenericAutoParameter = false;
-  // FVTODO: This will need to check if there is a template parameter list, once 
-  // we get fully generic lambdas
   for (size_t i = 0; i < Params.size(); ++i)
   {
     // Get the type*, this contains the full info i.e. auto*, int& etc.
@@ -128,12 +126,20 @@ static void createTemplateVersionsOfAutoParameters(
                               CXXRecordDecl *Class,
                               const ContainerT1 &Params,       //OriginalParamsIn,
                               ContainerT2 &TemplateParams,             //TemplateTypeParametersOut,
+                              TemplateParameterList *OrigTemplateParamList,
                               ContainerT3 &FuncParamsWithAutoReplaced,
                               Sema &S)            //NewParamsWithAutoReplacedOut)
 {
   ASTContext &Context = S.Context; 
-  size_t CurrentInventedTemplateParameterIndex = 0;
-
+  // if this generic lambda has its own template
+  // parameter list, add it first to our
+  // template params
+  // i.e. []<class T, int N>(T (&a)[N], auto b ) ...
+  if (OrigTemplateParamList)
+  {
+    for (size_t i = 0; i < OrigTemplateParamList->size(); ++i)
+      TemplateParams.push_back(OrigTemplateParamList->getParam(i));
+  }
   for (size_t CurrentParameterIndex = 0; 
           CurrentParameterIndex < Params.size(); 
           ++CurrentParameterIndex)
@@ -168,7 +174,7 @@ static void createTemplateVersionsOfAutoParameters(
         TemplateTypeParmDecl::Create(Context, 
                   Class, SourceLocation(), 
                   AutoParam->getLocation(), 0, 
-                  CurrentInventedTemplateParameterIndex++, 
+                  TemplateParams.size(),  // our template param index 
                   &TemplateParamII, false, false);
       
       TemplateParams.push_back(TemplateParam);
@@ -279,6 +285,7 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
                             TypeSourceInfo *MethodTSI,
                             SourceLocation EndLoc,
                             llvm::ArrayRef<ParmVarDecl *> Params,
+                            TemplateParameterList *OrigTemplateParamList,
                             Sema &S) {
   
   ASTContext &Context = S.Context;
@@ -286,7 +293,7 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
   const FunctionProtoType *AutoMethodFPT = 
               MethodTSI->getType()->castAs<FunctionProtoType>();
   
-  SmallVector<TemplateTypeParmDecl*, 4> TemplateParams;
+  SmallVector<NamedDecl*, 4> TemplateParams;
   SmallVector<ParmVarDecl*, 4> FuncParamsWithAutoReplaced;
   
   
@@ -296,6 +303,7 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
   //   template<class $a, class $b> ($a a, $b* b)
   createTemplateVersionsOfAutoParameters(Class, 
                                       Params, TemplateParams, 
+                                      OrigTemplateParamList,
                                       FuncParamsWithAutoReplaced, S);
 
   // Create the corresponding template parameter list
@@ -481,16 +489,18 @@ CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
   SourceRange IntroducerRange,
   TypeSourceInfo *MethodType,
   SourceLocation EndLoc,
-  llvm::ArrayRef<ParmVarDecl *> Params) {
+  llvm::ArrayRef<ParmVarDecl *> Params,
+  TemplateParameterList *TemplateParams) {
 
 
-    bool GenericLambda = getLangOpts().GenericLambda &&
-      containsAutoParameter(Params);
+    bool IsGenericLambda = getLangOpts().GenericLambda &&
+      ( TemplateParams || containsAutoParameter(Params) );
     
     CXXMethodDecl *Method = 0; 
-    if (GenericLambda)
+    if (IsGenericLambda)
       Method = createGenericLambdaMethod(Class, IntroducerRange,
-                                    MethodType, EndLoc, Params, *this); 
+                                    MethodType, EndLoc, Params, 
+                                    TemplateParams, *this); 
     else
       Method = createNonGenericLambdaMethod(Class, IntroducerRange,
                                     MethodType, EndLoc, Params, *this);
@@ -778,14 +788,26 @@ void Sema::deduceClosureReturnType(CapturingScopeInfo &CSI) {
 
 void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
                                         Declarator &ParamInfo,
-                                        Scope *CurScope) {
+                                        Scope *CurScope,
+                                        TemplateParameterList *TemplateParams) {
   // Determine if we're within a context where we know that the lambda will
   // be dependent, because there are template parameters in scope.
   bool KnownDependent = false;
   if (Scope *TmplScope = CurScope->getTemplateParamParent())
-    if (!TmplScope->decl_empty())
+  {
+    // we have our own TemplateParams, so check if an outer scope
+    // has template params, only then are we in a dependent scope
+    // FVTODO: This needs to be able to work for 
+    // []<class T>(T t) { return []<class T2>(T2 t2) { } }
+    //  and i think it does 
+    if (TemplateParams)  
+    {
+      TmplScope = TmplScope->getParent();
+      TmplScope = TmplScope ? TmplScope->getTemplateParamParent() : 0;
+    }
+    if (TmplScope && !TmplScope->decl_empty())
       KnownDependent = true;
-  
+  }
   // Determine the signature of the call operator.
   TypeSourceInfo *MethodTyInfo;
   bool ExplicitParams = true;
@@ -845,7 +867,8 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
                                                  KnownDependent);
 
   CXXMethodDecl *Method = startLambdaDefinition(Class, Intro.Range,
-                                                MethodTyInfo, EndLoc, Params);
+                                                MethodTyInfo, EndLoc, Params, 
+                                                TemplateParams);
   Class->setLambdaCallOperator(Method);
   if (ExplicitParams)
     CheckCXXDefaultArguments(Method);

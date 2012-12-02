@@ -1344,8 +1344,12 @@ private:
   ExprResult TryParseLambdaExpression();
   llvm::Optional<unsigned> ParseLambdaIntroducer(LambdaIntroducer &Intro);
   bool TryParseLambdaIntroducer(LambdaIntroducer &Intro);
-  ExprResult ParseLambdaExpressionAfterIntroducer(
+  ExprResult ParseLambdaTemplateParamsOrExpressionAfterIntroducer(
                LambdaIntroducer &Intro);
+  ExprResult ParseLambdaTemplateParamsAfterIntroducer(
+                LambdaIntroducer &Intro);
+  ExprResult ParseLambdaExpressionAfterIntroducer(
+               LambdaIntroducer &Intro, TemplateParameterList *TPL);
 
   //===--------------------------------------------------------------------===//
   // C++ 5.2p1: C++ Casts
