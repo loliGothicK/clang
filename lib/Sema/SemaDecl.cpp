@@ -7802,8 +7802,6 @@ Decl *Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Decl *D) {
       ReifiedLSI->Returns.clear();
       ReifiedLSI->CompoundScopes.clear();
       ReifiedLSI->PossiblyUnreachableDiags.clear();
-      ReifiedLSI->Captures.clear();
-      ReifiedLSI->CaptureMap.clear();
       
       FunctionScopes.push_back(ReifiedLSI);
            

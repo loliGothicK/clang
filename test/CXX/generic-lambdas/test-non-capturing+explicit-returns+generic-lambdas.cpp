@@ -2,7 +2,6 @@
 // RUN: lli %s.bc > %s.out
 // RUN: FileCheck %s --input-file=%s.out
 
-
 #define USE_PRINTF 1
 
 #if USE_PRINTF
@@ -18,8 +17,8 @@ int main()
     printf(a, b, c, d);
     return 5; 
   };
-  
-  l1("test %d %s %f", 5, "dave", 7.3); // ok
+  //CHECK: test 5 dave 7.3
+  l1("test %d %s %2f\n", 5, "dave", 7.3); // ok
   
   auto l2 = [](auto* a, int i) -> int {
     auto* p = a + i;

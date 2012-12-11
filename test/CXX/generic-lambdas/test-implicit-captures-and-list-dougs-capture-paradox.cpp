@@ -64,6 +64,7 @@ int main()
   };
   int lc = L(3); 
   lc = L('0');
+  //CHECK: x = 61 lc = 14 L()=15
   printf("x = %d lc = %d L()=%d\n", x, lc, L(1));
   doug_gregor::test();
 //*/

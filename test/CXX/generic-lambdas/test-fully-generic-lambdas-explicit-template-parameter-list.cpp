@@ -30,6 +30,7 @@ int main()
  };
  
  int i = L(10, 12, fi, 1000);
+ //CHECK: i = 1082
  printf("i = %d\n", i);
 }
 //*

@@ -20,6 +20,7 @@ int main() {
   };
 
   auto x = L('a', 4);
+  //CHECK: sizeof(x) = 1 x = 101
   printf("sizeof(x) = %d x = %d\n", sizeof(x), x);
 
   auto L2 = [](auto a, auto *b, int (*fp)(decltype(a), decltype(b))) 

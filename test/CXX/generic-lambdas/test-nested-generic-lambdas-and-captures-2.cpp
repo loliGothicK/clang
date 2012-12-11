@@ -1,3 +1,7 @@
+// RUN: %clang -std=c++1y -c %s -emit-llvm -o %s.bc
+// RUN: lli %s.bc > %s.out
+// RUN: FileCheck %s --input-file=%s.out
+
 #define USE_PRINTF 1
 
 #if USE_PRINTF 
@@ -84,6 +88,8 @@ void check_nested_captures() {
   int local = 5;
   auto L = [&](auto a) [&,a](auto b) mutable a++ + b + local;//{ return a++ + b + local; };
   auto N = L(' ');
+  // CHECK: BEGIN check_nested_captures_with_changes
+  // CHECK-NEXT: N(3.14) = 40.14
   printf("BEGIN check_nested_captures_with_changes\n");
   printf("N(3.14) = %f\n", N(3.14)); 
   //++local;

@@ -1,4 +1,6 @@
-// RUN: %clang_cc1 -fsyntax-only -verify -std=c++1y %s
+// RUN: %clang -std=c++1y -c %s -emit-llvm -o %s.bc
+// RUN: lli %s.bc > %s.out
+// RUN: FileCheck %s --input-file=%s.out
 
 #define USE_PRINTF 1
 
@@ -30,6 +32,7 @@ int main()
     return self(a - 1, self) * a;
   };
   int fac = Fac(5, Fac);
+  //CHECK: fac = 120
   printf("fac = %d\n", fac);
 
   auto RFac = [](auto a, auto self) {
@@ -38,7 +41,8 @@ int main()
     return a;
   };
   int rfac = RFac(6, Fac);
-  printf("rfac(5) = %d\n", rfac);
+  //CHECK: RFac(6,Fac) = 720
+  printf("RFac(6,Fac) = %d\n", rfac);
 
   auto R = [&](auto a, auto b) {
     return Fac(a, Fac) * RFac(b, Fac);

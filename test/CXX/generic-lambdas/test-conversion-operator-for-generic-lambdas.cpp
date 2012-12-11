@@ -28,7 +28,7 @@ int main()
   //CHECK: L2::a = 3
   //CHECK-NEXT: fp2(3) = a
   printf("fp2(3) = %c\n", fp2(3));
-  int (*fp3)(int) = L2; //expected-error {{no viable conversion}}
+  //int (*fp3)(int) = L2; //expected-error {{no viable conversion}}
   //fp3(6);
   char (*fp4)(char) = L2;
   fp4(' ');

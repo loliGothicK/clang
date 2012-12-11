@@ -24,7 +24,8 @@ int main() {
              };
 
     int i = 0;
-    auto* x = L2(&i, 10);  
-    printf("x = %p diff = %d\n", x, x - &i);
+    auto* y = L2(&i, 10);  
+    //CHECK: y diff = 22
+    printf("y diff = %d\n", y - &i);
   }  
 }

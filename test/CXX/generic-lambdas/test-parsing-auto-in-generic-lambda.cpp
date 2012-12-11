@@ -1,6 +1,4 @@
-// RUN: %clang -std=c++1y -c %s -emit-llvm -o %s.bc
-// RUN: lli %s.bc > %s.out
-// RUN: FileCheck %s --input-file=%s.out
+// RUN: %clang_cc1 -fsyntax-only -verify -std=c++1y %s
 
 int main()
 {
@@ -17,7 +15,7 @@ int main()
                 auto (A::*memfun)(int),
                 char c,
                 decltype (v) tv
-                //, auto (&array)[5]
+                , auto (&array)[5] //expected-error {{'array' declared as array of 'auto'}}
               ) -> int { return v + i + c; };
 
 }
