@@ -893,8 +893,7 @@ class DeclRefExpr : public Expr {
               const DeclarationNameInfo &NameInfo,
               NamedDecl *FoundD,
               const TemplateArgumentListInfo *TemplateArgs,
-              QualType T, ExprValueKind VK,
-              bool IsCapturableUse);
+              QualType T, ExprValueKind VK);
 
   /// \brief Construct an empty declaration reference expression.
   explicit DeclRefExpr(EmptyShell Empty)
@@ -907,8 +906,7 @@ class DeclRefExpr : public Expr {
 public:
   DeclRefExpr(ValueDecl *D, bool refersToEnclosingLocal, QualType T,
               ExprValueKind VK, SourceLocation L,
-              const DeclarationNameLoc &LocInfo = DeclarationNameLoc(),
-              bool IsCapturedByClosure = false)
+              const DeclarationNameLoc &LocInfo = DeclarationNameLoc())
     : Expr(DeclRefExprClass, T, VK, OK_Ordinary, false, false, false, false),
       D(D), Loc(L), DNLoc(LocInfo) {
     DeclRefExprBits.HasQualifier = 0;
@@ -916,11 +914,8 @@ public:
     DeclRefExprBits.HasFoundDecl = 0;
     DeclRefExprBits.HadMultipleCandidates = 0;
     DeclRefExprBits.RefersToEnclosingLocal = refersToEnclosingLocal;
-    DeclRefExprBits.IsCapturedByClosure = IsCapturedByClosure;
     computeDependence(D->getASTContext());
   }
-  bool isCapturedByClosure() const { 
-                  return DeclRefExprBits.IsCapturedByClosure; } 
 
   static DeclRefExpr *Create(ASTContext &Context,
                              NestedNameSpecifierLoc QualifierLoc,
@@ -940,8 +935,7 @@ public:
                              const DeclarationNameInfo &NameInfo,
                              QualType T, ExprValueKind VK,
                              NamedDecl *FoundD = 0,
-                             const TemplateArgumentListInfo *TemplateArgs = 0,
-                             bool IsCapturedByClosure = false);
+                             const TemplateArgumentListInfo *TemplateArgs = 0);
 
   /// \brief Construct an empty declaration reference expression.
   static DeclRefExpr *CreateEmpty(ASTContext &Context,

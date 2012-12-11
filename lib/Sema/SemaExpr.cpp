@@ -1402,8 +1402,7 @@ Sema::BuildDeclRefExpr(ValueDecl *D, QualType Ty, ExprValueKind VK,
 ExprResult
 Sema::BuildDeclRefExpr(ValueDecl *D, QualType Ty, ExprValueKind VK,
                        const DeclarationNameInfo &NameInfo,
-                       const CXXScopeSpec *SS,
-                       bool IsCapturableUse) {
+                       const CXXScopeSpec *SS) {
   if (getLangOpts().CUDA)
     if (const FunctionDecl *Caller = dyn_cast<FunctionDecl>(CurContext))
       if (const FunctionDecl *Callee = dyn_cast<FunctionDecl>(D)) {
@@ -1429,8 +1428,8 @@ Sema::BuildDeclRefExpr(ValueDecl *D, QualType Ty, ExprValueKind VK,
                                        D, refersToEnclosingScope,
                                        NameInfo, Ty, VK, 
                                        0,  // NamedDecl* FoundD
-                                       0,  // TemplateArgumentListInfo* TemplateArguments
-                                       IsCapturableUse);
+                                       0);  // TemplateArgumentListInfo* TemplateArguments
+                                       
 
   MarkDeclRefReferenced(E);
 
@@ -2400,8 +2399,6 @@ Sema::BuildDeclarationNameExpr(const CXXScopeSpec &SS,
     if (!indirectField->isCXXClassMember())
       return BuildAnonymousStructUnionMemberReference(SS, NameInfo.getLoc(),
                                                       indirectField);
-  // Is this a variable that is captured by a block or a lambda
-  bool IsCapturableUse = false;
   {
     QualType type = VD->getType();
     ExprValueKind valueKind = VK_RValue;
@@ -2480,10 +2477,7 @@ Sema::BuildDeclarationNameExpr(const CXXScopeSpec &SS,
       if (!isUnevaluatedContext()) {
         QualType CapturedType = getCapturedDeclRefType(cast<VarDecl>(VD), Loc);
         if (!CapturedType.isNull())
-        {
           type = CapturedType;
-          IsCapturableUse = true;
-        }
       }
       
       break;
@@ -2555,8 +2549,7 @@ Sema::BuildDeclarationNameExpr(const CXXScopeSpec &SS,
       break;
     }
 
-    return BuildDeclRefExpr(VD, type, valueKind, NameInfo, &SS, 
-      IsCapturableUse);
+    return BuildDeclRefExpr(VD, type, valueKind, NameInfo, &SS);
   }
 }
 
@@ -10589,8 +10582,7 @@ static ExprResult captureInLambda(Sema &S, LambdaScopeInfo *LSI,
   //   the scope containing the lambda-expression.
   Expr *Ref = new (S.Context) DeclRefExpr(Var, RefersToEnclosingLocal, 
                                           DeclRefType, VK_LValue, Loc,
-                                          DeclarationNameLoc(),
-                                          /* IsCapturedByClosure */ true);
+                                          DeclarationNameLoc());
   Var->setReferenced(true);
   Var->setUsed(true);
 
@@ -11066,18 +11058,23 @@ static void DoMarkVarDeclReferenced(Sema &SemaRef, SourceLocation Loc,
                                     VarDecl *Var, Expr *E) {
   Var->setReferenced();
   
-  if (!IsPotentiallyEvaluatedContext(SemaRef))
-  {
+  if (!IsPotentiallyEvaluatedContext(SemaRef)) {
+     // In the context of a generic lambda, 
+     // [](auto a) { sizeof(local); }; local is within unevaluated
+     if (SemaRef.isUnevaluatedContext()) return;
+
     // If we are not in a potentially evaluated context
-    // but are within a generic lambda, and the Expression
+    // and not in unevaluated context, then we are in 
+    // some template - so if we are within a generic lambda, 
+    // and the Expression
     // involves capturing a variable, then even though the
     // CurContext is dependent, we still need to capture
     // this variable and mark it used, since a generic 
     // lambda does intialize its capture variables at 
     // at definition of the lambda expression
+    // FVTODO: How do we check if we are trying to capture a variable
+    //  or referring to a variable that is a parmeter or local to the lambda?
     if (!IsGenericLambdaDeclContext(SemaRef.CurContext)) return;
-    DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E);
-    if (!DRE || !DRE->isCapturedByClosure()) return; 
   }
   // Implicit instantiation of static data members of class templates.
   if (Var->isStaticDataMember() && Var->getInstantiatedFromStaticDataMember()) {

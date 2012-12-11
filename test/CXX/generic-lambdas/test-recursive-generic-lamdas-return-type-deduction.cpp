@@ -1,3 +1,5 @@
+// RUN: %clang_cc1 -fsyntax-only -verify -std=c++1y %s
+
 #define USE_PRINTF 1
 
 #if USE_PRINTF

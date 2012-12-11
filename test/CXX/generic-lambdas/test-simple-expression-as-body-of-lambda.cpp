@@ -1,3 +1,6 @@
+// RUN: %clang -c -std=c++1y %s -emit-llvm -o %s.bc
+// RUN: lli %s.bc > %s.out
+// RUN: FileCheck %s --input-file=%s.out
 #define USE_PRINTF 1
 
 #if USE_PRINTF
@@ -10,9 +13,10 @@ int main() {
 {
   auto L = [](auto a) a + 3;
   int i = L(7);
+  //CHECK: i = 10
   printf("i = %d\n", i);
 }
-//* 
+/* 
 {
   auto L = ([](auto a) ([=](auto b) [=](auto c) a + b + c));
   auto C = L(7);

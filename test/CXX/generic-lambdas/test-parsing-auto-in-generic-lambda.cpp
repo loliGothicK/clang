@@ -1,3 +1,7 @@
+// RUN: %clang -std=c++1y -c %s -emit-llvm -o %s.bc
+// RUN: lli %s.bc > %s.out
+// RUN: FileCheck %s --input-file=%s.out
+
 int main()
 {
   auto l1 = [](auto a) -> int { return a + 5; };

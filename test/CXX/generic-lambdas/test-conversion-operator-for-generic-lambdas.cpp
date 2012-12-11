@@ -1,3 +1,6 @@
+// RUN: %clang -std=c++1y -c %s -emit-llvm -o %s.bc 
+// RUN: lli %s.bc > %s.out
+// RUN: FileCheck %s --input-file=%s.out
 #define USE_PRINTF 1
 
 #if USE_PRINTF
@@ -10,42 +13,23 @@ template<class T> T f(T t) { return t; }
 
 char f(int) { return 'a'; }
 
-template<class T>  using id = T;
 //*/
 int main()
 {
- /*
- struct L {
-  template<class T> int operator()(T t) {
-    printf("operator()(T t)\n");
-    printf("t = %d\n", t); 
-    return 0;
-  }
-  template<class T2>
-  static int invoke(T2 t2) {
-    //L la_;
-    //return la_(t2);
-    return 0;
-  }
-  
-  //template<class T3>
-  //operator id<int (*)(T3)>() { return invoke<T3>; }
-  int  (*op())(int) { return invoke<int>; }
- };
- //L l;
- //int (*fp)(int) = l;
- //fp(0);
- //*/
-//*
+ //*
   auto L2 = [](auto a) {
     printf("L2::a = %d\n", a);
     return f(a);
   };
-  L2('0');
+  //CHECK: L2::a = 32
+  L2(' ');
   char (*fp2)(int) = L2;
-  fp2(3);
-  char (*fp3)(int) = L2;
-  fp3(6);
+  
+  //CHECK: L2::a = 3
+  //CHECK-NEXT: fp2(3) = a
+  printf("fp2(3) = %c\n", fp2(3));
+  int (*fp3)(int) = L2; //expected-error {{no viable conversion}}
+  //fp3(6);
   char (*fp4)(char) = L2;
   fp4(' ');
 //*/
@@ -57,7 +41,7 @@ int main()
   };
   int x = Fac(4, Fac);
 //*/  
-//*  
+/*  
   auto F = [](auto n) -> int{
     printf("F::n = %d\n", n);
     return f(n);
