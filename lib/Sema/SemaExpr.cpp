@@ -10715,9 +10715,13 @@ bool Sema::tryCaptureVariable(VarDecl *Var, SourceLocation Loc,
       return true;
     }
 
+    // FVTODO: With generic lambdas, when instantiating nested lambdas
+    // we can get outside a capturing scope - not sure I understand this 
+    // well, but for now if we do, then just return failure.  Can figure
+    // this out if other tests start to fail....
     CapturingScopeInfo *CSI =
-      cast<CapturingScopeInfo>(FunctionScopes[FunctionScopesIndex]);
-
+      dyn_cast<CapturingScopeInfo>(FunctionScopes[FunctionScopesIndex]);
+    if (!CSI) return true;
     // Check whether we've already captured it.
     if (CSI->CaptureMap.count(Var)) {
       // If we found a capture, any subcaptures are nested.
