@@ -14,12 +14,15 @@
 #include "clang/Sema/DeclSpec.h"
 #include "clang/Sema/Template.h"
 #include "clang/Sema/TemplateDeduction.h"
+#include "clang/Sema/Scope.h"
+
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/StmtVisitor.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
+
 #include "llvm/ADT/SmallBitVector.h"
 #include "TreeTransform.h"
 #include <algorithm>
@@ -132,6 +135,81 @@ DeduceTemplateArguments(Sema &S,
                         TemplateDeductionInfo &Info,
                         SmallVectorImpl<DeducedTemplateArgument> &Deduced,
                         bool NumberOfArgumentsMustMatch = true);
+
+
+/// \brief Computes the Template Parameter Depth by 
+///  increasing depth each time it encounters a template class
+///  or a template function, starting from the DeclContext passed in
+///  D - can either be the Decl that is also a DeclContext (i.e. Class)
+///     or a Decl that is contained within a DeclContext, where
+///     the calculation starts.
+///  
+
+unsigned Sema::getTemplateParameterDepth(DeclContext *Ctx) {
+  unsigned Depth = 0;
+  if (!Ctx) return Depth;
+  
+  while (!Ctx->isFileContext()) {
+    // Add template depth for either a primary class template
+    // or a partial template specialization
+    // (Note fully specialized templates do NOT add to depth)
+    if (CXXRecordDecl *Rec = dyn_cast<CXXRecordDecl>(Ctx)) {
+      if (ClassTemplateDecl *ClassTemplate = Rec->getDescribedClassTemplate())
+        ++Depth;
+      else if ( ClassTemplatePartialSpecializationDecl *PartialSpecDecl
+        = dyn_cast<ClassTemplatePartialSpecializationDecl>(Ctx) )
+        ++Depth;
+    }
+    else if(FunctionDecl *Function = dyn_cast<FunctionDecl>(Ctx))
+    {
+      // We do not have partially specialized functions, so
+      // all functions are either templates (add to depth), or are full
+      // specializations (do not add to depth)
+      if (Function->getDescribedFunctionTemplate())
+        ++Depth;
+    }
+    // FVTODO: Could there be anything else that can modify depth?
+    //  what about template<template<class> class Ty> struct X ...
+    Ctx = Ctx->getParent();
+ }
+ return Depth;
+}
+
+/// \brief Computes the Template Parameter Depth by 
+//  increasing depth each time it encounters a template class
+//  or a template function.
+//  D - can either be the Decl that is also a DeclContext (i.e. Class)
+//     or a Decl that is contained within a DeclContext, where
+//     the calculation starts.
+//  
+unsigned Sema::getTemplateParameterDepth(Decl *D)  {
+  DeclContext *Ctx = dyn_cast<DeclContext>(D);
+  if (!Ctx) 
+    Ctx = D->getDeclContext();
+  return getTemplateParameterDepth(Ctx);
+}
+
+/// \brief Computes the Template Parameter Depth from a Scope
+//  by first looking for a DeclScope, and then passing
+//  forwarding the DeclContext onto getTemplateParameterDepth(DeclContext) 
+unsigned Sema::getTemplateParameterDepth(Scope *S)  {
+  DeclContext *Ctx = 0;
+  Scope *NextScope = S;
+  while(!Ctx && NextScope)
+  {
+    size_t ScopeKind = NextScope->getFlags();
+    if ((ScopeKind & Scope::DeclScope) && NextScope->getEntity())
+    {
+      Ctx = static_cast<DeclContext*>(NextScope->getEntity());
+      break;
+    }
+    NextScope = NextScope->getParent();
+  }
+  return getTemplateParameterDepth(Ctx);
+}
+
+
+
 
 /// \brief If the given expression is of a form that permits the deduction
 /// of a non-type template parameter, return the declaration of that
@@ -1030,7 +1108,6 @@ DeduceTemplateArgumentsByTypeMatch(Sema &S,
       Info.SecondArg = TemplateArgument(Arg);
       return Sema::TDK_Underqualified;
     }
-
     assert(TemplateTypeParm->getDepth() == 0 && "Can't deduce with depth > 0");
     assert(Arg != S.Context.OverloadTy && "Unresolved overloaded function");
     QualType DeducedType = Arg;

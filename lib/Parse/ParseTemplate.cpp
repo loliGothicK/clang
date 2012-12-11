@@ -117,7 +117,22 @@ Parser::ParseTemplateDeclarationOrSpecialization(unsigned Context,
   bool isSpecialization = true;
   bool LastParamListWasEmpty = false;
   TemplateParameterLists ParamLists;
+  unsigned int ActualDepth = Actions.getTemplateParameterDepth(getCurScope());
+
+  // An inconsistency between ActualDepth can develop with 
+  // member templates of local classes, see the extensive
+  // comment in ParseExprCxx.cpp in ParseAfterLambdaIntroducer
+  // assert(ActualDepth == TemplateParameterDepth);
   TemplateParameterDepthCounter Depth(TemplateParameterDepth);
+  if (ActualDepth > TemplateParameterDepth)
+  {
+    unsigned diff = ActualDepth - TemplateParameterDepth;
+    while(diff-- > 0) ++Depth;
+  }  
+  assert(ActualDepth >= TemplateParameterDepth && "ActualDepth (calculated) "
+      "must be greater"
+      " than the member variable TemplateParameterDepth");
+      
   do {
     // Consume the 'export', if any.
     SourceLocation ExportLoc;

@@ -4153,6 +4153,14 @@ public:
   void DefineImplicitLambdaToFunctionPointerConversion(
          SourceLocation CurrentLoc, CXXConversionDecl *Conv);
 
+  // This function returns true if the Function is either a Specialization 
+  // of a generic lambda Call operator or a non-generic call operator?
+  // for e.g.
+  // auto L = [](auto a) [](decltype(a) x) [](auto b) b;
+  //  - the decltype(a) is NOT a generic lambda
+  // 
+  bool isNonTemplateLambdaCallOperator(FunctionDecl *F) const;
+  
   /// \brief Define the "body" of the conversion from a lambda object to a
   /// block pointer.
   ///
@@ -5016,6 +5024,19 @@ public:
   getTemplateArgumentBindingsText(const TemplateParameterList *Params,
                                   const TemplateArgument *Args,
                                   unsigned NumArgs);
+
+  /// \brief Computes the Template Parameter Depth by 
+  ///  increasing depth each time it encounters a template class
+  ///  or a template function, starting from the DeclContext passed in.
+  unsigned getTemplateParameterDepth(DeclContext *Ctx);
+  /// \brief Try to convert D into a DeclContext
+  /// or obtain the DeclContext it is defined in, and then
+  /// forward the call to the DeclContext overload
+  unsigned getTemplateParameterDepth(Decl *D);
+  /// \brief Climb up the Scope chain looking for a
+  /// a DeclContext and then forward it to the appropriate
+  /// overload for computation of depth.
+  unsigned getTemplateParameterDepth(Scope *S);
 
   //===--------------------------------------------------------------------===//
   // C++ Variadic Templates (C++0x [temp.variadic])

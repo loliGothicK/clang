@@ -22,6 +22,8 @@
 #include "clang/Sema/ParsedTemplate.h"
 #include "llvm/Support/ErrorHandling.h"
 
+#include "clang/AST/DeclTemplate.h"
+
 using namespace clang;
 
 static int SelectDigraphErrorMessage(tok::TokenKind Kind) {
@@ -829,12 +831,52 @@ ExprResult Parser::ParseLambdaTemplateParamsAfterIntroducer(
   ParseScope TemplateParmScope(this, Scope::TemplateParamScope);
   
  
+  // TemplateParameterDepth = ActualDepth;
+  // FVTODO: We need to ensure that template parameter depth is maintained
+  // here - this is why member templates of local classes within template
+  // functions do NOT get their depth right.
+  // assert(ActualDepth == TemplateParameterDepth);
   TemplateParameterDepthCounter Depth(TemplateParameterDepth);
+ 
+  // Get the Calculated Template Parameter Depth, do NOT rely on 
+  // Parser::TemplateParameterDepth
+  unsigned int ActualDepth = Actions.getTemplateParameterDepth(getCurScope());
 
+  // FVTODO: This is a hack that adjusts the template depth maintained by 
+  // the Parser. This needs to be addressed in a more comprehensive fashion
+  // The Depth inconsistency arises in member templates of local
+  // classes.  This is because when a local class is encountered within a function
+  // template, it halts the recursive descent, which rewinds the Depth Counter
+  // until it hits zero (refer to ParsingDeclarationBeginningWithTemplate 
+  // or some such routine ....
+  // The Parser then moves forward and attempts to parse the local class - 
+  // and since local templates are non-standard, I 
+  // am not sure if they are officially supported by Clang.  
+  // When the parser then encounters the member template, it starts the 
+  // Depth of as 0, which is obviously incorrect since it ignores the 
+  // depth of the enclosing template function and class
+  // for e.g.
+  // template<class T00> class A {
+  //    template<class T10> void foo(T10 t10) {
+  //      struct Local {
+  //        // Here is where the inconsistency arises
+  //        template<class T20> void inner_foo(T20 t20) { }
+  //      };
+  //    }
+  // };
+
+  if (ActualDepth > TemplateParameterDepth)
+  {
+    unsigned diff = ActualDepth - TemplateParameterDepth;
+    while(diff-- > 0) ++Depth;
+  }  
+  assert(ActualDepth >= TemplateParameterDepth && "ActualDepth (calculated) "
+      "must be greater"
+      " than the member variable TemplateParameterDepth");
+      
   if (Tok.is(tok::less))
   {
     
-
     // Tell the action that names should be checked in the context of
     // the declaration to come.
     ParsingDeclRAIIObject
@@ -842,7 +884,7 @@ ExprResult Parser::ParseLambdaTemplateParamsAfterIntroducer(
 
     SourceLocation LAngleLoc, RAngleLoc;
     SmallVector<Decl*, 4> TemplateParams;
-    if (ParseTemplateParameters(Depth, TemplateParams, LAngleLoc,
+    if (ParseTemplateParameters(ActualDepth, TemplateParams, LAngleLoc,
       RAngleLoc)) {
         // Skip until the semi-colon or a }.
         SkipUntil(tok::r_brace, true, true);
@@ -851,8 +893,10 @@ ExprResult Parser::ParseLambdaTemplateParamsAfterIntroducer(
         return ExprResult();
     }
     
-    LambdaTPL = Actions.ActOnTemplateParameterList(Depth, SourceLocation(),
-      LambdaBeginLoc, LAngleLoc,
+    LambdaTPL = Actions.ActOnTemplateParameterList(ActualDepth, 
+      SourceLocation(), /* export loc   */
+      LambdaBeginLoc,   /* template loc */
+      LAngleLoc,
       TemplateParams.data(),
       TemplateParams.size(), RAngleLoc);
     ++Depth;
@@ -862,8 +906,12 @@ ExprResult Parser::ParseLambdaTemplateParamsAfterIntroducer(
 }
 
 
-/// ParseLambdaExpressionAfterIntroducer - Parse the rest of a lambda
+/// ParseLambdaExpressionAfterIntroducer - Parse the rest of the lambda
 /// expression.
+/// [] expression
+/// [] -> int expression
+/// [](...) mutable expression
+/// [](int a) { }
 ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
                      LambdaIntroducer &Intro,
                      TemplateParameterList *LambdaTemplateParams) {
@@ -1016,10 +1064,21 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
   ParseScope BodyScope(this, ScopeFlags);
 
   TemplateParameterDepthCounter Depth(TemplateParameterDepth);
-  
-  Actions.ActOnStartOfLambdaDefinition(Intro, D, getCurScope(), LambdaTemplateParams, 
-                                                                  TemplateParameterDepth);
+ 
+  // If we already have a template parameter list, (i.e. []<class T>()
+  // then use its depth
+  unsigned int ActualDepth = Actions.getTemplateParameterDepth(getCurScope());
+
+  unsigned int LambdaTemplateParameterDepth = LambdaTemplateParams ? 
+                      LambdaTemplateParams->getDepth() : ActualDepth;
+
+  Actions.ActOnStartOfLambdaDefinition(Intro, D, getCurScope(), 
+                      LambdaTemplateParams, LambdaTemplateParameterDepth);
+
   sema::LambdaScopeInfo *LSI = Actions.getCurLambda();
+  // FVTODO: Ensure that the following assert is
+  // maintained:
+  // assert(getTemplateParameterDepth(gerCurScope()) == TemplateParameterDepth)
   // We need to adjust the template parameter depth, in case
   // we have nested generic lambdas.
   // But we should only do this, if there was no explicit template
@@ -1027,7 +1086,19 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
   // adjusted the depth while parsing it
   if (LSI->Lambda && LSI->Lambda->isGenericLambda() && !LambdaTemplateParams)
   {
-    ++Depth;
+    // check if these are out of sync, and first sync accordingly
+    // if LambdaTemplateParams is non-null, then this has already been synced up
+    if (ActualDepth > TemplateParameterDepth)
+    {
+      unsigned diff = ActualDepth - TemplateParameterDepth;
+      while(diff-- > 0) ++Depth;
+    }  
+    assert(ActualDepth >= TemplateParameterDepth && "ActualDepth (calculated) "
+        "must be greater"
+        " than the member variable TemplateParameterDepth");
+
+    ++Depth; // Now increment for the actual addition of 
+             // the template parameter list in the lambda
   }
   if (!Tok.is(tok::l_brace)) {
     // Try and parse a single expression that will become the return value

@@ -732,6 +732,53 @@ llvm::Optional<Visibility> NamedDecl::getExplicitVisibility() const {
   return llvm::Optional<Visibility>();
 }
 
+// Checks to see if the DeclContext is that of a LambdaCallOperator
+//  either the non-generic, the primary template or a specialization 
+static bool isLambdaCallOperatorDeclContext(const DeclContext *DC)
+{
+  if (!DC) return false;
+  const CXXMethodDecl *Method = dyn_cast<const CXXMethodDecl>(DC);
+  if (!Method) return false;
+  const CXXRecordDecl *Record = Method->getParent();
+  if (Record->isLambda())
+  {
+    const CXXMethodDecl *CallOp = Record->getLambdaCallOperator();
+    return CallOp == Method || 
+              CallOp == Method->getTemplateInstantiationPattern(); 
+  }
+  return false;
+}
+
+/// When passed a Lambda Closure Class, this routine will return the first
+/// Non-Lambda enclosing DeclContext.  i.e when passed a nested lambda
+/// it will climb up each 'function call operator' member that is 
+/// within a lambda class, and return the first DeclContext that is 
+/// either not a LambdaClass or a not a lambda function call 
+/// operator
+static const DeclContext* getFirstNonLambdaEnclosingDeclContext(
+    const CXXRecordDecl* Lambda)
+{
+  assert(Lambda->isLambda());
+
+  const CXXRecordDecl *Record = Lambda;
+  const DeclContext *Ret = 0;
+ 
+  // Are we a lambda class ...
+  while (Record && Record->isLambda())
+  {
+    // Get the Containing DeclContext of this Lambda Class
+    Ret = Record->getDeclContext()->getRedeclContext();
+    // Is it a lambda call operator? If so check its parent
+    if (isLambdaCallOperatorDeclContext(Ret))
+      Record = cast<const CXXMethodDecl>(Ret)->getParent();
+    else // otherwise we are done
+      break; 
+  }
+  assert(Ret && "There should be a non-lambda enclosing decl context!");
+  return Ret;  
+}
+
+// get the Linkage and Visibility for the Decl
 static LinkageInfo getLVForDecl(const NamedDecl *D, bool OnlyTemplate) {
   // Objective-C: treat all Objective-C declarations as having external
   // linkage.
@@ -770,9 +817,14 @@ static LinkageInfo getLVForDecl(const NamedDecl *D, bool OnlyTemplate) {
             return getLVForDecl(cast<NamedDecl>(ContextDecl),
                                 OnlyTemplate);
         }
-
-        if (const NamedDecl *ND = dyn_cast<NamedDecl>(DC))
-          return getLVForDecl(ND, OnlyTemplate);
+        // if this Lambda is within another Lambda, just keep
+        // climbing up, until we are outside a lambda, because
+        // the linkage is determined by the parent decl context
+        const DeclContext *NonLambdaEnclosingDC = 
+            getFirstNonLambdaEnclosingDeclContext(Record);
+        if (const NamedDecl *NamedNonLambdaEnclosingDC = 
+                              dyn_cast<NamedDecl>(NonLambdaEnclosingDC))
+          return getLVForDecl(NamedNonLambdaEnclosingDC, OnlyTemplate);
         
         return LinkageInfo::external();
       }

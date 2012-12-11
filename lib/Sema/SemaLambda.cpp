@@ -163,6 +163,7 @@ static void createTemplateVersionsOfAutoParameters(
       // that we generate - this becomes the name of our 
       // "template type"
       //  Is it safe to prefix with _$n ?
+      // Also should we add the template parameter depth to the name?
       std::string InventedTemplateParamName = "_$";
       llvm::raw_string_ostream ss(InventedTemplateParamName);
       ss << CurrentParameterIndex;  // identify unnamed [](auto, auto) by idx
@@ -281,6 +282,7 @@ static void createTemplateVersionsOfAutoParameters(
  
 }
 
+
 // FVTODO: This function needs to be refactored and cleaned up
 // create a member template within the Closure class
 // with each use of auto generating a corresponding template type
@@ -302,7 +304,12 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
   SmallVector<NamedDecl*, 4> TemplateParams;
   SmallVector<ParmVarDecl*, 4> FuncParamsWithAutoReplaced;
   
-  
+  unsigned int ActualDepth = S.getTemplateParameterDepth(
+                                          cast<DeclContext>(Class));
+  assert((!OrigTemplateParamList ||
+      OrigTemplateParamList->getDepth() == ActualDepth)
+      && "The depth of the explicit template parameter list, "
+      " and the calculated depth from the lambda class should be the same");
   // Construct a template parameter list, corresponding to each
   // auto parameter
   // (auto a, auto* b) ==>
@@ -311,7 +318,7 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
                                       Params, TemplateParams, 
                                       OrigTemplateParamList,
                                       FuncParamsWithAutoReplaced, 
-                                      TemplateParameterDepth, S);
+                                      ActualDepth, S);
 
   // Create the corresponding template parameter list
   //  with the invented parameter types for each use of auto
@@ -379,7 +386,8 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
   };
   
   // now assign the parameters to the functionprototypeLoc
-  FPTLoc Fptloc(FunctionTypeWithAutoReplaced, Context, FuncParamsWithAutoReplaced.size());
+  FPTLoc Fptloc(FunctionTypeWithAutoReplaced, Context, 
+                         FuncParamsWithAutoReplaced.size());
   Fptloc.initializeLocal(Context, IntroducerRange.getBegin());
   FunctionProtoTypeLoc* pr = dyn_cast<FunctionProtoTypeLoc>(&Fptloc);
   for (size_t i = 0; i < FuncParamsWithAutoReplaced.size(); ++i)
@@ -800,6 +808,7 @@ void Sema::deduceClosureReturnType(CapturingScopeInfo &CSI) {
     }
   }
 }
+
 
 void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
                                         Declarator &ParamInfo,
