@@ -257,7 +257,11 @@ namespace clang {
     }
     
     const Sema &getSema() const { return SemaRef; }
-
+    
+    // These two are currently for Debugging purposes - so that our
+    // dump functions can output this scope during debuggin
+    const LocalDeclsMap& getDeclarationMap() const { return LocalDecls; }
+    const LocalInstantiationScope* getParent() const { return Outer; }
     /// \brief Exit this local instantiation scope early.
     void Exit() {
       if (Exited)
