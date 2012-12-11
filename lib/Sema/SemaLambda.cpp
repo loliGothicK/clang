@@ -213,9 +213,10 @@ static void createTemplateVersionsOfAutoParameters(
                       AutoParam->getStorageClassAsWritten(), AutoParam->getDefaultArg());
  
       // Set the depth and index of this parameter 
+      int ParamDepth = AutoParam->getFunctionScopeDepth();
+      int ParamIndex = AutoParam->getFunctionScopeIndex();
       FuncParamWithAutoReplacedDecl->setScopeInfo(
-                                AutoParam->getFunctionScopeDepth(), 
-                                AutoParam->getFunctionScopeIndex());  
+                                ParamDepth, ParamIndex);  
       
       FuncParamsWithAutoReplaced.push_back( FuncParamWithAutoReplacedDecl );
       OrigOrNewParam = FuncParamWithAutoReplacedDecl;
@@ -1165,7 +1166,7 @@ static void addGenericFunctionPointerConversion(Sema &S,
   SmallVector<ParmVarDecl *, 4> InvokeParams;
   for (unsigned I = 0, N = CallOperator->getNumParams(); I != N; ++I) {
     ParmVarDecl *From = CallOperator->getParamDecl(I);
-    InvokeParams.push_back(ParmVarDecl::Create(S.Context, Invoke,
+    ParmVarDecl *New = ParmVarDecl::Create(S.Context, Invoke,
                                                From->getLocStart(),
                                                From->getLocation(),
                                                From->getIdentifier(),
@@ -1173,7 +1174,10 @@ static void addGenericFunctionPointerConversion(Sema &S,
                                                From->getTypeSourceInfo(),
                                                From->getStorageClass(),
                                                From->getStorageClassAsWritten(),
-                                               /*DefaultArg=*/0));
+                                               /*DefaultArg=*/0);
+    New->setScopeInfo(From->getFunctionScopeDepth(), 
+                          From->getFunctionScopeIndex());
+    InvokeParams.push_back(New);
   }
   Invoke->setParams(InvokeParams);
   Invoke->setAccess(AS_public);
