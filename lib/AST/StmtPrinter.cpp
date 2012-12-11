@@ -1363,7 +1363,25 @@ void StmtPrinter::VisitLambdaExpr(LambdaExpr *Node) {
       if (i != 0)
         OS << ", ";
       NamedDecl *ND = TPL->getParam(i);
-      ND->print(OS);
+      if (TemplateTypeParmDecl *TTPD = dyn_cast<TemplateTypeParmDecl>(ND))
+      {
+        if (TTPD->wasDeclaredWithTypename())
+          OS << "typename ";
+        else
+          OS << "class ";
+        IdentifierInfo* II = TTPD->getIdentifier();
+        const Type* Ty = TTPD->getTypeForDecl();
+        if (II)
+          OS << II->getName();
+        else
+          OS << QualType(Ty, 0).getAsString();
+        
+        OS << "#";
+        QualType CanType = Ty->getCanonicalTypeInternal();
+        OS << CanType.getAsString();
+      }
+      else
+        ND->print(OS);
     }
     OS << '>';
 
