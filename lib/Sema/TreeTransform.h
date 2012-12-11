@@ -7852,8 +7852,23 @@ TreeTransform<Derived>::TransformCXXTemporaryObjectExpr(
 template<typename Derived>
 ExprResult
 TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
-  // Transform the type of the lambda parameters and start the definition of
-  // the lambda itself.
+
+  // if this is a generic Lambda, transform the template parameter list
+  // and add it to the scope
+  ASTContext &Context = getSema().Context;
+  TemplateDeclInstantiator  DeclInstantiator(getSema(), 
+                          /* DeclContext *Owner */ E->getCallOperator(),
+                          getDerived().getDeducedTemplateArguments());
+  TemplateParameterList *OrigTemplateParamList = E->getTemplateParameterList();
+  TemplateParameterList *NewTemplateParamList = 0;
+  if (OrigTemplateParamList) {
+    NewTemplateParamList = DeclInstantiator.SubstTemplateParams(
+                                         OrigTemplateParamList);
+  }
+
+  LocalInstantiationScope *CurrentInstantiationScope = 
+    getSema().CurrentInstantiationScope;
+  
   TypeSourceInfo *MethodTy
     = TransformType(E->getCallOperator()->getTypeSourceInfo());
   if (!MethodTy)
@@ -7866,6 +7881,11 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
                                         /*KnownDependent=*/false);
   getDerived().transformedLocalDecl(E->getLambdaClass(), Class);
 
+  // Now that we have the New Decl Context for each template parameter, reset it
+  if (NewTemplateParamList)
+    for (size_t i = 0; i < NewTemplateParamList->size(); ++i)
+      NewTemplateParamList->getParam(i)->setDeclContext(Class);
+ 
   // Transform lambda parameters.
   llvm::SmallVector<QualType, 4> ParamTypes;
   llvm::SmallVector<ParmVarDecl *, 4> Params;
@@ -7874,16 +7894,20 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
         E->getCallOperator()->param_size(),
         0, ParamTypes, &Params))
     return ExprError();
-
-  // FVTODO: The TemplateParameterList and Depth needs to be fixed here!
-  // Build the call operator.
+ 
+  //FVTODO: should this really be 0 if we do NOT have template params
+  //  need to think about this .... 
+  unsigned int NewTemplateParamsDepth = NewTemplateParamList ? 
+                                     NewTemplateParamList->getDepth() : 0;
+  // Transform the call operator.
   CXXMethodDecl *CallOperator
     = getSema().startLambdaDefinition(Class, E->getIntroducerRange(),
                                       MethodTy,
                                       E->getCallOperator()->getLocEnd(),
                                       Params, 
-                                      0 /* TemplateParameterList */
-                                      , 0 /* TemplateParameterDepth */);
+                                      NewTemplateParamList, 
+                                      NewTemplateParamsDepth);
+  Class->setLambdaCallOperator(CallOperator);
   getDerived().transformAttrs(E->getCallOperator(), CallOperator);
 
   return getDerived().TransformLambdaScope(E, CallOperator);

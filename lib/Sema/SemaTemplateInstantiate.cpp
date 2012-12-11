@@ -30,6 +30,130 @@ using namespace sema;
 // Template Instantiation Support
 //===----------------------------------------------------------------------===/
 
+
+// This function returns true if the Function is either a Specialization 
+// of a generic lambda Call operator or a non-generic call operator?
+// for e.g.
+// auto L = [](auto a) [](decltype(a) x) [](auto b) b;
+//  - the decltype(a) is NOT a generic lambda
+// 
+static bool isNonTemplateLambdaCallOperator(FunctionDecl *F)
+{
+  CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(F);
+  if (MD)
+  {
+    CXXRecordDecl *LambdaClass = MD->getParent();
+    if (!LambdaClass || !LambdaClass->isLambda()) return false;
+    CXXMethodDecl *LambdaCallOp = LambdaClass->getLambdaCallOperator(); 
+    MD = LambdaClass->isGenericLambda() ?  
+          cast<CXXMethodDecl>(MD->getTemplateInstantiationPattern()) : MD;
+    return MD && MD == LambdaCallOp;
+  }
+
+  return false;
+}
+
+bool Sema::isNonTemplateLambdaCallOperator(FunctionDecl *F) const {
+  return ::isNonTemplateLambdaCallOperator(F);
+}
+
+bool isNonTemplateLambdaConversionOperator(FunctionDecl *F)
+{
+  CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(F);
+  if (MD)
+  {
+    CXXRecordDecl *LambdaClass = MD->getParent();
+    if (!LambdaClass || !LambdaClass->isLambda()) return false;
+    CXXMethodDecl *LambdaCallOp = LambdaClass->getLambdaConversionOperator(); 
+    MD = LambdaClass->isGenericLambda() ?  
+      cast<CXXMethodDecl>(MD->getTemplateInstantiationPattern()) : MD;
+    return MD && MD == LambdaCallOp;
+  }
+
+  return false;
+}
+
+bool isNestedLambda(FunctionDecl *F) {
+  if (isNonTemplateLambdaCallOperator(F) ||
+          isNonTemplateLambdaConversionOperator(F)) {
+ 
+    CXXMethodDecl *MD = cast<CXXMethodDecl>(F);
+    CXXRecordDecl *LambdaClass = MD->getParent();
+    DeclContext   *Ctx = cast<DeclContext>(LambdaClass);
+    DeclContext   *ParentOfLambdaClass = Ctx->getParent();
+    FunctionDecl  *ParentFun = ParentOfLambdaClass 
+      ? dyn_cast<FunctionDecl>(ParentOfLambdaClass)
+      : 0;
+    return ParentFun && isNonTemplateLambdaCallOperator(ParentFun); 
+    
+  }
+}
+
+bool isGenericLambdaCallOperatorSpecialization(FunctionDecl *F) {
+  CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(F);
+  if (MD)
+  {
+    CXXRecordDecl *LambdaClass = MD->getParent();
+    if (LambdaClass && LambdaClass->isGenericLambda())
+    {
+      
+      return LambdaClass->getLambdaCallOperator() 
+              == MD->getTemplateInstantiationPattern();
+    }
+  }
+    
+  return false;
+}
+
+bool isGenericLambdaConversionOperatorSpecialization(FunctionDecl *F) {
+  CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(F);
+  if (MD)
+  {
+    CXXRecordDecl *LambdaClass = MD->getParent();
+    if (LambdaClass && LambdaClass->isGenericLambda())
+    {
+
+      return LambdaClass->getLambdaConversionOperator() 
+        == MD->getTemplateInstantiationPattern();
+    }
+  }
+
+  return false;
+}
+
+// Is F a specialization of a generic lambda call operator
+//  that is within a specialization of a function
+//  template<class R> struct X {
+//     template<class T> void foo(T t) {
+//         auto L = [](auto a) { return a; }
+//         L(t);
+//     }
+//  } 
+//   X<int>().foo(2); 
+//   When instantiating L(t), above during foo(2) instantiation
+//   this routine returns true - and it prevents us from going out
+//   side to the class template arguments and adding them on the stack.
+//   Remember, Generic Lambda Expressions are always transformed eagerly
+//   so, when the enclosing function is instantiated with 'int' if there
+//   is any reference to 'R' (the class template argument) it will get
+//   transformed within any lambda or nested lambda expressions
+   
+bool isGenericLambdaSpecWithinFunctionTemplateSpecialization(
+     FunctionDecl *F) {
+  if (isGenericLambdaCallOperatorSpecialization(F))
+  {
+    CXXMethodDecl *MD = cast<CXXMethodDecl>(F);
+    CXXRecordDecl *LambdaClass = MD->getParent();
+    DeclContext   *Ctx = cast<DeclContext>(LambdaClass);
+    DeclContext   *ParentOfLambdaClass = Ctx->getParent();
+    FunctionDecl  *ParentFun = ParentOfLambdaClass 
+                      ? dyn_cast<FunctionDecl>(ParentOfLambdaClass)
+                      : 0;
+    return ParentFun && ParentFun->isTemplateInstantiation(); 
+
+  }
+}
+
 /// \brief Retrieve the template argument list(s) that should be used to
 /// instantiate the definition of the given declaration.
 ///
@@ -113,6 +237,18 @@ Sema::getTemplateInstantiationArgs(NamedDecl *D,
         assert(Function->getPrimaryTemplate() && "No function template?");
         if (Function->getPrimaryTemplate()->isMemberSpecialization())
           break;
+
+        // If the function we are about to instantiate is a generic lambda
+        // specialization, and it is encased within another generic lambda
+        // specialization, we are done (because all outer template parameters
+        //  should already have percolated through - since we transform lambda
+        //  expressions eagerly (FVTODO - this needs to be checked with Doug
+        //  and Richard)
+        if (isNestedLambda(Function))
+          break;
+        if (isGenericLambdaSpecWithinFunctionTemplateSpecialization(Function))
+          break;
+
       } else if (FunctionTemplateDecl *FunTmpl
                                    = Function->getDescribedFunctionTemplate()) {
         // Add the "injected" template arguments.
@@ -673,9 +809,15 @@ namespace {
     const MultiLevelTemplateArgumentList &TemplateArgs;
     SourceLocation Loc;
     DeclarationName Entity;
-
   public:
     typedef TreeTransform<TemplateInstantiator> inherited;
+    unsigned int getCurrentTemplateArgsLevel() const {
+      return TemplateArgs.getNumLevels();
+    }
+    const MultiLevelTemplateArgumentList& 
+                        getDeducedTemplateArguments() const {
+      return TemplateArgs;
+    }
 
     TemplateInstantiator(Sema &SemaRef,
                          const MultiLevelTemplateArgumentList &TemplateArgs,
@@ -858,7 +1000,11 @@ namespace {
 
     ExprResult TransformLambdaScope(LambdaExpr *E,
                                     CXXMethodDecl *CallOperator) {
-      CallOperator->setInstantiationOfMemberFunction(E->getCallOperator(),
+      // FVTODO: - not sure i understand why this is ...
+      // If this is a generic Lambda, skip setting instantiation 
+      // of Member Function
+      if (!CallOperator->getDescribedFunctionTemplate())
+        CallOperator->setInstantiationOfMemberFunction(E->getCallOperator(),
                                                      TSK_ImplicitInstantiation);
       return TreeTransform<TemplateInstantiator>::
          TransformLambdaScope(E, CallOperator);
@@ -1434,10 +1580,9 @@ TemplateInstantiator::TransformTemplateTypeParmType(TypeLocBuilder &TLB,
   if (TemplateTypeParmDecl *OldTTPDecl = T->getDecl())
     NewTTPDecl = cast_or_null<TemplateTypeParmDecl>(
                                   TransformDecl(TL.getNameLoc(), OldTTPDecl));
-
+  unsigned int NewDepth = T->getDepth() -TemplateArgs.getNumLevels();
   QualType Result
-    = getSema().Context.getTemplateTypeParmType(T->getDepth()
-                                                 - TemplateArgs.getNumLevels(),
+    = getSema().Context.getTemplateTypeParmType(NewDepth,
                                                 T->getIndex(),
                                                 T->isParameterPack(),
                                                 NewTTPDecl);
