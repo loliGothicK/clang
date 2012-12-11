@@ -2402,6 +2402,7 @@ TemplateDeclInstantiator::SubstFunctionType(FunctionDecl *D,
   return NewTInfo;
 }
 
+
 /// Introduce the instantiated function parameters into the local
 /// instantiation scope, and set the parameter names to those used
 /// in the template.
@@ -2409,6 +2410,35 @@ static void addInstantiatedParametersToScope(Sema &S, FunctionDecl *Function,
                                              const FunctionDecl *PatternDecl,
                                              LocalInstantiationScope &Scope,
                            const MultiLevelTemplateArgumentList &TemplateArgs) {
+  
+  // If this is a generic lambda, add the captures of the specialization 
+  // to the scope
+  // We iterate through the NewLambdaClass (a specialization from the primary)
+  //  and the OrigLambdaClass and map them within our instantiation scope
+  if (S.isNonTemplateLambdaCallOperator(Function)) {
+    CXXMethodDecl *NewLambdaCallOp = cast<CXXMethodDecl>(Function);
+    const CXXMethodDecl *OrigLambdaCallOp = cast<const CXXMethodDecl>(PatternDecl);
+    CXXRecordDecl *NewLambdaClass = NewLambdaCallOp->getParent();
+    const CXXRecordDecl *OrigLambdaClass = OrigLambdaCallOp->getParent();
+   
+    typedef CXXRecordDecl::capture_const_iterator CI;
+    for (CI new_capture_it = NewLambdaClass->captures_begin(),
+      orig_capture_it = OrigLambdaClass->captures_begin(),
+      new_capture_end = NewLambdaClass->captures_end(),
+      orig_capture_end = OrigLambdaClass->captures_end();
+    (new_capture_it != new_capture_end) && (orig_capture_it != orig_capture_end);
+    ++new_capture_it, ++orig_capture_it) {
+      
+      const LambdaExpr::Capture* NewCapture = new_capture_it;
+      const LambdaExpr::Capture* OrigCapture = orig_capture_it;
+      //FVTODO: Do we need to worry about capturesThis??
+      if (NewCapture->capturesVariable())
+        Scope.InstantiatedLocal(OrigCapture->getCapturedVar(), 
+                                      NewCapture->getCapturedVar());
+    
+    }
+  }
+  
   unsigned FParamIdx = 0;
   for (unsigned I = 0, N = PatternDecl->getNumParams(); I != N; ++I) {
     const ParmVarDecl *PatternParam = PatternDecl->getParamDecl(I);
