@@ -3625,14 +3625,38 @@ static void DefineImplicitGenericLambdaToFunctionPointerConversion(
   
   for (size_t idx = 0; idx < TPL->size(); ++idx) {
     NamedDecl *TP = TPL->getParam(idx);
-    if (TemplateTypeParmDecl *TTPD = dyn_cast<TemplateTypeParmDecl>(TP)) {
-      TemplateArgument TA(QualType(TTPD->getTypeForDecl(), 0));
+    if (TemplateTypeParmDecl *TypeP = dyn_cast<TemplateTypeParmDecl>(TP)) {
+      TemplateArgument TA(QualType(TypeP->getTypeForDecl(), 0));
       TypeSourceInfo *TSI = Context.getTrivialTypeSourceInfo(TA.getAsType());
       TemplateArgumentLocInfo TALI(TSI);
       TemplateArgumentLoc TAL(TA, TALI);
       TemplateArgs.addArgument(TAL);
     }
-    else 
+    else if (NonTypeTemplateParmDecl *NonTypeP = 
+                                    dyn_cast<NonTypeTemplateParmDecl>(TP)) {
+
+      IdentifierInfo *Ident = NonTypeP->getIdentifier();
+      DeclarationName DName(Ident);
+      DeclarationNameInfo DNameInfo(DName, NonTypeP->getLocStart()); 
+      DeclRefExpr *DRE = DeclRefExpr::Create(Context, NestedNameSpecifierLoc(),
+                                         SourceLocation(),
+                                         NonTypeP, false /* IsEnclosingLocal */,
+                                         DNameInfo,
+                                         NonTypeP->getType(),
+                                         VK_RValue);
+      TemplateArgument TA(DRE);
+      TemplateArgumentLoc TAL(TA, DRE);
+      TemplateArgs.addArgument(TAL);                                   
+      int i = 42;                         
+      assert(Ident && "No Identifier for the NonTypeTemplateParameter "
+                      "in the generic lambda during conversion to function pointer");
+    }
+    else if (TemplateTemplateParmDecl *TemplateP = 
+                                    dyn_cast<TemplateTemplateParmDecl>(TP)) {
+
+      int j = 42;
+    }
+    else
       assert(false && "Such Parameters can not be converted from");
   }
   // Now that TemplateArgs contains the corresponding types pulled out
