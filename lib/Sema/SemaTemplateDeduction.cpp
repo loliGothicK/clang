@@ -3623,17 +3623,17 @@ static void DefineImplicitGenericLambdaToFunctionPointerConversion(
   TemplateArgumentListInfo TemplateArgs(Conv->getLocation(), 
                                           Conv->getLocation());
   
-  for (size_t idx = 0; idx < TPL->size(); ++idx)
-  {
+  for (size_t idx = 0; idx < TPL->size(); ++idx) {
     NamedDecl *TP = TPL->getParam(idx);
-    TemplateTypeParmDecl *TTPD = dyn_cast<TemplateTypeParmDecl>(TP);
-    assert(TTPD && "We only support template type parameters in generic lambdas for now!\n");
-
-    TemplateArgument TA(QualType(TTPD->getTypeForDecl(), 0));
-    TypeSourceInfo *TSI = Context.getTrivialTypeSourceInfo(TA.getAsType());
-    TemplateArgumentLocInfo TALI(TSI);
-    TemplateArgumentLoc TAL(TA, TALI);
-    TemplateArgs.addArgument(TAL);
+    if (TemplateTypeParmDecl *TTPD = dyn_cast<TemplateTypeParmDecl>(TP)) {
+      TemplateArgument TA(QualType(TTPD->getTypeForDecl(), 0));
+      TypeSourceInfo *TSI = Context.getTrivialTypeSourceInfo(TA.getAsType());
+      TemplateArgumentLocInfo TALI(TSI);
+      TemplateArgumentLoc TAL(TA, TALI);
+      TemplateArgs.addArgument(TAL);
+    }
+    else 
+      assert(false && "Such Parameters can not be converted from");
   }
   // Now that TemplateArgs contains the corresponding types pulled out
   // of the Template Parameter List, lets build our dependent 

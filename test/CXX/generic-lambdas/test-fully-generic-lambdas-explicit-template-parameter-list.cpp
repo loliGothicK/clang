@@ -9,15 +9,19 @@
 #else
 #define printf(...)
 #endif
-//*
+
 template<class T> struct X { };
 template<> struct X<int> { 
   int get() const { return 50; }
 };
 int fi(int) { return 60; }
-char fi(char) { return ' '; }
-//*/
+int fi(char) { return ' '; }
 
+// These are used as type parameters
+struct T00 { int i; T00(int i) : i(i) { }; int get() const { return i; }; };
+struct T10 { int i; T10(int i) : i(i) { }; int get() const { return i; }; };
+  
+  
 int main()
 {
 
@@ -29,8 +33,8 @@ int main()
   return a + t + fp(t) + x;
  };
  
- int i = L(10, 12, fi, 1000);
- //CHECK: i = 1082
+ int i = L(' ', 12, fi, 1000);
+ //CHECK: i = 1076
  printf("i = %d\n", i);
 }
 //*
@@ -42,27 +46,39 @@ int main()
   int arr[]{1, 2, 3};
   int i = L(arr, X<int>{}, 500);
   
-  //int i = L.operator()<int>(5);
+  //CHECK: i = 554 
   printf("i = %d\n", i);
+}
+{ // Test parameters that can only be explicitly specified
+  auto L = []<class T, int N, template<class...> class V> (auto a) {
+    return a;
+  };
+  
+  char explicit_call = L.operator()<int, 3, X>('c');
+  //CHECK: L.operator()<int, 3, X>('c') = c
+  printf("L.operator()<int, 3, X>('c') = %c\n", explicit_call);
 }
 {
   auto L = []<class T>(auto a) {
     return a;
   };
-  int i = L.operator()<char>(77);
-  printf("i = %d\n", i);
+  char cc = L.operator()<char>(77);
+  //CHECK: cc = M 
+  printf("cc = %c\n", cc);
 
 }
 {
-  auto L = []<class T>(auto a, T t) {
-            return [=]<class T2>(auto b, T t0, T2 t2) {
-                  return a + t + b + t0 + t2; 
+  auto L = []<class T00>(auto a, T00 t00) {
+            return [=]<class T10>(auto b, T00 t, T10 t10) {
+                  return a + b + t00.get() + t.get() + t10.get(); 
            };
   };
-  auto L2 = L(1000,10000);
+
+  auto L2 = L(1000,T00(100));
   //int i = L2(1, X<char>{}, 4); // error
-  int j = L2(1, 10, 100);
-  printf("i = %d\n", j); // 11111
+  double jj = L2(1.5, T00(10), T10(100));
+  //CHECK: jj = 1211.5
+  printf("jj = %f\n", jj); 
 
 }
 //*/
