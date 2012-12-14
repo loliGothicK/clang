@@ -3433,9 +3433,41 @@ Sema::DeduceTemplateArguments(FunctionTemplateDecl *FunctionTemplate,
   TemplateParameterList *TemplateParams
     = FunctionTemplate->getTemplateParameters();
   QualType FunctionType = Function->getType();
-
+  
+  // When we create parameters for our lambda static-invoker,  
+  // the parameters that refer to previous parameters
+  // don't get re-wired - and if we try to rewire them via
+  // re-setting the DeclRefExpr using a visitor, it affects the 
+  // DeclRefExpr of the lambda call operator - i.e the DRE node does
+  // not get cloned, and so is shared and so can not be tampered with.
+  //
+  // Since static-invoker does not actually get called, we use 
+  // a crappy kludge to get this to pass through instantiation 
+  // i.e we instantiate the lambda call operator's params into
+  // the instantiation scope of the static-invoker (special
+  // casing AddressResolver to merge parent scopes when dealing
+  // with the special static invoker - ugh!
+  // 
+  // FVTODO: What would be nice is if I can figure out how to run 
+  // a TreeTransform and clone all the parameters during creation, with them
+  // being completely rewired up to point to their correct 
+  // declarations.
+  // Anyways, until then heed this warning:
+  // This way should be shut! It was made by those who are dead!
+  // And the dead should bloody keep it...
+  bool IsGenericLambdaStaticInvoker = false;
+  FunctionDecl *FunStaticInvoker = FunctionTemplate->getTemplatedDecl();
+  CXXMethodDecl *StaticInvoker = FunStaticInvoker 
+                        ? dyn_cast<CXXMethodDecl>(FunStaticInvoker) 
+                        : 0;
+  CXXRecordDecl *LambdaClass = StaticInvoker ? StaticInvoker->getParent() : 0;
+  if (LambdaClass && LambdaClass->isGenericLambda() 
+            && LambdaClass->getLambdaStaticInvoker() == StaticInvoker)
+    IsGenericLambdaStaticInvoker = true;
+ 
+  bool MergeWithOuterScope = IsGenericLambdaStaticInvoker;
   // Substitute any explicit template arguments.
-  LocalInstantiationScope InstScope(*this);
+  LocalInstantiationScope InstScope(*this, MergeWithOuterScope);
   SmallVector<DeducedTemplateArgument, 4> Deduced;
   unsigned NumExplicitlySpecified = 0;
   SmallVector<QualType, 4> ParamTypes;
@@ -3805,6 +3837,9 @@ Sema::DeduceTemplateArguments(FunctionTemplateDecl *FunctionTemplate,
     dyn_cast<CXXMethodDecl>(PotentiallyConvOp) : 0;
   CXXRecordDecl *LambdaClass = MemberConvOp ? MemberConvOp->getParent() : 0;
   CXXMethodDecl *LambdaCallOpSpec = 0;
+  CXXMethodDecl *PrimaryCallOp = 0;
+  // Create an Instantiation Scope for deducing the return type of a generic lambda
+  LocalInstantiationScope InstScope(*this);
   if (getLangOpts().GenericLambda && LambdaClass && 
                                       LambdaClass->isGenericLambda())
   {
@@ -3825,11 +3860,11 @@ Sema::DeduceTemplateArguments(FunctionTemplateDecl *FunctionTemplate,
     //
 
     CXXMethodDecl *CallOp = LambdaClass->getLambdaCallOperator();
-
+    PrimaryCallOp = CallOp;
     FunctionTemplateDecl* TemplateCallOp = 
                       CallOp->getDescribedFunctionTemplate();
 
-    LocalInstantiationScope InstScope(*this);
+    
 
     TemplateDeductionInfo OpInfo(Info.getLocation()); // = Info; // 
     FunctionDecl *CallOpSpec = 0;
@@ -3866,8 +3901,39 @@ Sema::DeduceTemplateArguments(FunctionTemplateDecl *FunctionTemplate,
                                                       FunctionTemplate, Deduced);
   } 
 
+  // For our fabricated lambda to function pointer conversion
+  // the type parameters that refer to previous parameters
+  // don't get re-wired - and if we try to rewire them via
+  // re-setting the DeclRefExpr using a visitor, it affects the 
+  // DeclRefExpr of the lambda call operator - i.e the DRE node does
+  // not get cloned, and so is shared and so can not be tampered with.
+  //
+  // Since the conversion to function pointer just returns a static-invoker
+  // (which itself uses a similar kludge to instantiate succesfully)
+  // we use a crappy kludge to get this to pass through instantiation 
+  // i.e we instantiate the lambda call operator's params into
+  // the instantiation scope of the static-invoker (special
+  // casing AddressResolver to merge parent scopes when dealing
+  // with the special static invoker - ugh!
+  // 
+  // FVTODO: What would be nice is if I can figure out how to run 
+  // a TreeTransform and clone all the parameter types during creation, with them
+  // being completely rewired up to point to their correct 
+  // declarations.
+  // Anyways, until then heed this warning:
+  // This way should be shut! It was made by those who are dead!
+  // And the dead should bloody keep it...
+  if (LambdaCallOpSpec) {
+    unsigned NumParams = LambdaCallOpSpec->getNumParams();
+    for (size_t I = 0; I < NumParams; ++I) {
+      ParmVarDecl *Old = PrimaryCallOp->getParamDecl(I);
+      ParmVarDecl *New = LambdaCallOpSpec->getParamDecl(I);
+      // Map the old declarations to the new
+      InstScope.InstantiatedLocal(Old, New);
+    }
+  }
   // Finish template argument deduction.
-  LocalInstantiationScope InstScope(*this);
+  //LocalInstantiationScope InstScope(*this);
   FunctionDecl *ConversionSpec = 0;
   TemplateDeductionResult Result
     = FinishTemplateArgumentDeduction(FunctionTemplate, Deduced, 0, ConversionSpec,
@@ -3882,6 +3948,14 @@ Sema::DeduceTemplateArguments(FunctionTemplateDecl *FunctionTemplate,
     // the return type of the deduced lambda
     ReplaceAutoReturnTypeOfSpecialization(Specialization, 
                                 LambdaCallOpSpec->getResultType(), *this);
+    //FVTODO - this mapping needs a better name since we are now actually
+    // mapping the conversion function spec to the callop spec
+    // This is also done to be able to kludge the instantiation
+    // of the static-invoker by adding the related specialization's
+    // parameter declarations to the instantiation scope
+
+    LambdaClass->mapLambdaStaticInvokerSpecToCallOpSpec(Specialization, 
+      LambdaCallOpSpec);
   } 
   return Result;
 }

@@ -3709,13 +3709,67 @@ void Sema::PerformPendingInstantiations(bool LocalOnly) {
       Inst = PendingLocalImplicitInstantiations.front();
       PendingLocalImplicitInstantiations.pop_front();
     }
-
+    
     // Instantiate function definitions
     if (FunctionDecl *Function = dyn_cast<FunctionDecl>(Inst.first)) {
       PrettyDeclStackTraceEntry CrashInfo(*this, Function, SourceLocation(),
                                           "instantiating function definition");
       bool DefinitionRequired = Function->getTemplateSpecializationKind() ==
                                 TSK_ExplicitInstantiationDefinition;
+     
+      // We need to add the parameters from the original call operator
+      // to allow decltype to work in the conversion operator and 
+      // the lambda static invoker.
+      // When we create parameters for our lambda static-invoker/and types
+      // for our conversion operator,  
+      // the parameters that refer to previous parameters
+      // don't get re-wired - and if we try to rewire them via
+      // re-setting the DeclRefExpr using a visitor, it affects the 
+      // DeclRefExpr of the lambda call operator - i.e the DRE node does
+      // not get cloned, and so is shared and so can not be tampered with.
+      //
+      // Since static-invoker/function call operator parameter do not actually 
+      // get called (so to speak), we use 
+      // a crappy kludge to get this to pass through instantiation 
+      // i.e we instantiate the lambda call operator's params into
+      // the instantiation scope of the static-invoker (special
+      // casing AddressResolver to merge parent scopes when dealing
+      // with the special static invoker - ugh!)
+      // 
+      // FVTODO: What would be nice is if I can figure out how to run 
+      // a TreeTransform and clone all the parameters during creation, with them
+      // being completely rewired up to point to their correct 
+      // declarations.
+      // Anyways, until then heed this warning:
+      // This way should be shut! It was made by those who are dead!
+      // And the dead should bloody keep it...
+      if (CXXMethodDecl *LambdaConvOpSpec = dyn_cast<CXXMethodDecl>(Function) ) {
+        
+        CXXRecordDecl *LambdaClass = LambdaConvOpSpec->getParent();
+        if (LambdaClass->isGenericLambda() && 
+              LambdaClass->getLambdaConversionOperator() ==
+              LambdaConvOpSpec->getTemplateInstantiationPattern())  {
+          //FVTODO: This mapping needs to be renamed, since we are
+          // not getting a mapping from static-invoker specialization
+          // but from the conversion function specialization
+          const CXXMethodDecl *CallOpSpec = 
+              LambdaClass->getLambdaCallOpSpecFromStaticInvokerSpec(
+                    LambdaConvOpSpec);
+          CXXMethodDecl *TheCallOp = LambdaClass->getLambdaCallOperator();
+          if (CallOpSpec) {
+            LocalInstantiationScope Scope(*this, true /*MergeWithParentScope*/);
+            unsigned NumParams = CallOpSpec->getNumParams();
+            for (size_t I = 0; I < NumParams; ++I) {
+              ParmVarDecl *Old = TheCallOp->getParamDecl(I);
+              ParmVarDecl *New = const_cast<ParmVarDecl*>(CallOpSpec->getParamDecl(I));
+              Scope.InstantiatedLocal(Old, New);
+            }
+            InstantiateFunctionDefinition(/*FIXME:*/Inst.second, Function, true,
+              DefinitionRequired);
+            continue;
+          }  
+        }
+      }
       InstantiateFunctionDefinition(/*FIXME:*/Inst.second, Function, true,
                                     DefinitionRequired);
       continue;

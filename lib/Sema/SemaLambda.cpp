@@ -20,6 +20,7 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/TypeLoc.h"
 
+#include "clang/Sema/Template.h"
 #include "TreeTransform.h"
 #include "clang/AST/RecursiveASTVisitor.h" 
 
@@ -362,7 +363,7 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
     ResultType = Context.getAutoType(ResultType);
   
   // We either have 'auto' as a return (deduce return type) type
-  // or a non-dependent type
+  // or a non-dependent type or a decltype-based potentially dependent type
   EPI.HasTrailingReturn = false; 
   QualType FunctionTypeWithAutoReplaced = S.Context.getFunctionType(
     ResultType, 
@@ -402,6 +403,9 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
   TB.pushFullCopy(Fptloc);
   TypeSourceInfo* NewTSI = 	TB.getTypeSourceInfo (Context, FunctionTypeWithAutoReplaced);
   
+  // Use TreeTransform and TransformType and possibly TemplateInstantiator
+  // to transform decltype(a) in the return type by having 'a' refer to
+  // the new ParmVarDecl
 
   // Get the DeclarationName associated with the function call operator
   DeclarationName MethodName
@@ -1135,7 +1139,7 @@ static void addGenericFunctionPointerConversion(Sema &S,
                                 CallOperator->getBody()->getLocEnd());
   Conversion->setAccess(AS_public);
   Conversion->setImplicit(true);
-  
+ 
   // Create a template version of the conversion operator, using the template 
   // parameter list of the function call operator
   FunctionTemplateDecl* TemplateConversion = 
@@ -1163,6 +1167,27 @@ static void addGenericFunctionPointerConversion(Sema &S,
                             /*IsStatic=*/true, SC_Static, /*IsInline=*/true,
                             /*IsConstexpr=*/false, 
                             CallOperator->getBody()->getLocEnd());
+  // When we create parameters for our static-invoker, be mindful of 
+  // the fact that parameters that refer to previous parameters
+  // don't get re-wired - and if we try to rewire them via
+  // re-setting the DeclRefExpr using a visitor, it affects the 
+  // DeclRefExpr of the lambda call operator, since that does
+  // not get cloned, and is shared.
+  // Since static-invoker does not actually get called, we use 
+  // a crappy kludge to get this to pass through instantiation 
+  // i.e we instantiate the lambda call operator's params into
+  // the instantiation scope of the static-invoker (special
+  // casing AddressResolver to merge parent scopes when dealing)
+  // with the special static invoker - ugh!
+  // 
+  // FVTODO: What would be nice is if I can figure out how to run 
+  // a TreeTransform and clone all the parameters, with them
+  // being completely rewired up to point to their correct 
+  // declarations.
+  // Anyways, until then heed this warning:
+  // This way should be shut! It was made by those who are dead!
+  // And the dead should bloody keep it...
+
   SmallVector<ParmVarDecl *, 4> InvokeParams;
   for (unsigned I = 0, N = CallOperator->getNumParams(); I != N; ++I) {
     ParmVarDecl *From = CallOperator->getParamDecl(I);
