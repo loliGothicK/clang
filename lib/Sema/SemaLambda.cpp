@@ -130,9 +130,10 @@ static void createTemplateVersionsOfAutoParameters(
                               TemplateParameterList *OrigTemplateParamList,
                               ContainerT3 &FuncParamsWithAutoReplaced,
                               unsigned int TemplateParamDepth,
-                              Sema &S)            //NewParamsWithAutoReplacedOut)
+                              Sema &S, QualType *ResultTypePtr)            //NewParamsWithAutoReplacedOut)
 {
   ASTContext &Context = S.Context; 
+  QualType &ResultType = *ResultTypePtr;
   // if this generic lambda has its own template
   // parameter list, add it first to our
   // template params
@@ -252,22 +253,23 @@ static void createTemplateVersionsOfAutoParameters(
     struct FixReferencesToPreviousParametersVisitor
       : RecursiveASTVisitor<FixReferencesToPreviousParametersVisitor> {
           
-        // The Parameter Index we are currently processing
-        const size_t CurIndex;
+        // The Parameter Index we should not go beyond 
+        // can be the full size when processing the return type
+        const size_t CurMaxIndex;
         const llvm::ArrayRef<ParmVarDecl *> &OriginalParams;
         const SmallVector<ParmVarDecl*, 4>  &NewParams;
       public:
-        FixReferencesToPreviousParametersVisitor(size_t CurIndex,
+        FixReferencesToPreviousParametersVisitor(size_t CurMaxIndex,
             const llvm::ArrayRef<ParmVarDecl *> &OriginalParams,
             const SmallVector<ParmVarDecl*, 4>  &NewParams) :
-            CurIndex(CurIndex), OriginalParams(OriginalParams),
+            CurMaxIndex(CurMaxIndex), OriginalParams(OriginalParams),
             NewParams(NewParams) { }
         // Get the Decl referenced by the expression within the
         // parameter, and check to see if it needs to be 
         // adjusted           
         bool VisitDeclRefExpr(DeclRefExpr *DRE) {
           ValueDecl* VD = DRE->getDecl();
-          for (size_t i = 0; i < CurIndex; ++i )
+          for (size_t i = 0; i < CurMaxIndex; ++i )
           {
             if (VD == cast<ValueDecl>(OriginalParams[i]))
               DRE->setDecl(NewParams[i]);
@@ -276,10 +278,14 @@ static void createTemplateVersionsOfAutoParameters(
         }
     };
       
-    FixReferencesToPreviousParametersVisitor visitor(CurrentParameterIndex, 
+    FixReferencesToPreviousParametersVisitor visitor(CurrentParameterIndex + 1, 
                                 Params, FuncParamsWithAutoReplaced);
     visitor.TraverseDecl(OrigOrNewParam);
-      
+    // now that we have gone through all the parameters, fix the result
+    // type if it refers to any previous parameter, ie. 
+    // [](auto a) -> decltype(a) or -> X<decltype(a)>
+    if (CurrentParameterIndex == Params.size() - 1)
+      visitor.TraverseType(ResultType);  
   }
  
 }
@@ -302,7 +308,24 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
 
   const FunctionProtoType *AutoMethodFPT = 
               MethodTSI->getType()->castAs<FunctionProtoType>();
-  
+
+  //const FunctionType* FT = dyn_cast<const FunctionType>(
+  //  MethodTSI->getType().getTypePtr());
+
+  // Copy the function prototype info (i.e. const, trailing return)
+  // from the original declaration
+  FunctionProtoType::ExtProtoInfo OrigFunctionInfo = 
+                              AutoMethodFPT->getExtProtoInfo();
+
+  // If there is no trailing return type, make the return
+  // type auto - so we can use the C++1y auto deduction for all functions
+  // feature to deduce the return type
+  QualType ResultType;
+  if (OrigFunctionInfo.HasTrailingReturn)
+    ResultType = AutoMethodFPT->getResultType().getCanonicalType();
+  else
+    ResultType = Context.getAutoType(ResultType);
+
   SmallVector<NamedDecl*, 4> TemplateParams;
   SmallVector<ParmVarDecl*, 4> FuncParamsWithAutoReplaced;
   
@@ -320,15 +343,13 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
                                       Params, TemplateParams, 
                                       OrigTemplateParamList,
                                       FuncParamsWithAutoReplaced, 
-                                      ActualDepth, S);
+                                      ActualDepth, S, &ResultType);
 
   // Create the corresponding template parameter list
   //  with the invented parameter types for each use of auto
   SourceLocation LAngleLoc, RAngleLoc = EndLoc;
-  if (OrigTemplateParamList)
-  {
+  if (OrigTemplateParamList) {
     LAngleLoc = OrigTemplateParamList->getLAngleLoc();
-    //RAngleLoc = OrigTemplateParamList->getRAngleLoc();
   }
   TemplateParameterList* InventedTemplateParamList = 
                   TemplateParameterList::Create(Context, 
@@ -347,28 +368,52 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
     NewParamsType.push_back(FuncParamsWithAutoReplaced[i]->getType());
   }
 
-  // Copy the function prototype info (i.e. const, trailing return)
-  // from the original declaration
-  FunctionProtoType::ExtProtoInfo EPI = AutoMethodFPT->getExtProtoInfo();
   
-  const FunctionType* FT = dyn_cast<const FunctionType>(
-                              MethodTSI->getType().getTypePtr());
-  // If there is no trailing return type, make the return
-  // type auto - so we can use the C++1y auto deduction for all functions
-  // feature to deduce the return type
-  QualType ResultType;
-  if (EPI.HasTrailingReturn)
-    ResultType = FT->getResultType().getCanonicalType();
-  else
-    ResultType = Context.getAutoType(ResultType);
   
+  /*
+  struct FixReferencesToPreviousParametersVisitor
+    : RecursiveASTVisitor<FixReferencesToPreviousParametersVisitor> {
+
+      // The Parameter Index we are currently processing
+      //const size_t CurIndex;
+      //const llvm::ArrayRef<ParmVarDecl *> &OriginalParams;
+      //const SmallVector<ParmVarDecl*, 4>  &NewParams;
+  public:
+    FixReferencesToPreviousParametersVisitor(
+      //size_t CurIndex,
+      //const llvm::ArrayRef<ParmVarDecl *> &OriginalParams,
+      //const SmallVector<ParmVarDecl*, 4>  &NewParams
+      ) 
+      //: CurIndex(CurIndex), OriginalParams(OriginalParams),
+      //NewParams(NewParams) 
+      { }
+    // Get the Decl referenced by the expression within the
+    // parameter, and check to see if it needs to be 
+    // adjusted           
+    bool VisitDeclRefExpr(DeclRefExpr *DRE) {
+      ValueDecl* VD = DRE->getDecl();
+      //for (size_t i = 0; i < CurIndex; ++i )
+      //{
+      //  if (VD == cast<ValueDecl>(OriginalParams[i]))
+      //    DRE->setDecl(NewParams[i]);
+      //} 
+      return true;
+    }
+  };
+
+  //FixReferencesToPreviousParametersVisitor visitor;
+   // (CurrentParameterIndex, Params, FuncParamsWithAutoReplaced);
+  visitor.TraverseType(ResultType);
+  */
+
+
   // We either have 'auto' as a return (deduce return type) type
   // or a non-dependent type or a decltype-based potentially dependent type
-  EPI.HasTrailingReturn = false; 
+  //EPI.HasTrailingReturn = false; 
   QualType FunctionTypeWithAutoReplaced = S.Context.getFunctionType(
     ResultType, 
     NewParamsType.data(),
-    FuncParamsWithAutoReplaced.size(), EPI); 
+    FuncParamsWithAutoReplaced.size(), OrigFunctionInfo); 
 
   // This is somewhat of a kludge that is used to 
   // create the appropriate FunctionProtoTypeLoc
