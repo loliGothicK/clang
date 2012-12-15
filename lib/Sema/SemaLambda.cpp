@@ -138,8 +138,7 @@ static void createTemplateVersionsOfAutoParameters(
   // parameter list, add it first to our
   // template params
   // i.e. []<class T, int N>(T (&a)[N], auto b ) ...
-  if (OrigTemplateParamList)
-  {
+  if (OrigTemplateParamList) {
     for (size_t i = 0; i < OrigTemplateParamList->size(); ++i)
       TemplateParams.push_back(OrigTemplateParamList->getParam(i));
   }
@@ -368,48 +367,6 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
     NewParamsType.push_back(FuncParamsWithAutoReplaced[i]->getType());
   }
 
-  
-  
-  /*
-  struct FixReferencesToPreviousParametersVisitor
-    : RecursiveASTVisitor<FixReferencesToPreviousParametersVisitor> {
-
-      // The Parameter Index we are currently processing
-      //const size_t CurIndex;
-      //const llvm::ArrayRef<ParmVarDecl *> &OriginalParams;
-      //const SmallVector<ParmVarDecl*, 4>  &NewParams;
-  public:
-    FixReferencesToPreviousParametersVisitor(
-      //size_t CurIndex,
-      //const llvm::ArrayRef<ParmVarDecl *> &OriginalParams,
-      //const SmallVector<ParmVarDecl*, 4>  &NewParams
-      ) 
-      //: CurIndex(CurIndex), OriginalParams(OriginalParams),
-      //NewParams(NewParams) 
-      { }
-    // Get the Decl referenced by the expression within the
-    // parameter, and check to see if it needs to be 
-    // adjusted           
-    bool VisitDeclRefExpr(DeclRefExpr *DRE) {
-      ValueDecl* VD = DRE->getDecl();
-      //for (size_t i = 0; i < CurIndex; ++i )
-      //{
-      //  if (VD == cast<ValueDecl>(OriginalParams[i]))
-      //    DRE->setDecl(NewParams[i]);
-      //} 
-      return true;
-    }
-  };
-
-  //FixReferencesToPreviousParametersVisitor visitor;
-   // (CurrentParameterIndex, Params, FuncParamsWithAutoReplaced);
-  visitor.TraverseType(ResultType);
-  */
-
-
-  // We either have 'auto' as a return (deduce return type) type
-  // or a non-dependent type or a decltype-based potentially dependent type
-  //EPI.HasTrailingReturn = false; 
   QualType FunctionTypeWithAutoReplaced = S.Context.getFunctionType(
     ResultType, 
     NewParamsType.data(),
@@ -423,8 +380,7 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
   struct FPTLoc : InheritingConcreteTypeLoc<FunctionProtoTypeLoc,
                                      FunctionProtoTypeLoc,
                                      FunctionProtoType> {
-    FPTLoc(QualType ty, ASTContext& Context, size_t numArgs) 
-    { 
+    FPTLoc(QualType ty, ASTContext& Context, size_t numArgs) { 
       Ty = ty.getAsOpaquePtr();
       Data = Context.Allocate(sizeof(FunctionLocInfo) 
                            + (numArgs * sizeof(ParmVarDecl*)));
@@ -437,8 +393,7 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
                          FuncParamsWithAutoReplaced.size());
   Fptloc.initializeLocal(Context, IntroducerRange.getBegin());
   FunctionProtoTypeLoc* pr = dyn_cast<FunctionProtoTypeLoc>(&Fptloc);
-  for (size_t i = 0; i < FuncParamsWithAutoReplaced.size(); ++i)
-  {
+  for (size_t i = 0; i < FuncParamsWithAutoReplaced.size(); ++i) {
     pr->setArg(i, FuncParamsWithAutoReplaced[i]);
   }  
 

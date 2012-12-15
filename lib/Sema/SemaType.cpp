@@ -1260,8 +1260,8 @@ static bool isArraySizeVLA(Sema &S, Expr *ArraySize, llvm::APSInt &SizeVal) {
 /// returns a NULL type.
 QualType Sema::BuildArrayType(QualType T, ArrayType::ArraySizeModifier ASM,
                               Expr *ArraySize, unsigned Quals,
-                              SourceRange Brackets, DeclarationName Entity) {
-
+                              SourceRange Brackets, DeclarationName Entity,
+                              bool AllowArrayOfAuto) {                              
   SourceLocation Loc = Brackets.getBegin();
   if (getLangOpts().CPlusPlus) {
     // C++ [dcl.array]p1:
@@ -1304,7 +1304,8 @@ QualType Sema::BuildArrayType(QualType T, ArrayType::ArraySizeModifier ASM,
     return QualType();
   }
 
-  if (T->getContainedAutoType()) {
+  if (T->getContainedAutoType() && !getLangOpts().GenericLambda
+    && !AllowArrayOfAuto) {
     Diag(Loc, diag::err_illegal_decl_array_of_auto)
       << getPrintableNameForEntity(Entity) << T;
     return QualType();
@@ -2317,7 +2318,8 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
       }
 
       T = S.BuildArrayType(T, ASM, ArraySize, ATI.TypeQuals,
-                           SourceRange(DeclType.Loc, DeclType.EndLoc), Name);
+                           SourceRange(DeclType.Loc, DeclType.EndLoc), Name,
+                           D.isAutoAllowedAsParameter());
       break;
     }
     case DeclaratorChunk::Function: {
