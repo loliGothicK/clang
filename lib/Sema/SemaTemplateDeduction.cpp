@@ -3643,73 +3643,7 @@ static void DefineImplicitGenericLambdaToFunctionPointerConversion(
   DeclarationNameInfo NameInfo(Name, Conv->getLocation()); 
   LookupResult R(S, NameInfo, Sema::LookupAnyName);
   R.addDecl(TemplateStaticInvoker, AS_public);
-  
-  // Create TemplateArguments, using the types from
-  // the template parameter list
-  TemplateParameterList *TPL = GenericConv->getTemplateParameters();
-  /*
-  // FVTODO: We need to pass in a valid location, because within OverloadExpr
-  //  if the location for the LAngle invoke<arg ...> is NOT valid
-  //  the Expr is not assumed to have explicit arguments
-  //  EVEN if explicit arguments are passed!! 
-  TemplateArgumentListInfo TemplateArgs(Conv->getLocation(), 
-                                          Conv->getLocation());
-  
-  for (size_t idx = 0; idx < TPL->size(); ++idx) {
-    NamedDecl *TP = TPL->getParam(idx);
-    if (TemplateTypeParmDecl *TypeP = dyn_cast<TemplateTypeParmDecl>(TP)) {
-      TemplateArgument TA(QualType(TypeP->getTypeForDecl(), 0));
-      TypeSourceInfo *TSI = Context.getTrivialTypeSourceInfo(TA.getAsType());
-      TemplateArgumentLocInfo TALI(TSI);
-      TemplateArgumentLoc TAL(TA, TALI);
-      TemplateArgs.addArgument(TAL);
-    }
-    else if (NonTypeTemplateParmDecl *NonTypeP = 
-                                    dyn_cast<NonTypeTemplateParmDecl>(TP)) {
-
-      IdentifierInfo *Ident = NonTypeP->getIdentifier();
-      DeclarationName DName(Ident);
-      DeclarationNameInfo DNameInfo(DName, NonTypeP->getLocStart()); 
-      DeclRefExpr *DRE = DeclRefExpr::Create(Context, NestedNameSpecifierLoc(),
-                                         SourceLocation(),
-                                         NonTypeP, false, //IsEnclosingLocal
-                                         DNameInfo,
-                                         NonTypeP->getType(),
-                                         VK_RValue);
-      TemplateArgument TA(DRE);
-      TemplateArgumentLoc TAL(TA, DRE);
-      TemplateArgs.addArgument(TAL);                                                     
-      assert(Ident && "No Identifier for the NonTypeTemplateParameter "
-                      "in the generic lambda during conversion to function pointer");
-    }
-    else if (TemplateTemplateParmDecl *TemplateP = 
-                                    dyn_cast<TemplateTemplateParmDecl>(TP)) {
-      TemplateName TName(TemplateP);
-      // FVTODO: Do we need to do anything special for ellipsis
-      // along the following lines... 
-      // if (Arg.getEllipsisLoc().isValid())
-      // TArg = TemplateArgument(Template, llvm::Optional<unsigned int>());
-      TemplateArgument TA(TName);
-      TemplateArgumentLoc TAL(TA, NestedNameSpecifierLoc(), // NestedNameSpecifierLoc
-                            TemplateP->getLocStart(), // TemplateNameLoc 
-                            SourceLocation() // EllipsisLoc 
-                            );
-    }
-    else
-      assert(false && "Such Parameters can not be converted from");
-  }
-  /*
-  // Now that TemplateArgs contains the corresponding types pulled out
-  // of the Template Parameter List, lets build our dependent 
-  // TemplateIDExpression, that will get implicitly specialized 
-  // when the conversion operator needs to be specialized/deduced
-  // create a __invoke<_a$0, _b$1> etc...
-  ExprResult ER = S.BuildTemplateIdExpr(CXXScopeSpec(), SourceLocation(), R, 
-                          false,  // RequiresADL 
-                          &TemplateArgs);
-
-  UnresolvedLookupExpr* ULE = dyn_cast<UnresolvedLookupExpr>(ER.take());
-  */
+  // create return __generic_static_invoker;
   TemplateArgumentListInfo TALI;
   UnresolvedLookupExpr *ULE
     = UnresolvedLookupExpr::Create(Context, R.getNamingClass(),
