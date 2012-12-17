@@ -1392,7 +1392,8 @@ private:
 
   //===--------------------------------------------------------------------===//
   // C++0x 8: Function declaration trailing-return-type
-  TypeResult ParseTrailingReturnType(SourceRange &Range);
+  TypeResult ParseTrailingReturnType(SourceRange &Range, 
+                                      bool IsParsingLambdaReturnType = false);
 
   //===--------------------------------------------------------------------===//
   // C++ 2.13.5: C++ Boolean Literals
@@ -1847,7 +1848,8 @@ public:
                            Declarator::TheContext Context
                              = Declarator::TypeNameContext,
                            AccessSpecifier AS = AS_none,
-                           Decl **OwnedType = 0);
+                           Decl **OwnedType = 0,
+                           bool IsParsingLambdaReturnType = false);
 
 private:
   void ParseBlockId(SourceLocation CaretLoc);

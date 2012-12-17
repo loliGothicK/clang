@@ -36,7 +36,8 @@ using namespace clang;
 TypeResult Parser::ParseTypeName(SourceRange *Range,
                                  Declarator::TheContext Context,
                                  AccessSpecifier AS,
-                                 Decl **OwnedType) {
+                                 Decl **OwnedType,
+                                 bool IsParsingLambdaReturnType) {
   DeclSpecContext DSC = getDeclSpecContextFromDeclaratorContext(Context);
   if (DSC == DSC_normal)
     DSC = DSC_type_specifier;
@@ -49,6 +50,8 @@ TypeResult Parser::ParseTypeName(SourceRange *Range,
 
   // Parse the abstract-declarator, if present.
   Declarator DeclaratorInfo(DS, Context);
+  DeclaratorInfo.setAutoAllowedAsReturnType(
+                        IsParsingLambdaReturnType);
   ParseDeclarator(DeclaratorInfo);
   if (Range)
     *Range = DeclaratorInfo.getSourceRange();

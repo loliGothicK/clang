@@ -1,5 +1,5 @@
 // RUN: %clang_cc1 -fsyntax-only -verify -std=c++1y %s
-
+//expected-no-diagnostics
 int main()
 {
   auto l1 = [](auto a) -> int { return a + 5; };
@@ -15,7 +15,7 @@ int main()
                 auto (A::*memfun)(int),
                 char c,
                 decltype (v) tv
-                , auto (&array)[5] //expected-error {{'array' declared as array of 'auto'}}
-              ) -> int { return v + i + c; };
+                , auto (&array)[5] 
+              ) -> int { return v + i + c + array[0]; };
 
 }

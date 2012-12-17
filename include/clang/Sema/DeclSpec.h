@@ -1488,9 +1488,9 @@ private:
   /// InvalidType - Set by Sema::GetTypeForDeclarator().
   bool InvalidType : 1;
 
-  /// FVADDED AutoAllowedAsParameter - to allow auto in generic lambdas
+  /// FVADDED To allow auto in generic lambdas
   bool AutoAllowedAsParameter : 1;
-
+  bool AutoAllowedAsReturnType : 1;
   /// GroupingParens - Set by Parser::ParseParenDeclarator().
   bool GroupingParens : 1;
 
@@ -1536,7 +1536,7 @@ public:
       Redeclaration(false),
       Attrs(ds.getAttributePool().getFactory()), AsmLabel(0),
       InlineParamsUsed(false), Extension(false),
-      AutoAllowedAsParameter(false) {
+      AutoAllowedAsParameter(false), AutoAllowedAsReturnType(false) {
   }
 
   ~Declarator() {
@@ -1547,8 +1547,15 @@ public:
   bool isAutoAllowedAsParameter() const {
     return AutoAllowedAsParameter;
   }
+
   void setAutoAllowedAsParameter(bool b) {
     AutoAllowedAsParameter = b;
+  }
+  bool isAutoAllowedAsReturnType() const {
+    return AutoAllowedAsReturnType;
+  }
+  void setAutoAllowedAsReturnType(bool b) {
+    AutoAllowedAsReturnType = b;
   }
 
   /// getDeclSpec - Return the declaration-specifier that this declarator was

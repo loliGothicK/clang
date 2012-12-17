@@ -1260,8 +1260,8 @@ static bool isArraySizeVLA(Sema &S, Expr *ArraySize, llvm::APSInt &SizeVal) {
 /// returns a NULL type.
 QualType Sema::BuildArrayType(QualType T, ArrayType::ArraySizeModifier ASM,
                               Expr *ArraySize, unsigned Quals,
-                              SourceRange Brackets, DeclarationName Entity) {
-
+                              SourceRange Brackets, DeclarationName Entity,
+                              bool AllowArrayOfAuto) {                              
   SourceLocation Loc = Brackets.getBegin();
   if (getLangOpts().CPlusPlus) {
     // C++ [dcl.array]p1:
@@ -1304,7 +1304,8 @@ QualType Sema::BuildArrayType(QualType T, ArrayType::ArraySizeModifier ASM,
     return QualType();
   }
 
-  if (T->getContainedAutoType()) {
+  if (T->getContainedAutoType() && !getLangOpts().GenericLambda
+    && !AllowArrayOfAuto) {
     Diag(Loc, diag::err_illegal_decl_array_of_auto)
       << getPrintableNameForEntity(Entity) << T;
     return QualType();
@@ -1896,7 +1897,9 @@ static QualType GetDeclSpecTypeForDeclarator(TypeProcessingState &state,
       Error = 10; // Type alias
       break;
     case Declarator::TrailingReturnContext:
-      Error = 11; // Function return type
+      // Generic Lambdas allow auto in return type auto& etc.
+      if (!D.isAutoAllowedAsReturnType())
+        Error = 11; // Function return type
       break;
     case Declarator::TypeNameContext:
       Error = 12; // Generic
@@ -2317,7 +2320,8 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
       }
 
       T = S.BuildArrayType(T, ASM, ArraySize, ATI.TypeQuals,
-                           SourceRange(DeclType.Loc, DeclType.EndLoc), Name);
+                           SourceRange(DeclType.Loc, DeclType.EndLoc), Name,
+                           D.isAutoAllowedAsParameter());
       break;
     }
     case DeclaratorChunk::Function: {
@@ -2333,7 +2337,9 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
         // trailing-return-type is only required if we're declaring a function,
         // and not, for instance, a pointer to a function.
         if (D.getDeclSpec().getTypeSpecType() == DeclSpec::TST_auto &&
-            !FTI.hasTrailingReturnType() && chunkIndex == 0) {
+            !FTI.hasTrailingReturnType() && chunkIndex == 0 && 
+            !(S.getLangOpts().GenericLambda && 
+              D.getContext() == Declarator::LambdaExprContext)) {
           S.Diag(D.getDeclSpec().getTypeSpecTypeLoc(),
                diag::err_auto_missing_trailing_return);
           T = Context.IntTy;
