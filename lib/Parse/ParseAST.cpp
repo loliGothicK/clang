@@ -119,6 +119,6 @@ void clang::ParseAST(Sema &S, bool PrintStats, bool SkipFunctionBodies) {
     Consumer->PrintStats();
   }
 }
-
+//Please comment out the following two lines if compiling this code
 #define DONT_USE_ANON_FV
 #include "../../../../clang-glambda-fv/my-code/fv_debug.cpp"
