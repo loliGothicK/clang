@@ -2795,12 +2795,14 @@ ExceptionSpecificationType Parser::ParseDynamicExceptionSpecification(
 
 /// ParseTrailingReturnType - Parse a trailing return type on a new-style
 /// function declaration.
-TypeResult Parser::ParseTrailingReturnType(SourceRange &Range) {
+TypeResult Parser::ParseTrailingReturnType(SourceRange &Range,
+                      bool IsParsingLambdaReturnType) {
   assert(Tok.is(tok::arrow) && "expected arrow");
 
   ConsumeToken();
 
-  return ParseTypeName(&Range, Declarator::TrailingReturnContext);
+  return ParseTypeName(&Range, Declarator::TrailingReturnContext, AS_none, 0,
+                        IsParsingLambdaReturnType);
 }
 
 /// \brief We have just started parsing the definition of a new class,
