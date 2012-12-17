@@ -28,7 +28,7 @@
         </ul>
       </header>
       <section>
-        <h1>Generic Lambdas using Clang</h1>
+        <h1>Generic Lambdas in C++ using Clang</h1>
 
 <p>This is an implementation of Generic Lambdas for C++ based on the <a href="http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2012/n3418.pdf">n3418: Proposal for Generic Lambda Expressions</a>.</p>
 
@@ -77,14 +77,22 @@ auto L = [](auto &amp;a) -&gt; auto&amp; { return a; };
 <li>In the above instructions from the clang website, where it states to checkout clang using subversion (i.e step 3 svn co <a href="http://llvm.org/svn/llvm-project/cfe/trunk">http://llvm.org/svn/llvm-project/cfe/trunk</a> clang), instead install git (I use TortoiseGit on windows) and checkout this repository.</li>
 <li>Then follow the instructions as delineated on clangs website to compile and build clang.</li>
 <li>Once you have your clang binary, it should be able to compile your code and generate the executable that should run directly.  On windows, I find myself having to use the interpreter lli.exe.  So I do the following when trying to compile code in test.cpp:
+<pre>
 clang -std=c++1y -c test.cpp -emit-llvm -o test.bc
-lli test.bc</li>
+lli test.bc
+</pre>
+</li>
 </ol><h3>How to use the binaries:</h3>
 
 <ol>
 <li>I have uploaded my most recent Debug build of generic-lambda-clang that was built using visual studio 2010 and lli.exe.</li>
 <li>In order for you to use it, you need certain debug dlls that I can not legally post here - An easy way is probably for you to install <a href="http://www.microsoft.com/visualstudio/eng/downloads#d-express-windows-desktop">Visual C++ 2010 Express (free)</a>.</li>
-<li>Download the windows exectutable <a href="https://www.sugarsync.com/pf/D6969703_69613999_6758815">generic-lambda-clang.exe</a> along with the <a href="https://www.sugarsync.com/pf/D6969703_65299173_039062">llvm interpreter: lli.exe</a> if you need it.</li>
+<li>Download the windows exectutable <a href="https://www.sugarsync.com/pf/D6969703_69613999_6758815">generic-lambda-clang.exe</a> along with the <a href="https://www.sugarsync.com/pf/D6969703_65299173_039062">llvm interpreter: lli.exe</a> if you need it.
+<pre>
+generic-lambda-clang -std=c++1y -c test.cpp -emit-llvm -o test.bc
+lli test.bc
+</pre>
+</li>
 </ol>
       </section>
       <footer>
