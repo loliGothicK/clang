@@ -118,6 +118,55 @@ namespace {
 } // End Namespace anon
 
 
+// Check if this param references a prior parameter.
+// (i.e.decltype (a) b) and rewire it to refer to the new invented 
+// parameter - otherwise it will not be linked to the corresponding
+// template parameter during instantiation.
+    
+// Since we can not be sure of how deeply nested the reference 
+// might be, or whether we are referring to multiple previous params
+// we use a Visitor to comprehensively adjust all the pointers.
+   
+// If we find any references to the prior parameters we use the new 
+// renditions that we invented above (i.e. those not containing 'auto') 
+// instead
+// i.e. [](auto a, auto* a2, decltype(a) b, X<sizeof(a)> x, 
+//          Y<decltype(a)> y,  int c, Z<decltype(x)> z, 
+//          auto (*b)(decltype(a), decltype(a2)) ) 
+//
+// FVQUESTION: Is it safe to just reset the Decl within the DeclRefExpr
+//   of the old parameter to the new one?
+//   2) Is using the visitor the best way to do this?
+       
+struct FixReferencesToPreviousParametersVisitor
+  : RecursiveASTVisitor<FixReferencesToPreviousParametersVisitor> {
+          
+    // The Parameter Index we should not go beyond 
+    // can be the full size when processing the return type
+    const size_t CurMaxIndex;
+    const llvm::ArrayRef<ParmVarDecl *> &OriginalParams;
+    const SmallVector<ParmVarDecl*, 4>  &NewParams;
+  public:
+    FixReferencesToPreviousParametersVisitor(size_t CurMaxIndex,
+        const llvm::ArrayRef<ParmVarDecl *> &OriginalParams,
+        const SmallVector<ParmVarDecl*, 4>  &NewParams) :
+        CurMaxIndex(CurMaxIndex), OriginalParams(OriginalParams),
+        NewParams(NewParams) { }
+    // Get the Decl referenced by the expression within the
+    // parameter, and check to see if it needs to be 
+    // adjusted           
+    bool VisitDeclRefExpr(DeclRefExpr *DRE) {
+      ValueDecl* VD = DRE->getDecl();
+      for (size_t i = 0; i < CurMaxIndex; ++i )
+      {
+        if (VD == cast<ValueDecl>(OriginalParams[i]))
+          DRE->setDecl(NewParams[i]);
+      } 
+      return true;
+    }
+};
+   
+
 // Takes the parameters of a generic lambda, checks them 
 // for the presence of Auto, and generates corresponding
 // parameters with an appropraite tempalte parameter list
@@ -229,54 +278,7 @@ static void createTemplateVersionsOfAutoParameters(
 
       FuncParamsWithAutoReplaced.push_back(OrigOrNewParam);
     }
-    // Check if this param references a prior parameter.
-    // (i.e.decltype (a) b) and rewire it to refer to the new invented 
-    // parameter - otherwise it will not be linked to the corresponding
-    // template parameter during instantiation.
-    
-    // Since we can not be sure of how deeply nested the reference 
-    // might be, or whether we are referring to multiple previous params
-    // we use a Visitor to comprehensively adjust all the pointers.
-   
-    // If we find any references to the prior parameters we use the new 
-    // renditions that we invented above (i.e. those not containing 'auto') 
-    // instead
-    // i.e. [](auto a, auto* a2, decltype(a) b, X<sizeof(a)> x, 
-    //          Y<decltype(a)> y,  int c, Z<decltype(x)> z, 
-    //          auto (*b)(decltype(a), decltype(a2)) ) 
-    //
-    // FVQUESTION: Is it safe to just reset the Decl within the DeclRefExpr
-    //   of the old parameter to the new one?
-    //   2) Is using the visitor the best way to do this?
        
-    struct FixReferencesToPreviousParametersVisitor
-      : RecursiveASTVisitor<FixReferencesToPreviousParametersVisitor> {
-          
-        // The Parameter Index we should not go beyond 
-        // can be the full size when processing the return type
-        const size_t CurMaxIndex;
-        const llvm::ArrayRef<ParmVarDecl *> &OriginalParams;
-        const SmallVector<ParmVarDecl*, 4>  &NewParams;
-      public:
-        FixReferencesToPreviousParametersVisitor(size_t CurMaxIndex,
-            const llvm::ArrayRef<ParmVarDecl *> &OriginalParams,
-            const SmallVector<ParmVarDecl*, 4>  &NewParams) :
-            CurMaxIndex(CurMaxIndex), OriginalParams(OriginalParams),
-            NewParams(NewParams) { }
-        // Get the Decl referenced by the expression within the
-        // parameter, and check to see if it needs to be 
-        // adjusted           
-        bool VisitDeclRefExpr(DeclRefExpr *DRE) {
-          ValueDecl* VD = DRE->getDecl();
-          for (size_t i = 0; i < CurMaxIndex; ++i )
-          {
-            if (VD == cast<ValueDecl>(OriginalParams[i]))
-              DRE->setDecl(NewParams[i]);
-          } 
-          return true;
-        }
-    };
-      
     FixReferencesToPreviousParametersVisitor visitor(CurrentParameterIndex + 1, 
                                 Params, FuncParamsWithAutoReplaced);
     visitor.TraverseDecl(OrigOrNewParam);
@@ -289,6 +291,21 @@ static void createTemplateVersionsOfAutoParameters(
  
 }
 
+// This is somewhat of a kludge that is used to 
+// create the appropriate FunctionProtoTypeLoc
+//  - we inherit just to gain access to the 
+//    void* Data protected property so we can
+//     assign to it.
+struct FPTLoc : InheritingConcreteTypeLoc<FunctionProtoTypeLoc,
+                                    FunctionProtoTypeLoc,
+                                    FunctionProtoType> {
+  FPTLoc(QualType ty, ASTContext& Context, size_t numArgs) { 
+    Ty = ty.getAsOpaquePtr();
+    Data = Context.Allocate(sizeof(FunctionLocInfo) 
+                          + (numArgs * sizeof(ParmVarDecl*)));
+  }
+
+};
 
 // FVTODO: This function needs to be refactored and cleaned up
 // create a member template within the Closure class
@@ -372,21 +389,7 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
     NewParamsType.data(),
     FuncParamsWithAutoReplaced.size(), OrigFunctionInfo); 
 
-  // This is somewhat of a kludge that is used to 
-  // create the appropriate FunctionProtoTypeLoc
-  //  - we inherit just to gain access to the 
-  //    void* Data protected property so we can
-  //     assign to it.
-  struct FPTLoc : InheritingConcreteTypeLoc<FunctionProtoTypeLoc,
-                                     FunctionProtoTypeLoc,
-                                     FunctionProtoType> {
-    FPTLoc(QualType ty, ASTContext& Context, size_t numArgs) { 
-      Ty = ty.getAsOpaquePtr();
-      Data = Context.Allocate(sizeof(FunctionLocInfo) 
-                           + (numArgs * sizeof(ParmVarDecl*)));
-    }
-
-  };
+ 
   
   // now assign the parameters to the functionprototypeLoc
   FPTLoc Fptloc(FunctionTypeWithAutoReplaced, Context, 
