@@ -7793,17 +7793,22 @@ Decl *Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Decl *D) {
                      && "No CachedCapturingScopeInfo for a generic lambda!");
       
       // Make a copy of the LSI associated with the template member operator
-      LambdaScopeInfo *ReifiedLSI = new LambdaScopeInfo(*CachedLSI);
+      LambdaScopeInfo *SpecializedLSI = new LambdaScopeInfo(*CachedLSI);
       // Now clear out all the information we will be re-calculating
       // for this specialization
-      ReifiedLSI->Lambda = GLambdaClass;
-      ReifiedLSI->CallOperator = GLambdaCallOperatorSpec;
-      ReifiedLSI->SwitchStack.clear();
-      ReifiedLSI->Returns.clear();
-      ReifiedLSI->CompoundScopes.clear();
-      ReifiedLSI->PossiblyUnreachableDiags.clear();
+      SpecializedLSI->Lambda = GLambdaClass;
+      SpecializedLSI->CallOperator = GLambdaCallOperatorSpec;
+      SpecializedLSI->SwitchStack.clear();
+      SpecializedLSI->Returns.clear();
+      SpecializedLSI->CompoundScopes.clear();
+      SpecializedLSI->PossiblyUnreachableDiags.clear();
+      // Don't forget to reset the return type from the completely generic
+      // to the specialized (which can have a non-dependent canonical type)
+      // otherwise auto L = [](auto a) ->decltype(a) { return 5; };
+      //  L('a'); causes an inconsistency in the return type 
+      SpecializedLSI->ReturnType = GLambdaCallOperatorSpec->getResultType();
       
-      FunctionScopes.push_back(ReifiedLSI);
+      FunctionScopes.push_back(SpecializedLSI);
            
     }
     else // is Not a generic lambda, so enter new function scope from scratch
