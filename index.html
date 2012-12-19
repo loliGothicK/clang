@@ -30,7 +30,11 @@
       <section>
         <h1>Generic Lambdas in C++ using Clang</h1>
 
-<p>This is an implementation of Generic Lambdas for C++ based on the <a href="http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2012/n3418.pdf">n3418: Proposal for Generic Lambda Expressions</a>.</p>
+<h2>This is an implementation of Generic Lambdas for C++ based on the <a href="http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2012/n3418.pdf">n3418: Proposal for Generic Lambda Expressions</a>.</h2>
+
+<h3>This is NOT by any means intended to be a production ready implementation, and almost certainly has bugs that either I have not yet discovered, or bugs that have been reported (thank you in advance for making the effort to do so) and which I am currently working on.</h3>
+
+<h3>This implementation's raison d'être is to encourage developers to play with the generic lambda feature and provide bug reports and feedback to us.  We hope that this will prove useful to the C++ community and help guide us as we work on the next version of our proposal for the C++ Standardization meeting to be held in Bristol (April 2013).</h3>
 
 <h3>The current version (12/2012) implements subproposals 2.1, 2.2, 2.3 and 2.5.</h3>
 
@@ -74,6 +78,7 @@ auto L = [](auto &amp;a) -&gt; auto&amp; { return a; };
 
 <ol>
 <li>Download the appropriate version of llvm (167560) by following the instructions at : <a href="http://clang.llvm.org/get_started.html">http://clang.llvm.org/get_started.html</a>.  I use TortoiseSVN on windows, and if you do, be sure to download the correct version of llvm (167560)</li>
+<li>All the development has been done using Visual Studio 2010 - I have not compiled this using xcode or gcc, if anyone could help me with this, I would certainly appreciate it.</li>
 <li>In the above instructions from the clang website, where it states to checkout clang using subversion (i.e step 3 svn co <a href="http://llvm.org/svn/llvm-project/cfe/trunk">http://llvm.org/svn/llvm-project/cfe/trunk</a> clang), instead install git (I use TortoiseGit on windows) and checkout this repository.</li>
 <li>Then follow the instructions as delineated on clangs website to compile and build clang.</li>
 <li>Once you have your clang binary, it should be able to compile your code and generate the executable that should run directly.  On windows, I find myself having to use the interpreter lli.exe.  So I do the following when trying to compile code in test.cpp:
@@ -87,7 +92,7 @@ lli test.bc
 <ol>
 <li>I have uploaded my most recent Debug build of generic-lambda-clang that was built using visual studio 2010 and lli.exe.</li>
 <li>In order for you to use it, you need certain debug dlls that I can not legally post here - An easy way is probably for you to install <a href="http://www.microsoft.com/visualstudio/eng/downloads#d-express-windows-desktop">Visual C++ 2010 Express (free)</a>.</li>
-<li>Download the windows exectutable <a href="https://www.sugarsync.com/pf/D6969703_69613999_6758815">generic-lambda-clang.exe</a> along with the <a href="https://www.sugarsync.com/pf/D6969703_65299173_039062">llvm interpreter: lli.exe</a> if you need it.
+<li>Download the windows exectutable <a href="https://www.sugarsync.com/pf/D6969703_69613999_6754006">generic-lambda-clang.exe</a> along with the <a href="https://www.sugarsync.com/pf/D6969703_65299173_039062">llvm interpreter: lli.exe</a> if you need it.
 <pre>
 generic-lambda-clang -std=c++1y -c test.cpp -emit-llvm -o test.bc
 lli test.bc
