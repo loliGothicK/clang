@@ -1015,7 +1015,7 @@ public:
   
   /// \brief Determine whether this class describes a Generic 
   /// lambda function object.
-  bool isGenericLambda() const { return hasDefinition() && 
+  bool isGenericLambda() const { return isLambda() && 
                                       data().IsGenericLambda; }
   void setGenericLambda(bool b) {
     data().IsGenericLambda = b;
