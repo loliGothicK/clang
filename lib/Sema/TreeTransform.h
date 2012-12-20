@@ -28,8 +28,11 @@
 #include "clang/AST/Stmt.h"
 #include "clang/AST/StmtCXX.h"
 #include "clang/AST/StmtObjC.h"
+
 #include "clang/Sema/Ownership.h"
 #include "clang/Sema/Designator.h"
+#include "clang/Sema/Template.h"
+
 #include "clang/Lex/Preprocessor.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -7849,13 +7852,14 @@ TreeTransform<Derived>::TransformCXXTemporaryObjectExpr(
                                                     E->getLocEnd());
 }
 
+
+  
 template<typename Derived>
 ExprResult
 TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
 
   // if this is a generic Lambda, transform the template parameter list
   // and add it to the scope
-  ASTContext &Context = getSema().Context;
   TemplateDeclInstantiator  DeclInstantiator(getSema(), 
                           /* DeclContext *Owner */ E->getCallOperator(),
                           getDerived().getDeducedTemplateArguments());
@@ -7866,9 +7870,6 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
                                          OrigTemplateParamList);
   }
 
-  LocalInstantiationScope *CurrentInstantiationScope = 
-    getSema().CurrentInstantiationScope;
-  
   TypeSourceInfo *MethodTy
     = TransformType(E->getCallOperator()->getTypeSourceInfo());
   if (!MethodTy)

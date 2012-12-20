@@ -148,16 +148,18 @@ DeduceTemplateArguments(Sema &S,
 unsigned Sema::getTemplateParameterDepth(DeclContext *Ctx) {
   unsigned Depth = 0;
   if (!Ctx) return Depth;
-  
+  ClassTemplateDecl *ClassTemplate = 0;
+  ClassTemplatePartialSpecializationDecl
+                  *PartialSpecDecl = 0;
   while (!Ctx->isFileContext()) {
     // Add template depth for either a primary class template
     // or a partial template specialization
     // (Note fully specialized templates do NOT add to depth)
     if (CXXRecordDecl *Rec = dyn_cast<CXXRecordDecl>(Ctx)) {
-      if (ClassTemplateDecl *ClassTemplate = Rec->getDescribedClassTemplate())
+      if ((ClassTemplate = Rec->getDescribedClassTemplate()))
         ++Depth;
-      else if ( ClassTemplatePartialSpecializationDecl *PartialSpecDecl
-        = dyn_cast<ClassTemplatePartialSpecializationDecl>(Ctx) )
+      else if ((PartialSpecDecl = dyn_cast<
+                ClassTemplatePartialSpecializationDecl>(Ctx)))
         ++Depth;
     }
     else if(FunctionDecl *Function = dyn_cast<FunctionDecl>(Ctx))

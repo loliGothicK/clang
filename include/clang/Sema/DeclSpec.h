@@ -1488,9 +1488,6 @@ private:
   /// InvalidType - Set by Sema::GetTypeForDeclarator().
   bool InvalidType : 1;
 
-  /// FVADDED To allow auto in generic lambdas
-  bool AutoAllowedAsParameter : 1;
-  bool AutoAllowedAsReturnType : 1;
   /// GroupingParens - Set by Parser::ParseParenDeclarator().
   bool GroupingParens : 1;
 
@@ -1526,6 +1523,10 @@ private:
   /// this declarator as a parameter pack.
   SourceLocation EllipsisLoc;
   
+  /// FVADDED To allow auto in generic lambdas
+  bool AutoAllowedAsParameter : 1;
+  bool AutoAllowedAsReturnType : 1;
+
   friend struct DeclaratorChunk;
 
 public:

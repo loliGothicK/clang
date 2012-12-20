@@ -87,6 +87,7 @@ bool isNestedLambda(FunctionDecl *F) {
     return ParentFun && isNonTemplateLambdaCallOperator(ParentFun); 
     
   }
+  return false;
 }
 
 bool isGenericLambdaCallOperatorSpecialization(FunctionDecl *F) {
@@ -152,6 +153,7 @@ bool isGenericLambdaSpecWithinFunctionTemplateSpecialization(
     return ParentFun && ParentFun->isTemplateInstantiation(); 
 
   }
+  return false;
 }
 
 /// \brief Retrieve the template argument list(s) that should be used to
