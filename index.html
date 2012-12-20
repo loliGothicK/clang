@@ -74,11 +74,10 @@ auto L = [](auto &amp;a) -&gt; auto&amp; { return a; };
 ++L(local); 
 </code></pre>
 
-<h3>How to Compile the Code on Windows</h3>
+<h2>How to Compile the Code on Windows</h2>
 
 <ol>
-<li>Checkout the appropriate version of llvm (167560) by following the instructions at : <a href="http://clang.llvm.org/get_started.html">http://clang.llvm.org/get_started.html</a>.  I use TortoiseSVN on windows. Be sure to download the correct version of llvm (167560).  <b> Do NOT checkout anything else except for the correct revision of the llvm snapshot. <b></b></b>
-</li>
+<li>Checkout the appropriate version of llvm (167560) by following the instructions at : <a href="http://clang.llvm.org/get_started.html">http://clang.llvm.org/get_started.html</a>.  I use TortoiseSVN on windows. Be sure to download the correct version of llvm (167560) (use the -r option on command line).  Do NOT checkout anything else (i.e compiler-RT etc.) except for the correct revision of the llvm snapshot.</li>
 <li>In the above instructions from the clang website, where it states to checkout clang using subversion (i.e step 3 svn co <a href="http://llvm.org/svn/llvm-project/cfe/trunk">http://llvm.org/svn/llvm-project/cfe/trunk</a> clang), instead install git (I use TortoiseGit on windows) and clone this repository into the subdirectory clang. For e.g, using the command line when in your-dir/llvm/tools/ try:
 <pre>
 git clone git:/github.com/faisalv/clang-glambda.git clang
@@ -92,7 +91,7 @@ clang -std=c++1y -c test.cpp -emit-llvm -o test.bc
 lli test.bc
 </pre>
 </li>
-</ol><h3>How to use the Windows binaries:</h3>
+</ol><h2>How to use the Windows binaries:</h2>
 
 <ol>
 <li>I have uploaded my most recent Debug build of generic-lambda-clang that was built using visual studio 2010.</li>
@@ -105,16 +104,16 @@ lli test.bc
 </li>
 <li>FYI: lli does cause bugs with executing the following code:  (This appears to be a bug with lli.exe and last I checked also occurred with the actual clang snapshot and has nothing to do with my changes).  The bug does not occur if you are on a platform that can compile the code natively.
 <pre>
-template
+template &lt; class F1, class F2&gt;
 struct overload : F1, F2 {
 overload(F1 const&amp; f1, F2 const&amp; f2)
 : F1(f1), F2(f2) { }
 using F1::operator();
 using F2::operator();
 };
-template
-overload make_overload(F1 const&amp; f1, F2 const&amp; f2) {
-return overload(f1, f2);
+template &lt;class F1, class F2&gt;
+overload &lt;F1, F2&gt; make_overload(F1 const&amp; f1, F2 const&amp; f2) {
+return overload &lt;F1, F2&gt;(f1, f2);
 }
 int main() {
 auto f1 = <a href="int%20i">&amp;</a> { return i; }; 
@@ -125,6 +124,41 @@ printf("%d\n", f(3.14));
 }
 </pre>
 </li>
+</ol><h2>How to Compile the code on MacOS Lion</h2>
+
+<ol>
+<li>Download and install <a href="https://developer.apple.com/xcode/">XCode</a>
+</li>
+<li>Checkout the appropriate version of llvm (167560) by following the instructions at <a href="http://clang.llvm.org/get_started.html">Clang's Website</a>. Try this:
+<pre>
+svn co <a href="http://llvm.org/svn/llvm-project/llvm/trunk">http://llvm.org/svn/llvm-project/llvm/trunk</a> llvm -r 167560
+</pre>
+Do NOT checkout anything else (i.e compiler-RT etc.) except for the correct revision of the llvm snapshot.</li>
+<li>In the above instructions from the clang website, where it states to checkout clang using subversion (i.e step 3 svn co <a href="http://llvm.org/svn/llvm-project/cfe/trunk">http://llvm.org/svn/llvm-project/cfe/trunk</a> clang), instead install git and clone this repository into the subdirectory clang. For e.g, using the command line when in your-dir/llvm/tools/ try:
+<pre>
+git clone git:/github.com/faisalv/clang-glambda.git clang
+</pre>
+</li>
+<li>Then follow the instructions as delineated on clangs website to compile and build clang.</li>
+<li>Once you have your clang binary, it should be able to compile your code into an executable. The binary typically gets dumped in build/Debug&amp;Asserts/bin/.
+<pre>
+./clang -std=c++1y test.cpp
+./a.out
+</pre>
+</li>
+<li>Please let me know if you encounter any bugs with any part of the process.</li>
+</ol><h2>How to use the MacOS Lion Binaries</h2>
+
+<ol>
+<li>Download <a href="https://www.sugarsync.com/pf/D6969703_4922085_6704356">generic-lambda-clang-lion</a>
+</li>
+<li>Try the following:
+<pre>
+./generic-lambda-clang-lion test.cpp -std=c++1y
+./a.out
+</pre>
+</li>
+<li>Please Let me know if it works for you (I have been unable to test it on a non-development box)</li>
 </ol>
       </section>
       <footer>
