@@ -2420,7 +2420,7 @@ static void addInstantiatedParametersToScope(Sema &S, FunctionDecl *Function,
     const CXXMethodDecl *OrigLambdaCallOp = cast<const CXXMethodDecl>(PatternDecl);
     CXXRecordDecl *NewLambdaClass = NewLambdaCallOp->getParent();
     const CXXRecordDecl *OrigLambdaClass = OrigLambdaCallOp->getParent();
-   
+
     typedef CXXRecordDecl::capture_const_iterator CI;
     for (CI new_capture_it = NewLambdaClass->captures_begin(),
       orig_capture_it = OrigLambdaClass->captures_begin(),
@@ -3520,6 +3520,19 @@ NamedDecl *Sema::FindInstantiatedDecl(SourceLocation Loc, NamedDecl *D,
     // D is a local of some kind. Look into the map of local
     // declarations to their instantiations.
     typedef LocalInstantiationScope::DeclArgumentPack DeclArgumentPack;
+    // If D points to a Generic Lambda Class, and the ParentDC is not 
+    // dependent, then do nothing.
+    // This allows the following to compile:
+    // auto A = [](auto a) a;
+    // auto B = [](auto b) A.operator()(b);
+    // B(3);
+    if (isa<CXXRecordDecl>(D) && cast<CXXRecordDecl>(D)->isLambda()) {
+      CXXRecordDecl *LambdaClass = cast<CXXRecordDecl>(D);
+      if (LambdaClass->isGenericLambda()) {
+        if (!ParentDC->isDependentContext())
+          return D;
+      }
+    }
     llvm::PointerUnion<Decl *, DeclArgumentPack *> *Found
       = CurrentInstantiationScope->findInstantiationOf(D);
 
