@@ -1074,6 +1074,26 @@ void StmtProfiler::VisitObjCBridgedCastExpr(const ObjCBridgedCastExpr *S) {
   VisitExplicitCastExpr(S);
   ID.AddBoolean(S->getBridgeKind());
 }
+// FVTODO: These definitions are also in SemaExpr.cpp - they need to be moved
+// into Sema
+// Check to see if the DeclContext DC is the body of a Lambda 
+// Expression, by checking the following
+//  1) Is it a Class Member Function
+//  2) Is the Member function the overloaded function call operator
+//  3) Is the Lambda property set in the containing/parent class
+static inline bool IsLambdaDeclContext(const DeclContext* DC)
+{
+  return isa<CXXMethodDecl>(DC) &&
+    cast<CXXMethodDecl>(DC)->getOverloadedOperator() == OO_Call &&
+    cast<CXXRecordDecl>(DC->getParent())->isLambda();
+}
+
+
+static inline bool IsGenericLambdaDeclContext(const DeclContext* DC)
+{
+  return IsLambdaDeclContext(DC) &&
+    cast<CXXRecordDecl>(DC->getParent())->isGenericLambda();
+}
 
 void StmtProfiler::VisitDecl(const Decl *D) {
   ID.AddInteger(D? D->getKind() : 0);
@@ -1089,6 +1109,46 @@ void StmtProfiler::VisitDecl(const Decl *D) {
     }
 
     if (const ParmVarDecl *Parm = dyn_cast<ParmVarDecl>(D)) {
+      // Are we a parameter of a GenericLambda?
+      // We do not want the canonical decltype if we are transforming
+      // a generic lambda - otherwise the decltypes get confused
+      // FVTODO: I don't entirely understand why this only occurs with
+      // using decltype within bodies of generic lambdas (I have not 
+      // tested it with member templates), but it does not occur
+      // when decltype is used in the declarator of the generic lambda
+      // to understand the problem consider:
+      // auto A = []( auto x ) -> decltype (x) {
+      //    decltype(x) y; // 1
+      // };
+      // 
+      // auto L = [](auto a) a(3);
+      // auto M = [=](auto b) L([](auto d) -> decltype(d) d);
+      // M(3.14);
+      // The above will compile if the line labeled '1' is commented out
+      // for some reason when hashing decltype(d) (it has to be within 
+      //  a nested generic lambda and thus be dependent) the hash result is 
+      // the same as for decltype(x) but only when decltype(x) is compiled 
+      // within the body of A (i.e. only then does it effect decltype(d))
+      // - this is action at a distance, YUK!!! since it effects
+      // the compilation/instantiation of M(3.14).
+      // 
+      // I think a better way to address this issue is via 
+      // DependentDecltypeType::Profile and the process of creating 
+      // a unique ID (i.e. hash) within FoldingSet 
+      // and studying the process to
+      // see how decltype(x) in the declarator does not
+      // create a problem, but decltype(x) in the body does!
+      // For now this fix works - but I wonder if it will work
+      // well if overloads are called within the body of a generic
+      // lambda, and if tempalte instantiation and overload resolution
+      // will occur in the context of transforming the generic lambda
+      // will this function will not use the canonical type
+      // and I wonder what inconsistency might result?
+      // Once again, at some point the better fix would be to ensure
+      // that the hash 
+      const DeclContext* DC = Parm->getDeclContext();
+      bool IsGenericLambda = IsGenericLambdaDeclContext(DC);
+      Canonical = !IsGenericLambda;
       // The Itanium C++ ABI uses the type, scope depth, and scope
       // index of a parameter when mangling expressions that involve
       // function parameters, so we will use the parameter's type for
