@@ -773,12 +773,37 @@ public:
     bool OldFPContractState : 1;
   };
 
+  // FVTODO: Track if we are transforming a generic lambda
+  // This state may prove useful - for now I don't
+  // have a clear use for it - we may be able to remove it.
+  std::vector<bool> IsTransformingGenericLambdaStack;
+  // Are we transforming a Lambda call operator of a nested lambda?
+  // This is useful when we are transforming the prototype 
+  // and we want the parameters added to the CurrentInstantiationScope
+  // and not have a new one created on the stack that gets popped off
+  // too early.
+  bool IsTransformingLambdaCallOperatorProtoType : 1;
 public:
   Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
-       TranslationUnitKind TUKind = TU_Complete,
-       CodeCompleteConsumer *CompletionConsumer = 0);
+    TranslationUnitKind TUKind = TU_Complete,
+    CodeCompleteConsumer *CompletionConsumer = 0);
   ~Sema();
 
+  void setTransformingLambdaCallOperatorProtoType(bool b) {
+    IsTransformingLambdaCallOperatorProtoType = b;
+  }
+  bool isTransformingLambdaCallOperatorProtoType() const {
+    return IsTransformingLambdaCallOperatorProtoType;
+  }
+
+  bool isTransformingGenericLambda() const 
+  { return IsTransformingGenericLambdaStack.size() > 0; }
+  void pushTransformingGenericLambdaStateOnStack() {
+    IsTransformingGenericLambdaStack.push_back(true);
+  }
+  void popTransformingGenericLambdaStateFromStack() {
+    IsTransformingGenericLambdaStack.pop_back();
+  }
   /// \brief Perform initialization that occurs after the parser has been
   /// initialized but before it parses anything.
   void Initialize();

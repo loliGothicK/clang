@@ -1771,7 +1771,14 @@ DependentDecltypeType::DependentDecltypeType(const ASTContext &Context, Expr *E)
 
 void DependentDecltypeType::Profile(llvm::FoldingSetNodeID &ID,
                                     const ASTContext &Context, Expr *E) {
-  E->Profile(ID, Context, true);
+  // Note: For use of decltype referring to parameters of Generic Lambdas
+  // the below true for using the Canonical Type is Ignored! 
+  // Canonical gets set to false when hashing
+  // the ID (otherwise the wrong types get
+  // linked to each other), even though it
+  // is passed as true in here if referring to the parameter
+  // of a generic lambda
+  E->Profile(ID, Context, /* Use Canonical Type */ true);
 }
 
 TagType::TagType(TypeClass TC, const TagDecl *D, QualType can)

@@ -7852,13 +7852,36 @@ TreeTransform<Derived>::TransformCXXTemporaryObjectExpr(
                                                     E->getLocEnd());
 }
 
-
-  
+// A RAII based class to track in Sema if we are ever transforming
+// a nested Generic lambda - At time of definition (12/23/12)
+// I do not use this information but might need it in the future
+struct IsTransformingGenericLambdaStateStack {
+  Sema &SemaRef;
+  bool IsGeneric;
+  IsTransformingGenericLambdaStateStack(Sema& S, bool IsGeneric) 
+    : SemaRef(S), IsGeneric(IsGeneric) {
+    if (IsGeneric)
+      SemaRef.pushTransformingGenericLambdaStateOnStack();
+  }
+  ~IsTransformingGenericLambdaStateStack() {
+    if (IsGeneric)
+      SemaRef.popTransformingGenericLambdaStateFromStack();
+  }
+}; 
+ 
 template<typename Derived>
 ExprResult
 TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
+  
+  // Keep a track of whether we are in the context of
+  // transforming a generic lambda
+  // This information is currently NOT used (12/23/12), but 
+  // I have some sense it might prove useful in the future
+  bool IsGenericLambda = !!E->getTemplateParameterList();
+  IsTransformingGenericLambdaStateStack ITGLSS(getSema(), 
+                              IsGenericLambda);
 
-  // if this is a generic Lambda, transform the template parameter list
+  // If this is a generic Lambda, transform the template parameter list
   // and add it to the scope
   TemplateDeclInstantiator  DeclInstantiator(getSema(), 
                           /* DeclContext *Owner */ E->getCallOperator(),
@@ -7870,15 +7893,23 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
                                          OrigTemplateParamList);
   }
 
-  TypeSourceInfo *MethodTy
-    = TransformType(E->getCallOperator()->getTypeSourceInfo());
-  if (!MethodTy)
+  TypeSourceInfo *OldMethodTSI = E->getCallOperator()->getTypeSourceInfo();
+  
+  // This allows TransformType Visitors to be aware that we
+  // are transforming a lambda call operator and to NOT 
+  // create a new localInstantiationScope on the stack
+  // so that the parameters are added to the currentInstantiationScope
+  SemaRef.setTransformingLambdaCallOperatorProtoType(true);
+  TypeSourceInfo *NewMethodTSI = TransformType(OldMethodTSI);
+  SemaRef.setTransformingLambdaCallOperatorProtoType(false);
+  
+  if (!NewMethodTSI)
     return ExprError();
 
   // Create the local class that will describe the lambda.
   CXXRecordDecl *Class
     = getSema().createLambdaClosureType(E->getIntroducerRange(),
-                                        MethodTy,
+                                        NewMethodTSI,
                                         /*KnownDependent=*/false);
   getDerived().transformedLocalDecl(E->getLambdaClass(), Class);
 
@@ -7886,16 +7917,38 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
   if (NewTemplateParamList)
     for (size_t i = 0; i < NewTemplateParamList->size(); ++i)
       NewTemplateParamList->getParam(i)->setDeclContext(Class);
- 
-  // Transform lambda parameters.
   llvm::SmallVector<QualType, 4> ParamTypes;
   llvm::SmallVector<ParmVarDecl *, 4> Params;
-  if (getDerived().TransformFunctionTypeParams(E->getLocStart(),
-        E->getCallOperator()->param_begin(),
-        E->getCallOperator()->param_size(),
-        0, ParamTypes, &Params))
-    return ExprError();
- 
+
+  // Extract the Transformed lambda parameters from the Transformed
+  // NewMethod Type Source Info and copy it into vectors
+  // that can then be passed into our Sema builders to 
+  // build our nested lambda
+  QualType NewFPT = NewMethodTSI->getType();
+  const FunctionProtoType* NewFPTType = 
+        cast<FunctionProtoType>(NewFPT.getTypePtr());
+   
+  TypeLocBuilder NewTLB;
+  TypeLoc NewPlainTL = NewMethodTSI->getTypeLoc();
+  NewTLB.reserve(NewPlainTL.getFullDataSize());
+
+  FunctionProtoTypeLoc NewTL = cast<FunctionProtoTypeLoc>(NewPlainTL);
+  ParmVarDecl **NewParamDeclArray = NewTL.getParmArray();
+  const unsigned NewNumArgs = NewTL.getNumArgs();
+  const QualType *NewParamTypeArray = NewFPTType->arg_type_begin();
+  // NOTE: the E->getCallOperator()->param_size() == NewNumArgs assertion 
+  // is tempting but misguided for variadic parameters, where param_size()
+  // can be 1, but NewNumArgs can be 0 ... > 1
+  // assert(E-getCallOperator()->param_size() == NewNumArgs && 
+  // "In TransformLambdaExpr as we are gathering "
+  //  "Params form the NewMethodTy (TypeSourceInfo) the NewNumArgs should be "
+  //  "equal to the OldNumArgs! (Check default args etc if this assertion "
+  //  " fails ..)");
+  for (size_t i = 0; i < NewNumArgs; ++i) {
+    ParamTypes.push_back(NewParamTypeArray[i]);
+    Params.push_back(NewParamDeclArray[i]);
+  }
+  
   //FVTODO: should this really be 0 if we do NOT have template params
   //  need to think about this .... 
   unsigned int NewTemplateParamsDepth = NewTemplateParamList ? 
@@ -7903,7 +7956,7 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
   // Transform the call operator.
   CXXMethodDecl *CallOperator
     = getSema().startLambdaDefinition(Class, E->getIntroducerRange(),
-                                      MethodTy,
+                                      NewMethodTSI,
                                       E->getCallOperator()->getLocEnd(),
                                       Params, 
                                       NewTemplateParamList, 

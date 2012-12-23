@@ -1495,15 +1495,25 @@ ExprResult TemplateInstantiator::TransformCXXDefaultArgExpr(
 
 QualType TemplateInstantiator::TransformFunctionProtoType(TypeLocBuilder &TLB,
                                                       FunctionProtoTypeLoc TL) {
+  // We don't want a separate instantiation scope when
+  // transforming a generic lambda
+  if (SemaRef.isTransformingLambdaCallOperatorProtoType()) 
+    return inherited::TransformFunctionProtoType(TLB, TL);
+
   // We need a local instantiation scope for this function prototype.
   LocalInstantiationScope Scope(SemaRef, /*CombineWithOuterScope=*/true);
   return inherited::TransformFunctionProtoType(TLB, TL);
+  
 }
 
 QualType TemplateInstantiator::TransformFunctionProtoType(TypeLocBuilder &TLB,
                                  FunctionProtoTypeLoc TL,
                                  CXXRecordDecl *ThisContext,
                                  unsigned ThisTypeQuals) {
+  // Do NOT create a new scope if we are transforming a generic lambda
+  if (SemaRef.isTransformingLambdaCallOperatorProtoType())
+    return inherited::TransformFunctionProtoType(TLB, TL, ThisContext, 
+      ThisTypeQuals);  
   // We need a local instantiation scope for this function prototype.
   LocalInstantiationScope Scope(SemaRef, /*CombineWithOuterScope=*/true);
   return inherited::TransformFunctionProtoType(TLB, TL, ThisContext, 
