@@ -11114,14 +11114,68 @@ static void DoMarkVarDeclReferenced(Sema &SemaRef, SourceLocation Loc,
   // C++03 depends on whether we get the C++03 version correct. The second
   // part does not apply to references, since they are not objects.
   const VarDecl *DefVD;
+  
+  // FVTODO: This was the original logic that would create assertion-failures
+  // if value dependent constant expressions would crop up in the bodies
+  // of generic lambdas 
+  // (i.e) [](auto a) { constexpr bool b = X<decltype(a)>::value; };
+  // Lets leave this here just in case we need to
+  // revisit this logic at a later date
+  //  if (E && !isa<ParmVarDecl>(Var) &&
+  //    Var->isUsableInConstantExpressions(SemaRef.Context) &&
+  //    Var->getAnyInitializer(DefVD) && DefVD->checkInitIsICE()) {
+  //  if (!Var->getType()->isReferenceType())
+  //    SemaRef.MaybeODRUseExprs.insert(E);
+  // } else
+  //   MarkVarDeclODRUsed(SemaRef, Var, Loc);
+  
   if (E && !isa<ParmVarDecl>(Var) &&
-      Var->isUsableInConstantExpressions(SemaRef.Context) &&
-      Var->getAnyInitializer(DefVD) && DefVD->checkInitIsICE()) {
-    if (!Var->getType()->isReferenceType())
-      SemaRef.MaybeODRUseExprs.insert(E);
+        Var->isUsableInConstantExpressions(SemaRef.Context)) {
+    // Value dependent constexpr variables in bodies
+    // of generic lambdas pose a special case -
+    // template<class T> struct X { enum { value = 0 }; };
+    // auto L = (auto a) {
+    //   using A = decltype(a);
+    //   constexpr bool b = X<A>::value;
+    // }; 
+    // Since generic lambdas are essentially member templates
+    // but their bodies have to be parsed and have semantic 
+    // analysis be performed upon definition 
+    // A term such as constexpr bool b = X<A>::value; 
+    // might be indeed be a value dependent expression
+    // and should not be marked ODR used, but as we are doing
+    // this check, we have to be careful because   
+    // checkInitIsICE() asserts that the initializer
+    // can not be Value Dependent.
+    // 
+    // FVTODO: without this we would get an assertion failure
+    // within checkInitIsICE() for the Initializer being
+    //   valueDependent() when we don't want it to
+    // This complexity of branching could be cleaned up
+    //   Also when we are within a specialized generic lambda
+    //   function body, do we need to do anything differently?
+    
+    // If this const/constexpr variable is in a generic lambda context, 
+    // then get its initializer and if it is value dependent, do nothing
+    const Expr *Init;
+    if (IsGenericLambdaDeclContext(SemaRef.CurContext) && 
+          (Init = Var->getAnyInitializer(DefVD)) && 
+              Init->isValueDependent()) 
+      return;
+    
+    else if (Var->getAnyInitializer(DefVD) && DefVD->checkInitIsICE()) {
+      if (!Var->getType()->isReferenceType())
+        SemaRef.MaybeODRUseExprs.insert(E);
+    }
+    else
+      MarkVarDeclODRUsed(SemaRef, Var, Loc);
+    
   } else
-    MarkVarDeclODRUsed(SemaRef, Var, Loc);
+      MarkVarDeclODRUsed(SemaRef, Var, Loc);
+  
+
 }
+
 
 /// \brief Mark a variable referenced, and check whether it is odr-used
 /// (C++ [basic.def.odr]p2, C99 6.9p3).  Note that this should not be
