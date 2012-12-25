@@ -139,7 +139,7 @@ bool isGenericLambdaConversionOperatorSpecialization(FunctionDecl *F) {
 //   is any reference to 'R' (the class template argument) it will get
 //   transformed within any lambda or nested lambda expressions
    
-bool isGenericLambdaSpecWithinFunctionTemplateSpecialization(
+bool isGenericLambdaSpecWithinNonDependentFunction(
      FunctionDecl *F) {
   if (isGenericLambdaCallOperatorSpecialization(F))
   {
@@ -154,6 +154,50 @@ bool isGenericLambdaSpecWithinFunctionTemplateSpecialization(
 
   }
   return false;
+}
+
+// Is F a specialization of a generic lambda call operator
+// that is within a specialized class (not a partial specialization)
+// template<class R> struct X {
+//     R r;
+//     X(R r) : r(r);
+//     std::function<R(R)> mem_fun = 
+//                         ([](auto a) [=](auto b) a + b)(r);
+//  };
+// 
+//  X<int>(7).mem_fun(2); 
+//   
+//  When instantiating X<int> above - [](auto a) gets called and it 
+//  returns a nested lambda - which gets instantiated during the 
+//  compilation of mem_fun(2).  During this instantiation the depth
+//  of the nested lambda must not take the template arguments of
+//  the parent class (that has been instantiated) into account.
+//   
+bool isGenericLambdaSpecWithinNonDependentClass(
+                                      FunctionDecl *F) {
+    if (isGenericLambdaCallOperatorSpecialization(F))
+    {
+      CXXMethodDecl *MD = cast<CXXMethodDecl>(F);
+      CXXRecordDecl *LambdaClass = MD->getParent();
+      DeclContext   *Ctx = cast<DeclContext>(LambdaClass);
+      DeclContext   *ParentOfLambdaClass = Ctx->getParent();
+      CXXRecordDecl  *ParentClass = ParentOfLambdaClass 
+        ? dyn_cast<CXXRecordDecl>(ParentOfLambdaClass)
+        : 0;
+      if ( ParentClass ) {
+        // If this is a primary class with a template, we are dependent
+        if (ParentClass->getDescribedClassTemplate())
+          return false;
+        // If this is a partial specialization delcaration, we are dependent 
+        if (isa<ClassTemplatePartialSpecializationDecl>(ParentClass))
+          return false;
+        // otherwise we are in a specialized class that is non-dependent 
+        // or a regular non-template class.
+        return true;
+      }
+
+    }
+    return false;
 }
 
 /// \brief Retrieve the template argument list(s) that should be used to
@@ -241,15 +285,39 @@ Sema::getTemplateInstantiationArgs(NamedDecl *D,
           break;
 
         // If the function we are about to instantiate is a generic lambda
-        // specialization, and it is encased within another generic lambda
+        // specialization, and it is enclosed within another generic lambda
         // specialization, we are done (because all outer template parameters
-        //  should already have percolated through - since we transform lambda
+        //  should already have been transformed - since we transform lambda
         //  expressions eagerly (FVTODO - this needs to be checked with Doug
         //  and Richard)
         if (isNestedLambda(Function))
           break;
-        if (isGenericLambdaSpecWithinFunctionTemplateSpecialization(Function))
+
+        // If the function we are about to instantiate is a generic lambda
+        // specialization, and it is enclosed within a function template
+        // specialization, we are done (because all outer template parameters
+        //  should already have percolated through - since we transform lambda
+        //  expressions eagerly (FVTODO - this needs to be checked with Doug
+        //  and Richard)
+        if (isGenericLambdaSpecWithinNonDependentFunction(Function))
           break;
+        
+        // If the function we are about to instantiate is a generic lambda
+        // specialization, and it is enclosed within a class that
+        // is completely specialized (for instance a nested lambda being used in
+        // an in class member initializer such as):
+        //   template<class T>
+        //   struct L {
+        //      T t;
+        //      std::function<T(t)> mem_fun = ([](auto a)[](auto b) b)(t); 
+        //      T t2 = ([](auto a)[](auto b) b)(t)(t); // crash!   
+        //   };
+        //   L<int> l; 
+        //   l.mem_fun(4); // crash!
+        // then stop...
+        if (isGenericLambdaSpecWithinNonDependentClass(Function))
+          break;
+
 
       } else if (FunctionTemplateDecl *FunTmpl
                                    = Function->getDescribedFunctionTemplate()) {
