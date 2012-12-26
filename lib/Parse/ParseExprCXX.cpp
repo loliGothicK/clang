@@ -1102,15 +1102,15 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     ++Depth; // Now increment for the actual addition of 
              // the template parameter list in the lambda
   }
+
   if (!Tok.is(tok::l_brace)) {
     // Try and parse a single expression that will become the return value
     // [](auto a) a;
     ExprResult SingleExpr(ParseExpression());
     
     BodyScope.Exit();
-    DiagnosticsEngine& DE = Actions.getDiagnostics();
-    if (SingleExpr.isInvalid() || 
-            DE.hasErrorOccurred()) {
+    
+    if (SingleExpr.isInvalid()) {
       Diag(Tok, diag::err_expected_lambda_body);
       Actions.ActOnLambdaError(LambdaBeginLoc, getCurScope());
       return ExprError();

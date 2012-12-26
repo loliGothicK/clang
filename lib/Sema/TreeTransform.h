@@ -7880,7 +7880,6 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
   bool IsGenericLambda = !!E->getTemplateParameterList();
   IsTransformingGenericLambdaStateStack ITGLSS(getSema(), 
                               IsGenericLambda);
-
   // If this is a generic Lambda, transform the template parameter list
   // and add it to the scope
   TemplateDeclInstantiator  DeclInstantiator(getSema(), 
@@ -7963,7 +7962,7 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
                                       NewTemplateParamsDepth);
   Class->setLambdaCallOperator(CallOperator);
   getDerived().transformAttrs(E->getCallOperator(), CallOperator);
-
+  
   return getDerived().TransformLambdaScope(E, CallOperator);
 }
 
@@ -8069,10 +8068,15 @@ TreeTransform<Derived>::TransformLambdaScope(LambdaExpr *E,
                                /*IsInstantiation=*/true);
     return ExprError();
   }
-
+  // Check if an error occurred (such as failure to capture
+  // a vairable) during instantiation of the body,
+  // while ignoring previous errors.  
+  // If a new Error did occur, don't instantiate the lambda 
+  DiagnosticsEngine& DE = getSema().getDiagnostics();
+  DiagnosticErrorTrap DetectNewError(DE);
   // Instantiate the body of the lambda expression.
   StmtResult Body = getDerived().TransformStmt(E->getBody());
-  if (Body.isInvalid()) {
+  if (Body.isInvalid() || DetectNewError.hasErrorOccurred()) {
     getSema().ActOnLambdaError(E->getLocStart(), /*CurScope=*/0,
                                /*IsInstantiation=*/true);
     return ExprError();
