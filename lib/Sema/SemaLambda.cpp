@@ -291,29 +291,13 @@ static void createTemplateVersionsOfAutoParameters(
  
 }
 
-// This is somewhat of a kludge that is used to 
-// create the appropriate FunctionProtoTypeLoc
-//  - we inherit just to gain access to the 
-//    void* Data protected property so we can
-//     assign to it.
-struct FPTLoc : InheritingConcreteTypeLoc<FunctionProtoTypeLoc,
-                                    FunctionProtoTypeLoc,
-                                    FunctionProtoType> {
-  FPTLoc(QualType ty, ASTContext& Context, size_t numArgs) { 
-    Ty = ty.getAsOpaquePtr();
-    Data = Context.Allocate(sizeof(FunctionLocInfo) 
-                          + (numArgs * sizeof(ParmVarDecl*)));
-  }
-
-};
-
 // FVTODO: This function needs to be refactored and cleaned up
 // create a member template within the Closure class
 // with each use of auto generating a corresponding template type
 // parameter
 static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
                             SourceRange IntroducerRange,
-                            TypeSourceInfo *MethodTSI,
+                            TypeSourceInfo *OrigTSI,
                             SourceLocation EndLoc,
                             llvm::ArrayRef<ParmVarDecl *> Params,
                             TemplateParameterList *OrigTemplateParamList,
@@ -323,10 +307,7 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
   ASTContext &Context = S.Context;
 
   const FunctionProtoType *AutoMethodFPT = 
-              MethodTSI->getType()->castAs<FunctionProtoType>();
-
-  //const FunctionType* FT = dyn_cast<const FunctionType>(
-  //  MethodTSI->getType().getTypePtr());
+              OrigTSI->getType()->castAs<FunctionProtoType>();
 
   // Copy the function prototype info (i.e. const, trailing return)
   // from the original declaration
@@ -338,13 +319,14 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
   // feature to deduce the return type
   QualType ResultType;
   if (OrigFunctionInfo.HasTrailingReturn)
-    ResultType = AutoMethodFPT->getResultType().getCanonicalType();
+    ResultType = AutoMethodFPT->getResultType();//.getCanonicalType();
   else
     ResultType = Context.getAutoType(ResultType);
 
   SmallVector<NamedDecl*, 4> TemplateParams;
   SmallVector<ParmVarDecl*, 4> FuncParamsWithAutoReplaced;
   
+  Scope *scope = S.getCurScope();
   unsigned int ActualDepth = S.getTemplateParameterDepth(
                                           cast<DeclContext>(Class));
   assert((!OrigTemplateParamList ||
@@ -384,29 +366,49 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
     NewParamsType.push_back(FuncParamsWithAutoReplaced[i]->getType());
   }
 
+  // Create the Type of the new invented function
   QualType FunctionTypeWithAutoReplaced = S.Context.getFunctionType(
     ResultType, 
     NewParamsType.data(),
     FuncParamsWithAutoReplaced.size(), OrigFunctionInfo); 
-
- 
   
-  // now assign the parameters to the functionprototypeLoc
-  FPTLoc Fptloc(FunctionTypeWithAutoReplaced, Context, 
-                         FuncParamsWithAutoReplaced.size());
-  Fptloc.initializeLocal(Context, IntroducerRange.getBegin());
-  FunctionProtoTypeLoc* pr = dyn_cast<FunctionProtoTypeLoc>(&Fptloc);
-  for (size_t i = 0; i < FuncParamsWithAutoReplaced.size(); ++i) {
-    pr->setArg(i, FuncParamsWithAutoReplaced[i]);
-  }  
-
-  // Now use the TypeLocBuilder to create the appropriate
-  // TypeSourceInfo
-  TypeLocBuilder TB;
-  TB.pushFullCopy(Fptloc);
-  TypeSourceInfo* NewTSI = 	TB.getTypeSourceInfo (Context, FunctionTypeWithAutoReplaced);
   
-  // Use TreeTransform and TransformType and possibly TemplateInstantiator
+  // Construct a new FunctionProtoType using the TypeLoc builder
+  // which basically wires up the locations with the new function type
+
+  // We will be using the original type loc info to substitute
+  // into the new type loc info
+  TypeLoc OrigTL = OrigTSI->getTypeLoc();
+  FunctionProtoTypeLoc* OrigFPTLoc = dyn_cast<FunctionProtoTypeLoc>(&OrigTL);
+
+  // Create the type builder and reserve all the space we needed
+  // in the original function prototype loc
+  TypeLocBuilder TLB;
+  TLB.reserve(OrigTL.getFullDataSize());
+
+  // When building the new FunctionProtoTypeLoc, we first have to add the
+  // return type ... - we use the End Loc, because it becomes the EndLoc
+  // of our eventual newFunctionProtoTypeLoc
+  TypeSourceInfo *ResultTSI = Context.getTrivialTypeSourceInfo(ResultType, 
+                                                        OrigTL.getEndLoc());
+  TLB.pushFullCopy(ResultTSI->getTypeLoc());
+  
+  // Now push the function type - the return types will be checked
+  FunctionProtoTypeLoc NewTL = TLB.push<FunctionProtoTypeLoc>(
+                                            FunctionTypeWithAutoReplaced);
+  NewTL.setLocalRangeBegin(OrigFPTLoc->getLocalRangeBegin());
+  NewTL.setLParenLoc(OrigFPTLoc->getLParenLoc());
+  NewTL.setRParenLoc(OrigFPTLoc->getRParenLoc());
+  NewTL.setLocalRangeEnd(OrigFPTLoc->getLocalRangeEnd());
+  // Add the parameter types
+  for (unsigned i = 0, e = NewTL.getNumArgs(); i != e; ++i)
+    NewTL.setArg(i, FuncParamsWithAutoReplaced[i]);
+  TypeSourceInfo* NewTSI = 	TLB.getTypeSourceInfo (Context, 
+                                        FunctionTypeWithAutoReplaced);
+  // FVTODO: Introduce some assertions here to ensure that NewTSI
+  //  has maintained the invariants from OrigTSI
+
+  // FVTODO: Use TreeTransform and TransformType and possibly TemplateInstantiator
   // to transform decltype(a) in the return type by having 'a' refer to
   // the new ParmVarDecl
 
