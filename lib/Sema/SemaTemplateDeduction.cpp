@@ -191,12 +191,57 @@ unsigned Sema::getTemplateParameterDepth(Decl *D)  {
   return getTemplateParameterDepth(Ctx);
 }
 
-/// \brief Computes the Template Parameter Depth from a Scope
+/// \brief In general this computes the Template Parameter Depth from a Scope
 //  by first looking for a DeclScope, and then passing
 //  forwarding the DeclContext onto getTemplateParameterDepth(DeclContext) 
-unsigned Sema::getTemplateParameterDepth(Scope *S)  {
-  DeclContext *Ctx = 0;
+// EXCEPT:
+//   if the Scope is a objc-block/or lambda and if the lambda is in the 
+//    context of a default argument of a template function, then adjust 
+//    depth once
+//   If a LambdaClass is passed in as a DeclContext to the second 
+//     parameter, then check the scope if it is a lambda scope, 
+//     and if not, then just forward LambdaClass to the
+//     getTemplateParameterDepth(DeclContext), do NOT search the Scope
+//     for a DeclContext 
+
+unsigned Sema::getTemplateParameterDepth(Scope *S, DeclContext *LambdaClass)  {
+  assert(S && "There should always be a scope!");
+  assert((!LambdaClass || (
+            LambdaClass->isRecord() && 
+              cast<CXXRecordDecl>(LambdaClass)->isLambda())) &&
+              "For now we do not pass anything but a LambdaClass "
+              " as the second argument to the getTemplateParamDepth "
+              " function, but this does not NEED to be the case if "
+              " there is a good reason to pass in another DeclContext."
+              "  I am just shutting this door for now until i understand it");
+              
   Scope *NextScope = S;
+
+  
+  // If we are in a block scope, we have a special case to deal with
+  // i.e. generic lambdas as default arguments in template functions
+  // template<class T> void foo( T t, T t2 = [](auto a) a) { }
+  // If that is the case, we need to add 1 to what ever depth
+  // we are at.
+  unsigned AdjustedDepthForLambdaInPrototypeScope = 0;
+
+  // LambdaScope is currently spelled BlockScope (i.e. Obj-C blocks)
+  if (S->getFlags() & Scope::BlockScope) {
+    Scope *FPrototypeScope = S->getParent();
+    // We are in a FunctionPrototype ...
+    if (FPrototypeScope && (FPrototypeScope->getFlags() & 
+                              Scope::FunctionPrototypeScope)) {
+      // that has a template parameter scope, i.e. is a template
+      Scope *TemplateParamScope = FPrototypeScope->getParent();
+      if (TemplateParamScope && 
+                (TemplateParamScope->getFlags() & Scope::TemplateParamScope))
+        AdjustedDepthForLambdaInPrototypeScope = 1;
+    }
+  }
+
+  DeclContext *Ctx = LambdaClass; 
+  // If there is No LambdaClass passed in, climb up the scopes
+  // looking for a DeclContext Scope and forward than on... 
   while(!Ctx && NextScope)
   {
     size_t ScopeKind = NextScope->getFlags();
@@ -204,10 +249,12 @@ unsigned Sema::getTemplateParameterDepth(Scope *S)  {
     {
       Ctx = static_cast<DeclContext*>(NextScope->getEntity());
       break;
-    }
+    } 
     NextScope = NextScope->getParent();
   }
-  return getTemplateParameterDepth(Ctx);
+  return AdjustedDepthForLambdaInPrototypeScope 
+                + getTemplateParameterDepth(Ctx);
+  
 }
 
 

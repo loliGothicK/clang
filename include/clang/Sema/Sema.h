@@ -5059,10 +5059,14 @@ public:
   /// or obtain the DeclContext it is defined in, and then
   /// forward the call to the DeclContext overload
   unsigned getTemplateParameterDepth(Decl *D);
+
   /// \brief Climb up the Scope chain looking for a
   /// a DeclContext and then forward it to the appropriate
   /// overload for computation of depth.
-  unsigned getTemplateParameterDepth(Scope *S);
+  /// Unless a lambdaclass is passed in or we are in a block scope then
+  ///  handle the case where we might be a default argument within a template
+  ///  function and adjust the depth accordingly for generic lambdas
+  unsigned getTemplateParameterDepth(Scope *S, DeclContext *LambdaClass = 0);
 
   //===--------------------------------------------------------------------===//
   // C++ Variadic Templates (C++0x [temp.variadic])

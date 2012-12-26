@@ -180,9 +180,9 @@ bool isGenericLambdaSpecWithinNonDependentClass(
       CXXMethodDecl *MD = cast<CXXMethodDecl>(F);
       CXXRecordDecl *LambdaClass = MD->getParent();
       DeclContext   *Ctx = cast<DeclContext>(LambdaClass);
-      DeclContext   *ParentOfLambdaClass = Ctx->getParent();
-      CXXRecordDecl  *ParentClass = ParentOfLambdaClass 
-        ? dyn_cast<CXXRecordDecl>(ParentOfLambdaClass)
+      DeclContext   *ParentCtxOfLambdaClass = Ctx->getParent();
+      CXXRecordDecl  *ParentClass = ParentCtxOfLambdaClass 
+        ? dyn_cast<CXXRecordDecl>(ParentCtxOfLambdaClass)
         : 0;
       if ( ParentClass ) {
         // If this is a primary class with a template, we are dependent

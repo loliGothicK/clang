@@ -327,8 +327,9 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
   SmallVector<ParmVarDecl*, 4> FuncParamsWithAutoReplaced;
   
   Scope *scope = S.getCurScope();
-  unsigned int ActualDepth = S.getTemplateParameterDepth(
+  unsigned int ActualDepth = S.getTemplateParameterDepth( scope, 
                                           cast<DeclContext>(Class));
+                                          
   assert((!OrigTemplateParamList ||
       OrigTemplateParamList->getDepth() == ActualDepth)
       && "The depth of the explicit template parameter list, "

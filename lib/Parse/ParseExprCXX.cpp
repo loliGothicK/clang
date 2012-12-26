@@ -1066,10 +1066,11 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
 
   TemplateParameterDepthCounter Depth(TemplateParameterDepth);
  
-  // If we already have a template parameter list, (i.e. []<class T>()
-  // then use its depth
+  
   unsigned int ActualDepth = Actions.getTemplateParameterDepth(getCurScope());
 
+  // If we already have a template parameter list, (i.e. []<class T>()
+  // then use its depth
   unsigned int LambdaTemplateParameterDepth = LambdaTemplateParams ? 
                       LambdaTemplateParams->getDepth() : ActualDepth;
 
