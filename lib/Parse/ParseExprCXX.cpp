@@ -1108,9 +1108,9 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     ExprResult SingleExpr(ParseExpression());
     
     BodyScope.Exit();
-
-    if (SingleExpr.isInvalid())
-    {
+    DiagnosticsEngine& DE = Actions.getDiagnostics();
+    if (SingleExpr.isInvalid() || 
+            DE.hasErrorOccurred()) {
       Diag(Tok, diag::err_expected_lambda_body);
       Actions.ActOnLambdaError(LambdaBeginLoc, getCurScope());
       return ExprError();
