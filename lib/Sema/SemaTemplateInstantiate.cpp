@@ -40,8 +40,7 @@ using namespace sema;
 // auto L = [](auto a) [](decltype(a) x) [](auto b) b;
 //  - the decltype(a) is NOT a generic lambda
 // 
-static bool isNonTemplateLambdaCallOperator(FunctionDecl *F)
-{
+bool isNonTemplateLambdaCallOperator(FunctionDecl *F) {
   CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(F);
   if (MD)
   {
@@ -53,6 +52,31 @@ static bool isNonTemplateLambdaCallOperator(FunctionDecl *F)
     return MD && MD == LambdaCallOp;
   }
 
+  return false;
+}
+// This function returns true if F is a specialization, or a lambda
+// call operator (either generic or non-generic)
+bool isLambdaCallOperator(FunctionDecl *F) {
+  CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(F);
+  if (MD)
+  {
+    CXXRecordDecl *LambdaClass = MD->getParent();
+    if (!LambdaClass || !LambdaClass->isLambda()) return false;
+    CXXMethodDecl *PrimaryLambdaCallOp = LambdaClass->getLambdaCallOperator(); 
+    // If this is a generic non-specialized call operator, or
+    // if it is a call operator of a non-generic lambda, return true;
+    if (MD == PrimaryLambdaCallOp) return true;
+    // Check to see if the primary templates of this specialization
+    // match the primary lamda call op
+    if (LambdaClass->isGenericLambda()) {
+      assert(MD->getTemplateInstantiationPattern());
+      assert(MD->isFunctionTemplateSpecialization());
+
+      CXXMethodDecl *PrimaryTemplateCallOp = 
+          cast<CXXMethodDecl>(MD->getTemplateInstantiationPattern());
+      return PrimaryLambdaCallOp == PrimaryTemplateCallOp;
+    }
+  }
   return false;
 }
 
@@ -76,7 +100,13 @@ bool isNonTemplateLambdaConversionOperator(FunctionDecl *F)
   return false;
 }
 
-bool isNestedLambda(FunctionDecl *F) {
+// Check if 'F' is a non-template lambda call operator
+// or a non-template conversion operator nested
+// within a nontemplatelambdacalloperator
+// By non-template, it could be a specialzied instantiation 
+// or a non-generic lambda operator
+
+bool isNonTemplateNestedLambda(FunctionDecl *F) {
   if (isNonTemplateLambdaCallOperator(F) ||
           isNonTemplateLambdaConversionOperator(F)) {
  
@@ -293,7 +323,7 @@ Sema::getTemplateInstantiationArgs(NamedDecl *D,
         //  should already have been transformed - since we transform lambda
         //  expressions eagerly (FVTODO - this needs to be checked with Doug
         //  and Richard)
-        if (isNestedLambda(Function))
+        if (isNonTemplateNestedLambda(Function))
           break;
 
         // If the function we are about to instantiate is a generic lambda

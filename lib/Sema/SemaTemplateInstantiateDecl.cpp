@@ -1357,6 +1357,37 @@ Decl *TemplateDeclInstantiator::VisitFunctionDecl(FunctionDecl *D,
   return Function;
 }
 
+
+// Given a Nested Lambda, this returns the Enclosing Lambda Call Operator
+// of this nested lambda.  For Now it assumes that all enclosing
+// Lambda Call Operators are non-templates (specialized or 
+//  non-generic)
+static CXXMethodDecl* GetEnclosingLambdaCallOperatorOfNestedLambda( 
+                                               CXXRecordDecl *Lambda) {
+  
+  if (!Lambda) return 0;
+  assert(Lambda->isLambda());
+  
+  // These functions are defined in SemaTemplateInstantiate.cpp
+  // FVTODO: Both these functions may need to be moved into a
+  // header.
+  bool isLambdaCallOperator(FunctionDecl *F);
+  bool isNonTemplateLambdaCallOperator(FunctionDecl *F);
+ 
+  DeclContext *LambdaAsDC = cast<DeclContext>(Lambda);
+  DeclContext *ParentCtx = LambdaAsDC->getParent();
+  CXXMethodDecl *ParentLambdaCallOp = dyn_cast<CXXMethodDecl>(ParentCtx);
+  if (ParentLambdaCallOp && isLambdaCallOperator(ParentLambdaCallOp)) {
+    assert(isNonTemplateLambdaCallOperator(ParentLambdaCallOp) &&
+      "At this time, GetEnclosingLambdaOfNestedLambda should "
+      "only be called for a lambda enclosed within a non-template "
+      " (specialized or non-generic) class for now, this can be relaxed "
+      " if an appropriate use-case is discovered ");
+    return ParentLambdaCallOp;
+  }
+  return 0;
+}
+
 Decl *
 TemplateDeclInstantiator::VisitCXXMethodDecl(CXXMethodDecl *D,
                                       TemplateParameterList *TemplateParams,
@@ -1403,23 +1434,32 @@ TemplateDeclInstantiator::VisitCXXMethodDecl(CXXMethodDecl *D,
       TempParamLists[I] = InstParams;
     }
   }
-  // If this is a generic lambda call operator, and we are contained
-  // within a non-template lambda, then we need to add the non-template
-  // captures to the local instantiation scope
+  
 
   if (D->getParent()->isGenericLambda()) {
-    CXXRecordDecl *LambdaClass = D->getParent();
-    typedef CXXRecordDecl::capture_const_iterator CI;
-    for (CI capture_it = LambdaClass->captures_begin(),
-          capture_end = LambdaClass->captures_end();
-            capture_it != capture_end; ++capture_it) {
+  // If this is a generic lambda call operator, add the parameters
+  // of enclosing lambdas here so that we can refer to them
+  // in decltype.
+  // This allows the following to compile:
+  //  [](auto a) [](auto b) -> decltype(a) b;
+  //
 
-      const LambdaExpr::Capture* TheCapture = capture_it;
-      //FVTODO: Do we need to worry about capturesThis??
-      if (TheCapture->capturesVariable())
-        Scope.InstantiatedLocal(TheCapture->getCapturedVar(), 
-                              TheCapture->getCapturedVar());
+    CXXRecordDecl *LambdaClass = D->getParent();
+    
+    // Since decltypes of nested lambdas can refer to parameters of 
+    // enclosing lambdas - we need to add all the enclosing lambda's 
+    // parameters into scope.
+    // This will still be vetted by tryVarCapture if a capture is occuring
+    CXXRecordDecl *NextLambdaClass = LambdaClass;
+    while( CXXMethodDecl* EnclosingCallOp = 
+            GetEnclosingLambdaCallOperatorOfNestedLambda(NextLambdaClass) ) {
+      for (size_t i = 0; i < EnclosingCallOp->getNumParams(); ++i ) {
+        ParmVarDecl *Parm = EnclosingCallOp->getParamDecl(i);
+        Scope.InstantiatedLocal(Parm, Parm);
+      }
+      NextLambdaClass = EnclosingCallOp->getParent();
     }
+
   }
 
   SmallVector<ParmVarDecl *, 4> Params;
