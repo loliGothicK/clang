@@ -1403,6 +1403,24 @@ TemplateDeclInstantiator::VisitCXXMethodDecl(CXXMethodDecl *D,
       TempParamLists[I] = InstParams;
     }
   }
+  // If this is a generic lambda call operator, and we are contained
+  // within a non-template lambda, then we need to add the non-template
+  // captures to the local instantiation scope
+
+  if (D->getParent()->isGenericLambda()) {
+    CXXRecordDecl *LambdaClass = D->getParent();
+    typedef CXXRecordDecl::capture_const_iterator CI;
+    for (CI capture_it = LambdaClass->captures_begin(),
+          capture_end = LambdaClass->captures_end();
+            capture_it != capture_end; ++capture_it) {
+
+      const LambdaExpr::Capture* TheCapture = capture_it;
+      //FVTODO: Do we need to worry about capturesThis??
+      if (TheCapture->capturesVariable())
+        Scope.InstantiatedLocal(TheCapture->getCapturedVar(), 
+                              TheCapture->getCapturedVar());
+    }
+  }
 
   SmallVector<ParmVarDecl *, 4> Params;
   TypeSourceInfo *TInfo = SubstFunctionType(D, Params);
@@ -2730,6 +2748,36 @@ TemplateDeclInstantiator::InitMethodInstantiation(CXXMethodDecl *New,
   return false;
 }
 
+/* Comment this out for now - we may need this at a later date -
+namespace {
+
+struct PreventRecursiveInstantiationTracker {
+  static std::set<FunctionDecl*> FunctionDeclsBeingInstantiated;
+  bool IsAlreadyBeingInstantiated;
+  FunctionDecl *TheFunctionDecl;
+  PreventRecursiveInstantiationTracker(FunctionDecl *D) : TheFunctionDecl(D),
+    IsAlreadyBeingInstantiated(false) {
+    if (FunctionDeclsBeingInstantiated.find(D) == 
+                      FunctionDeclsBeingInstantiated.end())
+      FunctionDeclsBeingInstantiated.insert(D);
+    else
+      IsAlreadyBeingInstantiated = true;
+  }
+  ~PreventRecursiveInstantiationTracker() {
+    // Since when this was created, this Decl was NOT being instantiated
+    // so now get rid of this from the instantiation set
+    if (!IsAlreadyBeingInstantiated) 
+      FunctionDeclsBeingInstantiated.erase(TheFunctionDecl);
+  }
+  bool isAlreadyBeingInstantiated() const 
+            { return IsAlreadyBeingInstantiated; }
+};
+
+std::set<FunctionDecl*> PreventRecursiveInstantiationTracker::
+                                    FunctionDeclsBeingInstantiated;
+
+}
+*/
 /// \brief Instantiate the definition of the given function from its
 /// template.
 ///
@@ -2751,8 +2799,11 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
                                          FunctionDecl *Function,
                                          bool Recursive,
                                          bool DefinitionRequired) {
+   
   if (Function->isInvalidDecl() || Function->isDefined())
     return;
+  //PreventRecursiveInstantiationTracker PRIT(Function);
+  //if (PRIT.isAlreadyBeingInstantiated()) return;
 
   // Never instantiate an explicit specialization except if it is a class scope
   // explicit specialization.
@@ -2893,8 +2944,7 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
       //   trailing-return-type, it is as if the trailing-return-type
       //   denotes the following type:
       // FIXME: Assumes current resolution to core issue 975.
-      if ( sema::LambdaScopeInfo* LSI = getCurLambda() )
-      {
+      if ( sema::LambdaScopeInfo* LSI = getCurLambda() ) {
         if (LSI->HasImplicitReturnType) {
           deduceClosureReturnType(*LSI);
 
