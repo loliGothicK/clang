@@ -255,7 +255,9 @@ namespace clang {
     ~LocalInstantiationScope() {
       Exit();
     }
-    
+    bool isCombinedWithOuterScope() const {
+      return CombineWithOuterScope;
+    }
     const Sema &getSema() const { return SemaRef; }
     
     // These two are currently for Debugging purposes - so that our
