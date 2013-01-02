@@ -2984,8 +2984,14 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
       //   trailing-return-type, it is as if the trailing-return-type
       //   denotes the following type:
       // FIXME: Assumes current resolution to core issue 975.
-      if ( sema::LambdaScopeInfo* LSI = getCurLambda() ) {
-        if (LSI->HasImplicitReturnType) {
+      if ( sema::LambdaScopeInfo* LSI = getCurLambda() ) { 
+        // FVTODO: Do we still need deduceClosureReturnType
+        //  since we do a lot of deduction and checking upfront
+        // through ActOnCapScopeReturnStmt?
+        // For now lets do this for all functions that still
+        // have a dependent return type or implicit returns ...      
+        if (LSI->HasImplicitReturnType || 
+                Function->getResultType()->isDependentType()) {
           deduceClosureReturnType(*LSI);
 
           //   - if there are no return statements in the
@@ -3007,6 +3013,14 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
           Function->setType(FunctionTy);
           
         }
+        // If this function still has an undeduced function type, we have an
+        // Error.      
+        // FVTODO: This error message is garbage, needs to be replaced
+        // with something along the lines of, 
+        //  the return type of this function could not be deduced ...
+        if (Function->getResultType()->isDependentType())
+            Diag(Function->getLocEnd(), diag::err_auto_fn_deduction_failure)
+              << Function->getResultType() << LSI->ReturnType;
       }
     }
     ActOnFinishFunctionBody(Function, Body.get(),
@@ -3875,6 +3889,7 @@ void Sema::PerformPendingInstantiations(bool LocalOnly) {
       }
       InstantiateFunctionDefinition(/*FIXME:*/Inst.second, Function, true,
                                     DefinitionRequired);
+
       continue;
     }
 
