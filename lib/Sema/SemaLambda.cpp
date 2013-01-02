@@ -746,8 +746,6 @@ static bool checkReturnValueType(const ASTContext &Ctx, const Expr *E,
 // return statement's return type (to aid with diagnostics)
 // But that is a tentative return type of the function/lambda
 void Sema::deduceClosureReturnType(CapturingScopeInfo &CSI) {
-  assert(CSI.HasImplicitReturnType);
-
   // First case: no return statements, implicit void return type.
   ASTContext &Ctx = getASTContext();
   if (CSI.Returns.empty()) {
