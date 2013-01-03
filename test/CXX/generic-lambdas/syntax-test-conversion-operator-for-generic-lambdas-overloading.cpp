@@ -36,4 +36,16 @@ int main()
     
   }
   
+/* This should be an error char and int
+// but how do we test for messages from the (frontend) and no line number?
+{
+ struct Local {
+  template<class T>
+  static char foo(T t) { return t; }
+ };
+  auto F = [](auto f, auto n)       //fvexpected-errorxx {{'auto' in return type}}
+    Local::foo(!n ? 1 : f(f, n - 1) * n);
+  auto R = F(F, 2); //fvexpected-errorxx {{no matching function for call}}
+}
+//*/
 }

@@ -32,6 +32,13 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
+
+// These files below are used to implement return type
+// deduction from a conditional operator containing
+// a recursive call. 
+#include "clang/AST/RecursiveASTVisitor.h"
+#include "TreeTransform.h"
+
 using namespace clang;
 using namespace sema;
 
@@ -2267,6 +2274,451 @@ Sema::PerformMoveOrCopyInitialization(const InitializedEntity &Entity,
   return Res;
 }
 
+
+// See Comments for these functions next to their definitions.
+ConditionalOperator* 
+  TryAndDeduceNonDependentTypeFromConditionalExpr(FunctionDecl *FD, 
+      ConditionalOperator *FullCondExpr, Sema &S, 
+        SmallVectorImpl<QualType> &RecursivelyDeducedReturnTypes);
+
+Expr* RebuildExprWhileTryingToDeduceTypeOfAnyDependentConditionals( 
+  Expr *RecursiveExpr, FunctionDecl *FD, Sema &S, 
+  SmallVectorImpl<QualType> &RecursivelyDeducedReturnTypes);
+
+
+// check to see if there is a dependent NestedConditional
+struct NestedConditionalExprChecker : 
+  RecursiveASTVisitor<NestedConditionalExprChecker> {
+    typedef RecursiveASTVisitor<NestedConditionalExprChecker> inherited;
+    bool HasNestedConditional;
+    bool IsDependentConditional;
+    
+    bool hasNestedConditional() const { return HasNestedConditional; }
+    bool isDependentConditional() const { return IsDependentConditional; }
+    
+    NestedConditionalExprChecker() : HasNestedConditional(false),
+      IsDependentConditional(false) { }
+
+    bool VisitConditionalOperator(ConditionalOperator *E) {
+      
+      HasNestedConditional = true;
+      // if there is even one nested dependent conditional, 
+      // this is set to true
+      if (E->getType()->isDependentType())
+        IsDependentConditional = true;
+      
+      // Abort traversal/visitation as soon as we find a dependent conditional
+      return !IsDependentConditional;
+    }
+};
+
+// Transform the expression by deriving from TreeTransform
+// and for the most part, just passing Expressions through
+// except for when a lambda or a conditional expression
+// is encountered - at which time we try and rebuild
+// them with the hope that any Call expressions will 
+// have their types deduced if they contain recursive calls
+// but a base case (non-depdent type) has been seen and will
+// be used to deduce the recursive branches.
+struct NestedConditionalTransformer : 
+                      TreeTransform<NestedConditionalTransformer> {
+  FunctionDecl *TheFunctionDecl;
+  typedef TreeTransform<NestedConditionalTransformer> inherited;
+  const MultiLevelTemplateArgumentList &TemplateArgs;
+  SmallVectorImpl<QualType> &RecursivelyDeducedReturnTypes;
+  std::vector<LambdaExpr*> LambdaStack;
+  const MultiLevelTemplateArgumentList& getDeducedTemplateArguments() const {
+    return TemplateArgs;
+  }
+  
+  NestedConditionalTransformer(Sema &SemaRef, FunctionDecl *FD,
+    const MultiLevelTemplateArgumentList &TemplateArgs, 
+    SmallVectorImpl<QualType> &RecursivelyDeducedReturnTypes)
+    :  inherited(SemaRef), TheFunctionDecl(FD), TemplateArgs(TemplateArgs),
+      RecursivelyDeducedReturnTypes(RecursivelyDeducedReturnTypes)
+   { }
+
+   ExprResult TransformConditionalOperator(ConditionalOperator *E) {
+    DeclContext   *SemaCurDeclContext = getSema().CurContext;
+    FunctionDecl *CurFunctionDecl = TheFunctionDecl;
+    if (LambdaStack.size())
+      CurFunctionDecl = LambdaStack.back()->getCallOperator();
+    // FVTODO: We probably don't need to maintain a lambda stack
+    // and this assertion should hold!
+    // assert(SemaCurDeclContext == CurFunctionDecl)
+    ConditionalOperator *NewConditionalOperator = 
+              TryAndDeduceNonDependentTypeFromConditionalExpr(CurFunctionDecl,
+                        E, getSema(), RecursivelyDeducedReturnTypes);
+    
+    assert(NewConditionalOperator);
+    return Owned(NewConditionalOperator);
+  }
+  // A Lambda Expression is special since it can introduce
+  // a new function with all sorts of new variables within
+  // different DeclContexts - so this has to be handled carefully
+  // Lets remind ourselves what we are trying to do here:
+  //  If we have a dependent Lambda Expression, that contains
+  //  a conditional operator then lets try and parse its body, and maybe
+  //  in the process, we can deduce the return type of the
+  //  call operator of this expression.
+  ExprResult TransformLambdaExpr(LambdaExpr *E) {
+
+    CXXMethodDecl *CallOperator = E->getCallOperator();
+    
+    if (!CallOperator->getResultType()->isDependentType())
+      return Owned(E);
+       
+    assert(!CallOperator->isTemplateInstantiation() && "When computing recursive "
+      "Return types, I don't expect a calloperator to be a template instantiation!"
+      " If this assertion does occur, then CapturingScopeInfo below would need "
+      " to be Carefully adjusted - consider SpecializedLSI code in SemaDecl.cpp");
+
+    
+    // Push our Lambda Expression Call operator on the DeclContext stack
+    Sema::ContextRAII SavedContext(getSema(), CallOperator);
+    FunctionTemplateDecl *TemplateCallOperator = CallOperator->getDescribedFunctionTemplate();
+    // Push the LambdaScopeInfo onto the functionInfo stack
+    if (TemplateCallOperator) {
+
+      LambdaScopeInfo *CachedLSI= dyn_cast<LambdaScopeInfo>(
+          TemplateCallOperator->getCachedCapturingScopeInfo());
+    
+      // Make a copy of the LSI associated with the template member operator
+      LambdaScopeInfo *NewLSI = new LambdaScopeInfo(*CachedLSI);
+ 
+      // Now clear out all the information we will be re-calculating
+      // while transforming the body of this call operator
+      NewLSI->SwitchStack.clear();
+      NewLSI->Returns.clear();
+      NewLSI->CompoundScopes.clear();
+      NewLSI->PossiblyUnreachableDiags.clear();
+         
+      getSema().FunctionScopes.push_back(NewLSI);
+    }
+    else // this was a non-generic lambda
+      getSema().PushLambdaScope(CallOperator->getParent(), CallOperator);
+     
+    // Enter a new evaluation context to insulate the lambda from any
+    // cleanups from the enclosing full-expression.
+    getSema().PushExpressionEvaluationContext(Sema::PotentiallyEvaluated);
+
+    // Check if an error occurred (such as failure to capture
+    // a vairable) during instantiation of the body,
+    // while ignoring previous errors.  
+    // If a new Error did occur, don't instantiate the lambda 
+    DiagnosticsEngine& DE = getSema().getDiagnostics();
+    DiagnosticErrorTrap DetectNewError(DE);
+
+    LambdaStack.push_back(E);
+    // Now transform the body of the lambda expression.
+    StmtResult Body = getDerived().TransformStmt(E->getBody());
+
+    LambdaStack.pop_back();
+
+    if (Body.isInvalid() || DetectNewError.hasErrorOccurred()) {
+      return ExprError();
+    }
+    CallOperator->setBody(Body.get());
+    
+    // ExpressionEvaluationContext is popped off in ActOnLambdaExpr/Error
+    // Since we are not calling them, we need to explicitly pop them off
+    getSema().PopExpressionEvaluationContext();
+    getSema().PopFunctionScopeInfo();
+    return Owned(E);
+  }
+ 
+};
+
+// Use a visitor to check if the expression contains
+// a dependent conditional operator - such as
+// ([](auto a) a ? a - 1 : a + 1);
+
+bool containsDependentNestedConditionalOperator(Expr *E) {
+  NestedConditionalExprChecker NCEC;
+  NCEC.TraverseStmt(E);
+  return NCEC.hasNestedConditional() && NCEC.isDependentConditional();
+}
+
+
+static bool IsGenericLambdaCallOperator(FunctionDecl *FD) {
+  CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(FD);
+  return MD &&
+      MD->getParent()->isGenericLambda();
+}
+
+static void setFunctionReturnType( FunctionDecl *FD, 
+                      QualType NewReturnType, 
+                      ASTContext &Context ) {
+  const FunctionProtoType *FPT = FD->getType()->castAs<FunctionProtoType>();
+  FunctionProtoType::ExtProtoInfo EPI = FPT->getExtProtoInfo();
+  // FIXME: need to adjust all declarations?
+  FD->setType(Context.getFunctionType(NewReturnType, 
+    FPT->arg_type_begin(), FPT->getNumArgs(), EPI));
+}
+
+
+
+// We have a non-dependent base type, so lets try and see
+// if we can deduce the type of the recursive branch of 
+// conditional, by temporarily setting the type of
+// the function as the base case type
+// Also make sure the type of the base case can be deduced
+// against the auto pattern specified as FD's return.
+// i.e. [](auto a) -> auto* { ... }
+// The BaseExpr is adjusted during the deduction against auto
+//  If no auto is contained within the Return type, 
+//   do not attempt deduction against auto.  (This should
+//   not happen, but does for now.. FVTODO: needs to be investigated)
+// 
+Expr* RebuildExprAssumingFunctionType( FunctionDecl *FD, Expr *&BaseExpr,
+              QualType BaseCaseReturnType, Expr *RecursiveCaseExpr, Sema &S, 
+              SmallVectorImpl<QualType> &RecursivelyDeducedReturnTypes)  {
+  
+  QualType CurrentReturnType = FD->getResultType();
+  QualType DeducedReturnType;
+  assert(!BaseCaseReturnType->isDependentType() &&
+    "Do Not try to rebuild an expression if there is no "
+    "Non Dependent Type Branch (i.e. Base Case of the conditional ");
+
+  //Get the original result type (could be 'auto') even if
+  // we successfully deduced a non-dependent type from a 
+  // prior return statement and have reset the type
+  // of the function.
+  //  By using the TypeSourceInfo, we can get to the type
+  //  the original declaration was declared with
+  //  i.e. FD->getTypeSourceInfo()->getType() is different
+  //    from FD->getType()
+  QualType OrigResultType = FD->getTypeSourceInfo()->getType()->
+    castAs<FunctionProtoType>()->getResultType();
+
+  if (OrigResultType->getContainedAutoType()) {
+    // if the return type contains auto, make sure that we can 
+    // deduce against the pattern of auto
+    // i.e. -> auto& or -> auto* otherwise there is no point in 
+    // continuing.
+    // Keep in mind, BaseExpr is passed in by Reference and can be altered 
+    Sema::DeduceAutoResult DAR = S.DeduceAutoType(OrigResultType, BaseExpr
+              , DeducedReturnType);
+    
+    if (DAR != Sema::DAR_Succeeded) 
+      return RecursiveCaseExpr;
+  
+    if (!DeducedReturnType->isDependentType())
+      RecursivelyDeducedReturnTypes.push_back(DeducedReturnType);
+
+  }        
+  else
+    DeducedReturnType = BaseCaseReturnType;
+      
+  setFunctionReturnType(FD, DeducedReturnType, S.Context);
+
+  // Now rebuild the RecursiveCaseExpr, using the new return type 
+  // of the function - this will only matter if the RecursiveExpression
+  // contains a call to the FD function  ...
+  Expr *NewRecursiveCaseExpr = RecursiveCaseExpr;
+  NewRecursiveCaseExpr = 
+      RebuildExprWhileTryingToDeduceTypeOfAnyDependentConditionals(
+              RecursiveCaseExpr, FD, S, RecursivelyDeducedReturnTypes);
+  
+  // Reset our function type - since in the end we would want to deduce
+  // against the full rebuilt conditional expression type, which 
+  // may be different i.e. consider the example below 
+  // !n ? baseObj : fun_returning_derived_obj(f(f, n)))
+  // f could be a recursive call to the containing lambda 
+  setFunctionReturnType(FD, CurrentReturnType, S.Context);
+  
+  return NewRecursiveCaseExpr; 
+}
+
+
+Expr* RebuildExprWhileTryingToDeduceTypeOfAnyDependentConditionals( 
+                 Expr *RecursiveExpr, FunctionDecl *FD, Sema &S, 
+                 SmallVectorImpl<QualType> &RecursivelyDeducedReturnTypes) {
+  
+  // Do the transformation, using our own specialization of TreeTransform
+  // FVTODO: We should not need this dummy MultiLevelTemplateArgumentList
+  // and should be able to eradicate it, once we teach TreeTransform
+  // how to properly transform a GenericLambda
+  MultiLevelTemplateArgumentList MLTAL;
+  NestedConditionalTransformer NCT(S, FD, MLTAL, 
+                          RecursivelyDeducedReturnTypes);
+  ExprResult NewRecursiveExprResult = NCT.TransformExpr(RecursiveExpr);
+  if (NewRecursiveExprResult.isInvalid()) return RecursiveExpr;
+  return NewRecursiveExprResult.get();
+}
+
+
+// When passed in a ConditionalExpr, this tries to deduce the type
+// of the conditionalExpr by checking the expression for a non-dependent
+// base case 
+// i.e. In ==> !n ? 1 : f(f, n - 1) * n;
+//    Use 1 as the presumed deduced type of FD, and then
+//    try and rebuild the conditional expression
+//    so that Sema Actions are performed to ensure that
+//    the conditionalExpr's final type maintains its
+//    complicated semantics.
+// RecursivelyDeducedReturnTypes - collects all the types
+// that were recursively deduced, to prevent any inconsistencies
+// later on.  
+ConditionalOperator* 
+        TryAndDeduceNonDependentTypeFromConditionalExpr(FunctionDecl *FD,
+              ConditionalOperator *FullCondExpr, Sema &S, 
+              SmallVectorImpl<QualType> &RecursivelyDeducedReturnTypes) {
+  
+  // Do Nothing if we are not a dependent expression to begin with
+  if (!FullCondExpr->isTypeDependent()) return FullCondExpr;
+
+  Expr* TrueExpr = FullCondExpr->getTrueExpr();
+  Expr* FalseExpr = FullCondExpr->getFalseExpr();
+
+  // We need to do these recursive calls to check recursive conditionals that have 
+  // a base case such as:
+  //  auto Fact2 = [](auto f, auto n) 
+  //          n < 2 
+  //           ? (!n ? 1 : f(f, n - 1) * n)
+  //           : f(f, n - 1) * n;
+  //  auto M = Fact2(Fact2, 4);
+  //  
+  if (TrueExpr->isTypeDependent()) {    
+    Expr* NewTrueExpr = 
+      RebuildExprWhileTryingToDeduceTypeOfAnyDependentConditionals(
+                                     TrueExpr, FD, S, RecursivelyDeducedReturnTypes);
+    if (!NewTrueExpr->isTypeDependent())
+      TrueExpr = NewTrueExpr; 
+  } 
+
+  if (FalseExpr->isTypeDependent()) {    
+    Expr *NewFalseExpr = 
+      RebuildExprWhileTryingToDeduceTypeOfAnyDependentConditionals(
+                                     FalseExpr, FD, S, RecursivelyDeducedReturnTypes);
+    if (!NewFalseExpr->isTypeDependent())
+      FalseExpr = NewFalseExpr;
+
+  }
+
+  bool TrueExprIsDependent = TrueExpr->isTypeDependent();
+  bool FalseExprIsDependent = FalseExpr->isTypeDependent();
+
+  // If both are dependent, we can't compute anything ...   
+  if ( TrueExprIsDependent && FalseExprIsDependent)
+    return FullCondExpr;
+  // Now that we have one branch of the conditional that is non-dependent
+  //  try and rebuild the other branch assuming the type of non-dependent
+  //  branch and checking to see if we have any inconsistencies at the end...
+  if ( !TrueExprIsDependent && FalseExprIsDependent) {
+    Expr *NewFalseExpr = RebuildExprAssumingFunctionType(FD, TrueExpr, 
+                                          TrueExpr->getType(), FalseExpr, S, 
+                                          RecursivelyDeducedReturnTypes);
+    if (!NewFalseExpr->isTypeDependent())
+      FalseExpr = NewFalseExpr;
+  }
+  if ( !FalseExprIsDependent && TrueExprIsDependent) {
+    Expr *NewTrueExpr = RebuildExprAssumingFunctionType(FD, FalseExpr,
+                                          FalseExpr->getType(), TrueExpr, S,
+                                          RecursivelyDeducedReturnTypes);
+    if (!NewTrueExpr->isTypeDependent())
+      TrueExpr = NewTrueExpr;
+  }
+
+  // If we didn't make any changes, then just return the original 
+  // Conditional Expression
+  if (TrueExpr == FullCondExpr->getTrueExpr() && 
+          FalseExpr == FullCondExpr->getFalseExpr())
+    return FullCondExpr;
+
+  // We have a new TrueExpr or a new FalseExpr, so re-build
+  // the conditional operator...
+  ExprResult NewCondExprResult = S.ActOnConditionalOp(
+    FullCondExpr->getQuestionLoc(),
+    FullCondExpr->getColonLoc(), 
+    FullCondExpr->getCond(), TrueExpr, FalseExpr);
+
+  assert(!NewCondExprResult.isInvalid());
+  
+  if (NewCondExprResult.isInvalid()) return 0;
+
+  Expr *NewCondExpr = NewCondExprResult.take();
+  assert(NewCondExpr);
+  return cast<ConditionalOperator>(NewCondExpr);
+} 
+
+bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
+                                            SourceLocation ReturnLoc,
+                                            Expr *&RetExpr,
+                                            AutoType *AT) {
+    
+    //Get the original result type (could be 'auto') even if
+    // we successfully deduced a non-dependent type from a 
+    // prior return statement and have reset the type
+    // of the function.
+    //  By using the TypeSourceInfo, we can get to the type
+    //  the original declaration was declared with
+    //  i.e. FD->getTypeSourceInfo()->getType() is different
+    //    from FD->getType()
+    QualType OrigResultType = FD->getTypeSourceInfo()->getType()->
+      castAs<FunctionProtoType>()->getResultType();
+    QualType Deduced;
+
+    if (RetExpr) {
+      DeduceAutoResult DAR = DeduceAutoType(OrigResultType, RetExpr, Deduced);
+   
+      if (DAR == DAR_Failed && !FD->isInvalidDecl()) {
+        if (isa<InitListExpr>(RetExpr))
+          Diag(RetExpr->getExprLoc(),
+          diag::err_auto_fn_deduction_failure_from_init_list)
+          << OrigResultType;
+        else
+          Diag(RetExpr->getExprLoc(), diag::err_auto_fn_deduction_failure)
+          << OrigResultType << RetExpr->getType();
+      }
+
+      if (DAR != DAR_Succeeded)
+        return true;
+    } else {
+      if (!OrigResultType->getAs<AutoType>()) {
+        Diag(ReturnLoc, diag::err_auto_fn_return_void_but_not_auto)
+          << OrigResultType;
+        return true;
+      }
+      Deduced = SubstAutoType(OrigResultType, Context.VoidTy);
+      if (Deduced.isNull())
+        return true;
+    }
+
+    if (AT->isDeduced() && !FD->isInvalidDecl()) {
+      AutoType *NewAT = Deduced->getContainedAutoType();
+      // If we were unable to deduce a type, then we have either
+      // 1) a dependent type which will be resolved during instantiation
+      // 2) or a recursive call
+      // 3) or ....
+      if (!NewAT->isDeduced())
+      {
+        // If we are recursing through, and this is a recursive branch.
+        // then it will be a dependent type, so just make sure that the 
+        // result types are the same
+        if (NewAT != OrigResultType->getContainedAutoType())
+        {
+          Diag(ReturnLoc, diag::err_auto_fn_different_deductions)
+            << NewAT->getDeducedType() << AT->getDeducedType();
+          return true;
+        }
+        // Return success, but do not adjust the result type ...
+        return false;
+      }
+      else if (!Context.hasSameType(AT->getDeducedType(), NewAT->getDeducedType())) {
+        Diag(ReturnLoc, diag::err_auto_fn_different_deductions)
+          << NewAT->getDeducedType() << AT->getDeducedType();
+        return true;
+      }
+    }
+
+    Context.adjustDeducedFunctionResultType(FD, Deduced);
+    return false;
+}
+
+
+
+
 /// ActOnCapScopeReturnStmt - Utility routine to type-check return statements
 /// for capturing scopes.
 ///
@@ -2277,15 +2729,60 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
   // rules which allows multiple return statements.
   CapturingScopeInfo *CurCap = cast<CapturingScopeInfo>(getCurFunction());
   QualType FnRetType = CurCap->ReturnType;
+  bool ReturnTypeContainsAuto = false;
+  if (getLangOpts().GenericLambda) {
+    if (FunctionDecl *FD = dyn_cast<FunctionDecl>(CurContext)) {
+      if (AutoType *AT = FD->getResultType()->getContainedAutoType()) { 
+        ReturnTypeContainsAuto = true;      
+        SmallVector<QualType, 5> RecursiveDeducedReturnTypes;
+        // This attempts to deduce the type of a lambda's return
+        // when the conditional operator is dependent and contains a
+        // recursive call.
+        // i.e.
+        // auto Fact = [](auto f, auto n) !n ? 1 : f(f, n - 1) * n;
+         
+        if (RetValExp->getType()->isDependentType() && 
+                  containsDependentNestedConditionalOperator(RetValExp)) {
+          
+          RetValExp = 
+            RebuildExprWhileTryingToDeduceTypeOfAnyDependentConditionals(
+                                               RetValExp, FD, *this,
+                                               RecursiveDeducedReturnTypes);
 
-  if (getLangOpts().GenericLambda)
-  {
-    if (FunctionDecl *FD = dyn_cast<FunctionDecl>(CurContext))
-      if (AutoType *AT = FD->getResultType()->getContainedAutoType())
+        }
+
         if (DeduceFunctionTypeFromReturnExpr(FD, ReturnLoc, RetValExp, AT)) {
           FD->setInvalidDecl();
           return StmtError();
         }
+        // Now ensure that any types we deduced/assumed during recursion, 
+        // match the final type deduced: i.e. this example needs to error our
+        // since during type computation of the recursion we assume int, but
+        // during final computation, we come up with something else
+        //
+        // struct Local {
+        //   template<class T>
+        //   static char foo(T t) { return t; }
+        // };
+        // auto F = [](auto f, auto n) 
+        //   Local::foo(!n ? 1 : f(f, n - 1) * n);
+        // auto R = F(F, 2);
+        //*
+        QualType CurrentDeducedType = FD->getResultType();
+        if (!CurrentDeducedType->isDependentType()) {
+          for (size_t i = 0; i < RecursiveDeducedReturnTypes.size(); ++i) {
+            if (!Context.hasSameType(CurrentDeducedType, 
+                                      RecursiveDeducedReturnTypes[i])) {
+              Diag(ReturnLoc, diag::err_auto_fn_different_deductions)
+                << CurrentDeducedType << RecursiveDeducedReturnTypes[i];
+              FD->setInvalidDecl();
+              return StmtError();
+            }
+          } 
+        }
+        //*/
+      }
+    }
   }
   // For blocks/lambdas with implicit return types, we check each return
   // statement individually, and deduce the common return type when the block
@@ -2395,87 +2892,12 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
   // If we need to check for the named return value optimization,
   // or if we need to infer the return type,
   // save the return statement in our scope for later processing.
-  if (CurCap->HasImplicitReturnType ||
+  if (CurCap->HasImplicitReturnType || ReturnTypeContainsAuto ||
       (getLangOpts().CPlusPlus && FnRetType->isRecordType() &&
-       !CurContext->isDependentContext()))
+       !CurContext->isDependentContext()) )
     FunctionScopes.back()->Returns.push_back(Result);
 
   return Owned(Result);
-}
-
-// From Richard Smith's https://github.com/zygoloid/clang/commits/n3386
-bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
-                                            SourceLocation ReturnLoc,
-                                            Expr *&RetExpr,
-                                            AutoType *AT) {
-    
-    //Get the original result type (could be 'auto') even if
-    // we successfully deduced a non-dependent type from a 
-    // prior return statement and have reset the type
-    // of the function.
-    //  By using the TypeSourceInfo, we can get to the type
-    //  the original declaration was declared with
-    //  i.e. FD->getTypeSourceInfo()->getType() is different
-    //    from FD->getType()
-    QualType OrigResultType = FD->getTypeSourceInfo()->getType()->
-      castAs<FunctionProtoType>()->getResultType();
-    QualType Deduced;
-
-    if (RetExpr) {
-      DeduceAutoResult DAR = DeduceAutoType(OrigResultType, RetExpr, Deduced);
-
-      if (DAR == DAR_Failed && !FD->isInvalidDecl()) {
-        if (isa<InitListExpr>(RetExpr))
-          Diag(RetExpr->getExprLoc(),
-          diag::err_auto_fn_deduction_failure_from_init_list)
-          << OrigResultType;
-        else
-          Diag(RetExpr->getExprLoc(), diag::err_auto_fn_deduction_failure)
-          << OrigResultType << RetExpr->getType();
-      }
-
-      if (DAR != DAR_Succeeded)
-        return true;
-    } else {
-      if (!OrigResultType->getAs<AutoType>()) {
-        Diag(ReturnLoc, diag::err_auto_fn_return_void_but_not_auto)
-          << OrigResultType;
-        return true;
-      }
-      Deduced = SubstAutoType(OrigResultType, Context.VoidTy);
-      if (Deduced.isNull())
-        return true;
-    }
-
-    if (AT->isDeduced() && !FD->isInvalidDecl()) {
-      AutoType *NewAT = Deduced->getContainedAutoType();
-      // If we were unable to deduce a type, then we have either
-      // 1) a dependent type which will be resolved during instantiation
-      // 2) or a recursive call
-      // 3) or ....
-      if (!NewAT->isDeduced())
-      {
-        // If we are recursing through, and this is a recursive branch.
-        // then it will be a dependent type, so just make sure that the 
-        // result types are the same
-        if (NewAT != OrigResultType->getContainedAutoType())
-        {
-          Diag(ReturnLoc, diag::err_auto_fn_different_deductions)
-            << NewAT->getDeducedType() << AT->getDeducedType();
-          return true;
-        }
-        // Return success, but do not adjust the result type ...
-        return false;
-      }
-      else if (!Context.hasSameType(AT->getDeducedType(), NewAT->getDeducedType())) {
-        Diag(ReturnLoc, diag::err_auto_fn_different_deductions)
-          << NewAT->getDeducedType() << AT->getDeducedType();
-        return true;
-      }
-    }
-
-    Context.adjustDeducedFunctionResultType(FD, Deduced);
-    return false;
 }
 
 
@@ -2639,6 +3061,7 @@ Sema::ActOnReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
 
   return Owned(Result);
 }
+
 
 StmtResult
 Sema::ActOnObjCAtCatchStmt(SourceLocation AtLoc,

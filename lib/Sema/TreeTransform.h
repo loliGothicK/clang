@@ -7873,6 +7873,13 @@ template<typename Derived>
 ExprResult
 TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
   
+  // FVTODO: This needs to be broken up into calls into the derived
+  // class - i.e.
+  // such as TransformGenericLambdaExpr
+  //   or getDerived().TransformTemplateParameterList
+  //      getDerived().TransformParameters
+  //       - stubs for which would need to be added to TreeTransform -
+  //  
   // Keep a track of whether we are in the context of
   // transforming a generic lambda
   // This information is currently NOT used (12/23/12), but 
@@ -7898,6 +7905,10 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
   // are transforming a lambda call operator and to NOT 
   // create a new localInstantiationScope on the stack
   // so that the parameters are added to the currentInstantiationScope
+
+  // FVTODO: We can probably get rid of this kludge, by checking
+  //  getSema().CurContext to see if we are transforming
+  //  a lambda call operator prototype.
   SemaRef.setTransformingLambdaCallOperatorProtoType(true);
   TypeSourceInfo *NewMethodTSI = TransformType(OldMethodTSI);
   SemaRef.setTransformingLambdaCallOperatorProtoType(false);

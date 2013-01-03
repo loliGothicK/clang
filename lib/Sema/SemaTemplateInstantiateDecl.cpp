@@ -2788,22 +2788,30 @@ TemplateDeclInstantiator::InitMethodInstantiation(CXXMethodDecl *New,
   return false;
 }
 
-/* Comment this out for now - we may need this at a later date -
+
 namespace {
 
-struct PreventRecursiveInstantiationTracker {
+// Track if a GenericLambda Call Operator is recursively being defined
+// Chiefly to limit the number of error messages.
+struct RecursiveGenericLambdaCallOpInstantiationTracker {
   static std::set<FunctionDecl*> FunctionDeclsBeingInstantiated;
-  bool IsAlreadyBeingInstantiated;
   FunctionDecl *TheFunctionDecl;
-  PreventRecursiveInstantiationTracker(FunctionDecl *D) : TheFunctionDecl(D),
-    IsAlreadyBeingInstantiated(false) {
+  bool IsAlreadyBeingInstantiated;
+  RecursiveGenericLambdaCallOpInstantiationTracker(FunctionDecl *D) : 
+        TheFunctionDecl(D),
+        IsAlreadyBeingInstantiated(false) {
+    
+    CXXMethodDecl *LambdaCallOp = dyn_cast<CXXMethodDecl>(D);
+    if (!LambdaCallOp) return;
+    if (!LambdaCallOp->getParent()->isGenericLambda()) return;
+    // Since this is a generic lambda's function, track it...
     if (FunctionDeclsBeingInstantiated.find(D) == 
                       FunctionDeclsBeingInstantiated.end())
       FunctionDeclsBeingInstantiated.insert(D);
     else
       IsAlreadyBeingInstantiated = true;
   }
-  ~PreventRecursiveInstantiationTracker() {
+  ~RecursiveGenericLambdaCallOpInstantiationTracker() {
     // Since when this was created, this Decl was NOT being instantiated
     // so now get rid of this from the instantiation set
     if (!IsAlreadyBeingInstantiated) 
@@ -2813,11 +2821,10 @@ struct PreventRecursiveInstantiationTracker {
             { return IsAlreadyBeingInstantiated; }
 };
 
-std::set<FunctionDecl*> PreventRecursiveInstantiationTracker::
+std::set<FunctionDecl*> RecursiveGenericLambdaCallOpInstantiationTracker::
                                     FunctionDeclsBeingInstantiated;
-
 }
-*/
+
 /// \brief Instantiate the definition of the given function from its
 /// template.
 ///
@@ -2842,8 +2849,20 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
    
   if (Function->isInvalidDecl() || Function->isDefined())
     return;
-  //PreventRecursiveInstantiationTracker PRIT(Function);
-  //if (PRIT.isAlreadyBeingInstantiated()) return;
+
+  // Prevent Generic Lambda Call operators from being recursively instantiated
+  // This can happen when trying to deduce return types for generic lambdas
+  // with a conditional return type.
+  // Consider this example:
+  // auto F = [](auto f, auto n) 
+  //             !n ? n + 1 :
+  //                      ([=](auto f2) //-> decltype(n) commented out 
+  //                          !n ? 1 : f2(f2, n - 1) * n)(f);
+  // auto R = F(F, 2);
+  // This prevents multiple error messages during return type deduction 
+  RecursiveGenericLambdaCallOpInstantiationTracker 
+                        RecursiveInstantiationTracker(Function);
+  if (RecursiveInstantiationTracker.isAlreadyBeingInstantiated()) return;
 
   // Never instantiate an explicit specialization except if it is a class scope
   // explicit specialization.
@@ -2977,8 +2996,7 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
     // for a generic lambda, since getCurLambda
     // can only imply that we are in the context
     // of a generic lambda, once we get here
-    if (getLangOpts().GenericLambda)
-    {
+    if (getLangOpts().GenericLambda) {
       // C++11 [expr.prim.lambda]p4:
       //   If a lambda-expression does not include a
       //   trailing-return-type, it is as if the trailing-return-type
@@ -3019,7 +3037,7 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
         // with something along the lines of, 
         //  the return type of this function could not be deduced ...
         if (Function->getResultType()->isDependentType())
-            Diag(Function->getLocEnd(), diag::err_auto_fn_deduction_failure)
+            Diag(PointOfInstantiation, diag::err_auto_fn_deduction_failure)
               << Function->getResultType() << LSI->ReturnType;
       }
     }
