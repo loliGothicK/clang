@@ -265,6 +265,24 @@ public:
   TypeSourceInfo *getTypeSourceInfo() const { return BaseTypeInfo; }
 };
 
+
+// FVTODO: In order to prevent the ScopeInfo for generic lambdas from 
+// being completely lost, we cache the "Generic-ScopeInfo" object
+// within the FunctionTemplateDecl of the member template function
+// call operator that represents the generic lambda 
+//  - this is never deleted, and is later used to clone the 
+//    instantiation-specific CapturingScopeInfo during 
+//    instantiation of the template which then holds 
+//    the state for that particular specialization and can be
+//    pushed, popped and deleted once instantiation is complete
+//  Check with Doug or Richard to see if this is the best 
+//  place to cache this information - seems like it shouldn't be
+//  since it seems Sema-specific - but lets use it for now 
+//  since I think it works...
+
+namespace sema {
+ class CapturingScopeInfo;
+}
 /// CXXRecordDecl - Represents a C++ struct/union/class.
 /// FIXME: This class will disappear once we've properly taught RecordDecl
 /// to deal with C++-specific things.
@@ -569,7 +587,8 @@ class CXXRecordDecl : public RecordDecl {
       : DefinitionData(D), Dependent(Dependent), NumCaptures(0), 
         NumExplicitCaptures(0), ManglingNumber(0), ContextDecl(0), Captures(0),
         MethodTyInfo(Info), CallOperator(0), ConversionOperator(0),
-        StaticInvoker(0), StaticInvokerSpecToCallOpSpecMapPtr(0)  
+        StaticInvoker(0), StaticInvokerSpecToCallOpSpecMapPtr(0),
+        LambdaBlockScopeInfo(0) 
     {
       IsLambda = true;
       IsGenericLambda = false;
@@ -624,6 +643,9 @@ class CXXRecordDecl : public RecordDecl {
     /// specialization to the corresponding generic lambda specialization 
     /// so that codegen can forward the call appropriately
     StaticInvokerSpecToCallOpSpecMapType *StaticInvokerSpecToCallOpSpecMapPtr;
+     // see comment at the forward declaration above for details
+    sema::CapturingScopeInfo* LambdaBlockScopeInfo;
+    
   };
 
   struct DefinitionData &data() {
@@ -1088,7 +1110,16 @@ public:
     return "__invoke";
   }
 
-
+  /// Get the CachedCapturingScopeInfo
+  // see comment at the forward declaration of CapturingScopeInfo above 
+  // for more details ...
+  sema::CapturingScopeInfo* getCachedCapturingScopeInfo() 
+  { return getLambdaData().LambdaBlockScopeInfo; }
+  //FVTODO: - this should delete a previous .LambdaBlockScopeInfo
+  //   - introduce an assert here, to see if this is called when it 
+  //    is already set
+  void setCachedCapturingScopeInfo(sema::CapturingScopeInfo* CSI) 
+  { getLambdaData().LambdaBlockScopeInfo = CSI; }
 
 
   /// \brief For a closure type, retrieve the mapping from captured

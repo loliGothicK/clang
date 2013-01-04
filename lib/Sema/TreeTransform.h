@@ -7887,14 +7887,16 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
   bool IsGenericLambda = !!E->getTemplateParameterList();
   IsTransformingGenericLambdaStateStack ITGLSS(getSema(), 
                               IsGenericLambda);
-  // If this is a generic Lambda, transform the template parameter list
-  // and add it to the scope
-  TemplateDeclInstantiator  DeclInstantiator(getSema(), 
-                          /* DeclContext *Owner */ E->getCallOperator(),
-                          getDerived().getDeducedTemplateArguments());
+  
   TemplateParameterList *OrigTemplateParamList = E->getTemplateParameterList();
   TemplateParameterList *NewTemplateParamList = 0;
-  if (OrigTemplateParamList) {
+
+  if (IsGenericLambda) { 
+    // If this is a generic Lambda, transform the template parameter list
+    // and add it to the scope
+    TemplateDeclInstantiator  DeclInstantiator(getSema(), 
+                          /* DeclContext *Owner */ E->getCallOperator(),
+                          getDerived().getDeducedTemplateArguments());
     NewTemplateParamList = DeclInstantiator.SubstTemplateParams(
                                          OrigTemplateParamList);
   }
@@ -7916,6 +7918,17 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
   if (!NewMethodTSI)
     return ExprError();
 
+  // If this is a non-generic lambda that is non-dependent
+  // NewMethodTSI is not different than OldMethodTSI
+  //  - so now we have to add the parameters into 
+  // the current instantiation scope
+  if (NewMethodTSI == OldMethodTSI) {
+    CXXMethodDecl *CallOp = E->getCallOperator();
+    for (size_t i = 0; i < CallOp->getNumParams(); ++i)
+      getSema().CurrentInstantiationScope->InstantiatedLocal(
+          CallOp->getParamDecl(i), CallOp->getParamDecl(i));
+
+  }
   // Create the local class that will describe the lambda.
   CXXRecordDecl *Class
     = getSema().createLambdaClosureType(E->getIntroducerRange(),
@@ -7924,9 +7937,10 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
   getDerived().transformedLocalDecl(E->getLambdaClass(), Class);
 
   // Now that we have the New Decl Context for each template parameter, reset it
-  if (NewTemplateParamList)
+  if (NewTemplateParamList) {
     for (size_t i = 0; i < NewTemplateParamList->size(); ++i)
       NewTemplateParamList->getParam(i)->setDeclContext(Class);
+  }
   llvm::SmallVector<QualType, 4> ParamTypes;
   llvm::SmallVector<ParmVarDecl *, 4> Params;
 

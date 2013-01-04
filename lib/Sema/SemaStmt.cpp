@@ -2364,16 +2364,16 @@ struct NestedConditionalTransformer :
   ExprResult TransformLambdaExpr(LambdaExpr *E) {
 
     CXXMethodDecl *CallOperator = E->getCallOperator();
-    
     if (!CallOperator->getResultType()->isDependentType())
       return Owned(E);
        
-    assert(!CallOperator->isTemplateInstantiation() && "When computing recursive "
+    assert(!CallOperator->isFunctionTemplateSpecialization() && "When computing recursive "
       "Return types, I don't expect a calloperator to be a template instantiation!"
       " If this assertion does occur, then CapturingScopeInfo below would need "
       " to be Carefully adjusted - consider SpecializedLSI code in SemaDecl.cpp");
 
-    
+    CXXRecordDecl *LambdaClass = CallOperator->getParent();
+
     // Push our Lambda Expression Call operator on the DeclContext stack
     Sema::ContextRAII SavedContext(getSema(), CallOperator);
     FunctionTemplateDecl *TemplateCallOperator = CallOperator->getDescribedFunctionTemplate();
@@ -2395,9 +2395,26 @@ struct NestedConditionalTransformer :
          
       getSema().FunctionScopes.push_back(NewLSI);
     }
-    else // this was a non-generic lambda
-      getSema().PushLambdaScope(CallOperator->getParent(), CallOperator);
-     
+    else if (LambdaClass->getCachedCapturingScopeInfo()) // this was a non-generic lambda 
+    {
+      LambdaScopeInfo *CachedLSI = dyn_cast<LambdaScopeInfo>(
+        LambdaClass->getCachedCapturingScopeInfo());
+      // Make a copy of the LSI associated with this lambda
+      LambdaScopeInfo *NewLSI = new LambdaScopeInfo(*CachedLSI);
+
+      // Now clear out all the information we will be re-calculating
+      // while transforming the body of this call operator
+      NewLSI->SwitchStack.clear();
+      NewLSI->Returns.clear();
+      NewLSI->CompoundScopes.clear();
+      NewLSI->PossiblyUnreachableDiags.clear();
+      getSema().FunctionScopes.push_back(NewLSI);
+    }
+    else {
+      assert( false && "There should always be a cached captruing scope info "
+        "when deducing return from conditional!");
+      //getSema().PushLambdaScope(CallOperator->getParent(), CallOperator);
+    }
     // Enter a new evaluation context to insulate the lambda from any
     // cleanups from the enclosing full-expression.
     getSema().PushExpressionEvaluationContext(Sema::PotentiallyEvaluated);
