@@ -126,7 +126,7 @@ namespace DependentReturn {
       if (t != u)
         return t + u;
       else
-        return;
+        return; // expected-error {{return type 'void' must match}}
     };
 
     (void)^(T u) {

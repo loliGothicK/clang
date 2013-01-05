@@ -183,6 +183,10 @@ Sema::~Sema() {
   if (FunctionScopes.size() == 1)
     delete FunctionScopes[0];
   
+  // Delete all the cached Lambda Scopes
+  for (unsigned I = 0, E = CachedLambdaScopes.size(); I != E; ++I)
+    delete CachedLambdaScopes[I];
+  
   // Tell the SemaConsumer to forget about us; we're going out of scope.
   if (SemaConsumer *SC = dyn_cast<SemaConsumer>(&Consumer))
     SC->ForgetSema();
@@ -1024,31 +1028,35 @@ void Sema::PopFunctionScopeInfo(const AnalysisBasedWarnings::Policy *WP,
     // in the LambdaClass even for non-generic-lambdas
     // FVTODO: We need to get rid of caching this in the 
     // FunctionTemplateDecl -  
-    CXXMethodDecl* const GLambdaCallOp = D ?
+    CXXMethodDecl* const LambdaCallOp = D ?
                     dyn_cast<CXXMethodDecl>(const_cast<Decl *>(D)) 
                     : 0;
-    CXXRecordDecl* const GLambdaClass  = GLambdaCallOp ? 
-            GLambdaCallOp->getParent() : 0;
-    if (GLambdaClass && GLambdaClass->isGenericLambda())
-    {
-      FunctionTemplateDecl* const TemplateCallOp = 
-                  GLambdaCallOp->getDescribedFunctionTemplate();
-      //assert(TemplateCallOp && "No template call operator in generic lambda!");
-
-      if (TemplateCallOp)
-          TemplateCallOp->setCachedCapturingScopeInfo(
-                        dyn_cast<CapturingScopeInfo>(Scope));
-      GLambdaClass->setCachedCapturingScopeInfo(
-                        dyn_cast<CapturingScopeInfo>(Scope));
-    }
-    else if (GLambdaClass && GLambdaClass->isLambda()) {
-      delete GLambdaClass->getCachedCapturingScopeInfo();
-
-      GLambdaClass->setCachedCapturingScopeInfo(
-                      dyn_cast<CapturingScopeInfo>(Scope));
+    CXXRecordDecl* const LambdaClass  = LambdaCallOp ? 
+            LambdaCallOp->getParent() : 0;
+    if (LambdaClass && LambdaClass->isLambda()) {
+      LambdaScopeInfo *LSI = dyn_cast<LambdaScopeInfo>(Scope); 
+      // Since we will not be deleting the LambdaScope
+      // because it is useful when transforming lambdas
+      // and deducing return types from conditional expressions
+      // lets us keep a track of all the ones we don't delete, and 
+      // and then delete them in Sema's Dtor.
+      // We do need to delete them, because otherwise, some
+      // invariants within PartialDiagnostics get violated
+      // and noisy assertions can occur.
+      CachedLambdaScopes.push_back(LSI);
+      LambdaClass->setCachedCapturingScopeInfo(LSI);
+      //FVTODO: For now, we use cache it in the 
+      // FunctionTemplateDecl too, since that is what
+      // was done initially - this should be updated & removed.
+      if (LambdaClass->isGenericLambda()) {
+        FunctionTemplateDecl* const TemplateCallOp = 
+                  LambdaCallOp->getDescribedFunctionTemplate();
+        if (TemplateCallOp)
+          TemplateCallOp->setCachedCapturingScopeInfo(LSI);
+      }
     }
     else
-        delete Scope;
+      delete Scope;
   }
 }
 

@@ -263,6 +263,13 @@ public:
   /// that's used to parse every top-level function.
   SmallVector<sema::FunctionScopeInfo *, 4> FunctionScopes;
 
+  /// \brief A List of all the cached lambda scopes that
+  /// will need to be deleted in the destructor
+  /// so that all contained PartialDiagnostics are synced up
+  /// Otherwise Invariants within the StorageAllocator
+  //  of PartialDiagnostics get violated and noisy assertions occur
+  SmallVector<sema::FunctionScopeInfo *, 4> CachedLambdaScopes;
+
   typedef LazyVector<TypedefNameDecl *, ExternalSemaSource,
                      &ExternalSemaSource::ReadExtVectorDecls, 2, 2>
     ExtVectorDeclsType;

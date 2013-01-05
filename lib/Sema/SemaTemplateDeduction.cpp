@@ -4132,7 +4132,10 @@ Sema::DeduceAutoType(QualType Type, Expr *&Init, QualType &Result,
                                            InitType, Info, Deduced, TDF))
       return DAR_Failed;
   }
-
+  // If this check is not here, auto x{ { 0, 0 } }; will creep through
+  // undeduced ...
+  if (Deduced[0].isNull()) 
+    return DAR_Failed;
   QualType DeducedType = Deduced[0].getAsType();
   if (DeducedType.isNull())
     return DAR_Failed;
