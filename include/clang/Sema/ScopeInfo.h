@@ -517,6 +517,11 @@ public:
   /// its list of array index variables.
   llvm::SmallVector<unsigned, 4> ArrayIndexStarts;
   
+  /// \brief As we try and deduce the return types, especially in recursive
+  /// conditional expressions, track all the types we have deduced for 
+  /// this function - since they all need to match exactly
+  llvm::SmallVector<QualType, 5> RecursiveDeducedReturnTypes;
+
   LambdaScopeInfo(DiagnosticsEngine &Diag, CXXRecordDecl *Lambda,
                   CXXMethodDecl *CallOperator)
     : CapturingScopeInfo(Diag, ImpCap_None), Lambda(Lambda),

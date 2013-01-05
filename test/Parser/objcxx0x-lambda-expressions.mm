@@ -8,7 +8,9 @@ class C {
     // fail to parse as a lambda introducer, so we get objc message parsing errors instead
     [foo,+] {}; // expected-error {{expected expression}}
 
-    []; // expected-error {{expected body of lambda expression}}
+    []; // expected-error {{expected body of lambda expression}} \
+        // expected-error {{expected expression}}
+      
     [=,foo+] {}; // expected-error {{expected ',' or ']' in lambda capture list}}
     [&this] {}; // expected-error {{address expression must be an lvalue}}
     [] {}; 

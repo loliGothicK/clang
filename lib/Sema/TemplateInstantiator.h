@@ -193,6 +193,8 @@ public:
     return Result;
   }
 
+  StmtResult TransformReturnStmt(ReturnStmt *S); 
+
   ExprResult TransformLambdaExpr(LambdaExpr *E) {
     LocalInstantiationScope Scope(SemaRef, /*CombineWithOuterScope=*/true);
     return TreeTransform<TemplateInstantiator>::TransformLambdaExpr(E);

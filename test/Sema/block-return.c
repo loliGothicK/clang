@@ -6,10 +6,10 @@ CL foo() {
   short y;
   short (^add1)(void) = ^{ return y+1; }; // expected-error {{incompatible block pointer types initializing 'short (^)(void)' with an expression of type 'int (^)(void)'}}
 
-  CL X = ^{
+  CL X = ^{ //expected-error {{incompatible block pointer types}}
     if (2)
-      return;
-    return 1;  // expected-error {{return type 'int' must match previous return type 'void' when block literal has unspecified explicit return type}}
+      return; // expected-error {{return type 'void' must match previous return type 'int' when block literal has unspecified explicit return type}}
+    return 1;  
   };
 
   int (^Y) (void)  = ^{

@@ -1,6 +1,7 @@
 // RUN: %clang -c -std=c++1y %s -emit-llvm -o %s.bc
 // RUN: lli %s.bc > %s.out
 // RUN: FileCheck %s --input-file=%s.out
+
 #define USE_PRINTF 1
 
 #ifndef USE_PRINTF

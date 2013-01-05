@@ -7802,6 +7802,7 @@ Decl *Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Decl *D) {
       SpecializedLSI->Returns.clear();
       SpecializedLSI->CompoundScopes.clear();
       SpecializedLSI->PossiblyUnreachableDiags.clear();
+      SpecializedLSI->RecursiveDeducedReturnTypes.clear();
       // Don't forget to reset the return type from the completely generic
       // to the specialized (which can have a non-dependent canonical type)
       // otherwise auto L = [](auto a) ->decltype(a) { return 5; };

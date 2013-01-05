@@ -233,6 +233,22 @@ bool isGenericLambdaSpecWithinNonDependentClass(
     return false;
 }
 
+// Check if 'DC' is the body of a specialization of a generic lambda
+// call operator and return as a Method or null if not.
+// This can be useful during certain transformations which are
+// generic lambda dependent ...
+CXXMethodDecl* getAsSpecializedGenericLambdaCallOperator(DeclContext *DC) {
+  // Can we convert to a C++ Method?
+  CXXMethodDecl *LambdaCallOp = dyn_cast<CXXMethodDecl>(DC);
+  if (!LambdaCallOp) return 0;
+  // If so, retrieve the lambda closure class
+  CXXRecordDecl *LambdaClass = LambdaCallOp->getParent();
+  // ensure it is a generic lambda and a specialization
+  if (LambdaClass->isGenericLambda() && 
+        LambdaCallOp->isFunctionTemplateSpecialization()) 
+    return LambdaCallOp;
+ return 0;
+}
 /// \brief Retrieve the template argument list(s) that should be used to
 /// instantiate the definition of the given declaration.
 ///
@@ -904,9 +920,211 @@ getDepthAndIndex(NamedDecl *ND) {
   return std::make_pair(TTP->getDepth(), TTP->getIndex());
 }
 
+
+namespace {
+  
+  // An AST Transformer that derives from TreeTransform, and deduces
+  // the type of a conditional expression that contains recursive calls.
+  //
+  // In allowing return type deduction from conditional expressions that
+  // contain recursive calls, the base case must be in the TRUE branch.
+  // i.e. auto L = [](auto f, n) !n ? 1 : f(f, n - 1) * n;
+
+  // This class essentially hooks TransformConditional and TransformLambda
+  //  and delegates the rest on to TemplateInstantiator and TreeTransform
+  
+  struct RecursiveConditionalExpressionReturnTypeTransformer :
+    TreeTransform<RecursiveConditionalExpressionReturnTypeTransformer> {
+    
+    typedef TreeTransform<RecursiveConditionalExpressionReturnTypeTransformer>
+                inherited;
+    TemplateInstantiator &Instantiator;
+    Sema &SemaRef;
+    CXXMethodDecl *SpecializedGenericLambdaCallOp;
+    bool DeducedConditional;
+    RecursiveConditionalExpressionReturnTypeTransformer(Sema &S, 
+        TemplateInstantiator &Instantiator, CXXMethodDecl *MD) : inherited(S), 
+          Instantiator(Instantiator), SemaRef(S), 
+                SpecializedGenericLambdaCallOp(MD),
+                DeducedConditional(false) {
+     
+    }
+    ExprResult TransformDeclRefExpr(DeclRefExpr *E) {
+      return Instantiator.TransformDeclRefExpr(E);
+    }
+    ExprResult TransformCallExpr(CallExpr *CE) {
+      return Instantiator.TransformCallExpr(CE);
+    }
+    Decl *TransformDecl(SourceLocation Loc, Decl *D) {
+      return Instantiator.TransformDecl(Loc, D);
+    }
+
+    ExprResult TransformLambdaExpr(LambdaExpr *E) {
+      return Instantiator.TransformLambdaExpr(E);
+    }
+
+    ExprResult TransformConditionalOperator(ConditionalOperator *E) {
+      
+      // These Function are defined in SemaStmt.cpp for now.
+      void setFunctionReturnType( FunctionDecl *FD, 
+        QualType NewReturnType, 
+        ASTContext &Context );
+      bool containsDependentCallExpr(Expr *E);
+
+             
+      ConditionalOperator *FullCondExpr = E;
+      // Do Nothing if we are not a dependent expression to begin with
+      if (!FullCondExpr->isTypeDependent()) return Owned(E);
+
+
+      LambdaScopeInfo *LSI = getSema().getCurLambda();
+      // Consider: [](auto f, auto n) !n ? n + 1 : f(f, n - 1) * n;
+      // !n is getCond(), so transform it 
+      ExprResult ConditionResult = Instantiator.TransformExpr(
+                                          FullCondExpr->getCond());
+      if (ConditionResult.isInvalid()) return ExprError();
+      
+      // If there is a base case, it has to be in the true expression
+      ExprResult TrueExprResult = Instantiator.TransformExpr(
+                                      FullCondExpr->getTrueExpr());
+      if (TrueExprResult.isInvalid()) return ExprError();
+
+      Expr* NewTrueExpr = TrueExprResult.get();
+      Expr* FalseExpr = FullCondExpr->getFalseExpr(); 
+      bool TrueExprIsDependent = NewTrueExpr->isTypeDependent();
+      bool FalseExprIsDependent = FalseExpr->isTypeDependent();
+
+      // If the TrueExpression is Dependent, abort deduction attempt
+      if (TrueExprIsDependent)
+        return Instantiator.TransformConditionalOperator(E);
+      // If the FalseExpression is NOt dependent, abort deduction attempt
+      if (!FalseExprIsDependent)
+        return Instantiator.TransformConditionalOperator(E);
+      // If the FalseExpression does not contain a dependent
+      // call expression, abort deduction ...
+      if (!containsDependentCallExpr(FalseExpr))
+        return Instantiator.TransformConditionalOperator(E);
+
+      QualType CurrentReturnType = 
+        SpecializedGenericLambdaCallOp->getResultType();
+
+      QualType OrigResultType = SpecializedGenericLambdaCallOp->
+        getTypeSourceInfo()->getType()->
+        castAs<FunctionProtoType>()->getResultType();
+
+      // The NonDependentType ...
+      QualType NonDependentType = NewTrueExpr->getType();
+
+      // The return type must contain auto, now check to see if we can
+      // deduce against the auto pattern - i.e -> auto* does not 
+      // deduce against int
+      assert ( OrigResultType->getContainedAutoType());
+
+      // This alters the type of NewTrueExpr if necessary
+      QualType DeducedTypeAgainstAuto;
+      Sema::DeduceAutoResult DAR = getSema().DeduceAutoType(OrigResultType, 
+          NewTrueExpr, DeducedTypeAgainstAuto);
+
+      // check to see if we can deduce against the Auto
+      if (DAR != Sema::DAR_Succeeded) return ExprError();
+
+      NonDependentType = DeducedTypeAgainstAuto;
+
+      // Temporarily set the return type to the non dependent type   
+      setFunctionReturnType(SpecializedGenericLambdaCallOp, 
+        NonDependentType, getSema().Context);
+      // Instantiate the expression, and figure its type assuming that
+      // the return type of the function is the known non dependent type
+      ExprResult FalseExprResult = Instantiator.TransformExpr(FalseExpr);
+
+      setFunctionReturnType(SpecializedGenericLambdaCallOp, 
+        CurrentReturnType, getSema().Context);
+
+      if (FalseExprResult.isInvalid()) return ExprError();
+
+      // ReBuild Our Transformed Conditional Operator with both
+      // branches expressions that were built assuming the non dependent type
+      ExprResult ConditionalOperatorResult = Instantiator.
+        RebuildConditionalOperator(ConditionResult.get(), 
+            FullCondExpr->getQuestionLoc(),
+            NewTrueExpr, FullCondExpr->getColonLoc(), 
+            FalseExprResult.get());
+
+      if (ConditionalOperatorResult.isInvalid()) return ExprError();
+      
+      DeducedConditional = true;
+      
+      // Track the NonDependentType, so that we validate finally the return type of
+      // the function, all assumed return types have to match exactly
+      // FVTODO: We assume that the return type of the function was used
+      // to convert FalseExpr from dependent to non-dependent, and so we
+      //  remember it - but it is possible that the function was not
+      //  recursively called, yet the FalseExpr, once it is instantiated
+      //  it's callexpr is automatically non-dependent and resolved, but
+      //  we still assume that the NonDependentType was assumed as the return
+      //  type of the function and so we remember it and make sure all
+      //  further return type deductions match exactly - this
+      //  might not strictly be necessary.   At this time, I am not
+      //  sure how to check that the function was truly referred to
+      //  during computing the type of the FalseExpr branch. 
+      //  No point on spending time on this for now, since I doubt
+      //  this behavior will ever get standardized.
+
+      // IDEA: 
+      // set a flag that we are in the conditional-deductive-context, 
+      // and if this flag is set, Sema tracks all call exprs and 
+      // CXXMethodDecls that get resolved to, and if this decl
+      // is one of them, then we know our return type got used..
+       
+      LSI->RecursiveDeducedReturnTypes.push_back(NonDependentType);
+
+      return ConditionalOperatorResult;
+    }
+
+    bool deducedConditional() const {
+      return DeducedConditional;
+    }
+  }; // End Transformer
+ 
+} // End anon NS
+
+
+
 //===----------------------------------------------------------------------===/
-// Template Instantiation for Types
+// Template Instantiator
 //===----------------------------------------------------------------------===/
+
+
+StmtResult TemplateInstantiator::TransformReturnStmt(ReturnStmt *S) {
+  DeclContext *CurDC = getSema().CurContext;
+  // If we are transforming the body of a specialized generic lambda call
+  // operator...
+  if ( CXXMethodDecl *SpecializedGenericLambdaCallOp = 
+              getAsSpecializedGenericLambdaCallOperator(CurDC)) {
+    
+    // This Function is defined in SemaStmt.cpp for now.
+    bool containsDependentConditionalOperatorAndCallExpr(Expr *E);
+    
+    Expr *RetValExp = S->getRetValue();
+       
+    if (containsDependentConditionalOperatorAndCallExpr(RetValExp) && 
+          SpecializedGenericLambdaCallOp->getResultType()->
+                                              getContainedAutoType()) {
+
+      RecursiveConditionalExpressionReturnTypeTransformer RT(getSema(), *this
+                  , SpecializedGenericLambdaCallOp);
+      
+      ExprResult NewRetExprResult = RT.TransformExpr(RetValExp);
+
+      if (NewRetExprResult.isInvalid()) return StmtError();
+      
+      if (RT.deducedConditional())
+        return getDerived().RebuildReturnStmt(S->getReturnLoc(), 
+                                          NewRetExprResult.get());
+    }
+  }
+  return inherited::TransformReturnStmt(S);
+}
 
 TemplateArgument TemplateInstantiator::ForgetPartiallySubstitutedPack() {
   TemplateArgument Result;

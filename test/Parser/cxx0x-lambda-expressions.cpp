@@ -7,7 +7,8 @@ class C {
   int f() {
     int foo, bar;
 
-    []; // expected-error {{expected body of lambda expression}}
+    []; // expected-error {{expected body of lambda expression}} \
+        // expected-error {{expected expression}}
     [+] {}; // expected-error {{expected variable name or 'this' in lambda capture list}}
     [foo+] {}; // expected-error {{expected ',' or ']' in lambda capture list}}
     [foo,&this] {}; // expected-error {{'this' cannot be captured by reference}}
@@ -36,7 +37,8 @@ class C {
     const int c = 1;
     int a1[1] = {[b] (T()) {}}; // expected-error{{no viable conversion from '<lambda}}
     int a2[1] = {[b] = 1 };
-    int a3[1] = {[b,c] = 1 }; // expected-error{{expected body of lambda expression}}
+    int a3[1] = {[b,c] = 1 }; // expected-error{{expected body of lambda expression}} \
+                              // expected-error {{expected expression}}                        
     int a4[1] = {[&b] = 1 }; // expected-error{{integral constant expression must have integral or unscoped enumeration type, not 'const int *'}}
     int a5[3] = { []{return 0;}() };
     int a6[1] = {[this] = 1 }; // expected-error{{integral constant expression must have integral or unscoped enumeration type, not 'C *'}}

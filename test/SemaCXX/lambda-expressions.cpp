@@ -200,7 +200,7 @@ namespace VariadicPackExpansion {
   }
   template void nested(int, int, int);
 
-  template<typename...Ts> void nested2(Ts ...ts) { // expected-note 2{{here}}
+  template<typename...Ts> void nested2(Ts ...ts) { // expected-note {{here}}
     // Capture all 'ts', use only one.
     f([&ts...] { return ts; } ()...);
     // Capture each 'ts', use it.
@@ -218,8 +218,8 @@ namespace VariadicPackExpansion {
     // also say which slice of the pack expansion is being performed in the
     // instantiation backtrace.
     f([&ts] { return (int)f(ts...); } ()...); // \
-    // expected-error 2{{'ts' cannot be implicitly captured}} \
-    // expected-note 2{{lambda expression begins here}}
+    // expected-error {{'ts' cannot be implicitly captured}} \
+    // expected-note {{lambda expression begins here}}
   }
   template void nested2(int); // ok
   template void nested2(int, int); // expected-note {{in instantiation of}}

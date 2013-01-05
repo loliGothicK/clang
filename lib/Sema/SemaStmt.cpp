@@ -2287,17 +2287,18 @@ Expr* RebuildExprWhileTryingToDeduceTypeOfAnyDependentConditionals(
 
 
 // check to see if there is a dependent NestedConditional
-struct NestedConditionalExprChecker : 
-  RecursiveASTVisitor<NestedConditionalExprChecker> {
-    typedef RecursiveASTVisitor<NestedConditionalExprChecker> inherited;
+struct DependentConditionalOperatorAndCallExprVisitor : 
+  RecursiveASTVisitor<DependentConditionalOperatorAndCallExprVisitor> {
+    typedef RecursiveASTVisitor<DependentConditionalOperatorAndCallExprVisitor> inherited;
     bool HasNestedConditional;
     bool IsDependentConditional;
-    
+    bool HasDependentCallExpr;
+
     bool hasNestedConditional() const { return HasNestedConditional; }
     bool isDependentConditional() const { return IsDependentConditional; }
-    
-    NestedConditionalExprChecker() : HasNestedConditional(false),
-      IsDependentConditional(false) { }
+    bool hasDependentCallExpr() const { return HasDependentCallExpr; }
+    DependentConditionalOperatorAndCallExprVisitor() : HasNestedConditional(false),
+      IsDependentConditional(false), HasDependentCallExpr(false) { }
 
     bool VisitConditionalOperator(ConditionalOperator *E) {
       
@@ -2307,9 +2308,13 @@ struct NestedConditionalExprChecker :
       if (E->getType()->isDependentType())
         IsDependentConditional = true;
       
-      // Abort traversal/visitation as soon as we find a dependent conditional
-      return !IsDependentConditional;
+      return true;
     }
+    bool VisitCallExpr(CallExpr *E) {
+      if (E->getType()->isDependentType())
+        HasDependentCallExpr = true;
+      return true;
+    } 
 };
 
 // Transform the expression by deriving from TreeTransform
@@ -2320,6 +2325,10 @@ struct NestedConditionalExprChecker :
 // have their types deduced if they contain recursive calls
 // but a base case (non-depdent type) has been seen and will
 // be used to deduce the recursive branches.
+
+// FVTODO: This should be perhaps better implemented by intercepting
+// A CallExpr, because if there is no CallExpr within the Conditional
+//  there would be no benefit to reparsing - right?
 struct NestedConditionalTransformer : 
                       TreeTransform<NestedConditionalTransformer> {
   FunctionDecl *TheFunctionDecl;
@@ -2376,27 +2385,8 @@ struct NestedConditionalTransformer :
 
     // Push our Lambda Expression Call operator on the DeclContext stack
     Sema::ContextRAII SavedContext(getSema(), CallOperator);
-    FunctionTemplateDecl *TemplateCallOperator = CallOperator->getDescribedFunctionTemplate();
-    // Push the LambdaScopeInfo onto the functionInfo stack
-    if (TemplateCallOperator) {
+    if (LambdaClass->getCachedCapturingScopeInfo())  {
 
-      LambdaScopeInfo *CachedLSI= dyn_cast<LambdaScopeInfo>(
-          TemplateCallOperator->getCachedCapturingScopeInfo());
-    
-      // Make a copy of the LSI associated with the template member operator
-      LambdaScopeInfo *NewLSI = new LambdaScopeInfo(*CachedLSI);
- 
-      // Now clear out all the information we will be re-calculating
-      // while transforming the body of this call operator
-      NewLSI->SwitchStack.clear();
-      NewLSI->Returns.clear();
-      NewLSI->CompoundScopes.clear();
-      NewLSI->PossiblyUnreachableDiags.clear();
-         
-      getSema().FunctionScopes.push_back(NewLSI);
-    }
-    else if (LambdaClass->getCachedCapturingScopeInfo()) // this was a non-generic lambda 
-    {
       LambdaScopeInfo *CachedLSI = dyn_cast<LambdaScopeInfo>(
         LambdaClass->getCachedCapturingScopeInfo());
       // Make a copy of the LSI associated with this lambda
@@ -2409,11 +2399,9 @@ struct NestedConditionalTransformer :
       NewLSI->CompoundScopes.clear();
       NewLSI->PossiblyUnreachableDiags.clear();
       getSema().FunctionScopes.push_back(NewLSI);
-    }
-    else {
+   } else {
       assert( false && "There should always be a cached captruing scope info "
         "when deducing return from conditional!");
-      //getSema().PushLambdaScope(CallOperator->getParent(), CallOperator);
     }
     // Enter a new evaluation context to insulate the lambda from any
     // cleanups from the enclosing full-expression.
@@ -2433,6 +2421,10 @@ struct NestedConditionalTransformer :
     LambdaStack.pop_back();
 
     if (Body.isInvalid() || DetectNewError.hasErrorOccurred()) {
+      // ExpressionEvaluationContext is popped off in ActOnLambdaExpr/Error
+    // Since we are not calling them, we need to explicitly pop them off
+      getSema().PopExpressionEvaluationContext();
+      getSema().PopFunctionScopeInfo();
       return ExprError();
     }
     CallOperator->setBody(Body.get());
@@ -2450,11 +2442,19 @@ struct NestedConditionalTransformer :
 // a dependent conditional operator - such as
 // ([](auto a) a ? a - 1 : a + 1);
 
-bool containsDependentNestedConditionalOperator(Expr *E) {
-  NestedConditionalExprChecker NCEC;
+bool containsDependentConditionalOperatorAndCallExpr(Expr *E) {
+  DependentConditionalOperatorAndCallExprVisitor NCEC;
   NCEC.TraverseStmt(E);
-  return NCEC.hasNestedConditional() && NCEC.isDependentConditional();
+  return NCEC.hasNestedConditional() && NCEC.isDependentConditional() && 
+    NCEC.hasDependentCallExpr();
 }
+
+bool containsDependentCallExpr(Expr *E) {
+  DependentConditionalOperatorAndCallExprVisitor NCEC;
+  NCEC.TraverseStmt(E);
+  return NCEC.hasDependentCallExpr();
+}
+
 
 
 static bool IsGenericLambdaCallOperator(FunctionDecl *FD) {
@@ -2463,7 +2463,7 @@ static bool IsGenericLambdaCallOperator(FunctionDecl *FD) {
       MD->getParent()->isGenericLambda();
 }
 
-static void setFunctionReturnType( FunctionDecl *FD, 
+void setFunctionReturnType( FunctionDecl *FD, 
                       QualType NewReturnType, 
                       ASTContext &Context ) {
   const FunctionProtoType *FPT = FD->getType()->castAs<FunctionProtoType>();
@@ -2751,15 +2751,25 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
     if (FunctionDecl *FD = dyn_cast<FunctionDecl>(CurContext)) {
       if (AutoType *AT = FD->getResultType()->getContainedAutoType()) { 
         ReturnTypeContainsAuto = true;      
+        // Defined in SemaTemplateInstantiate.cpp
+        bool isLambdaCallOperator(FunctionDecl*);
+
         SmallVector<QualType, 5> RecursiveDeducedReturnTypes;
+        // If we are a lambda, then copy over the recursive deduced
+        // return types we have already deduced during transformation
+        // or earlier
+        if (isLambdaCallOperator(FD)) {
+          LambdaScopeInfo *LSI = getCurLambda();
+          RecursiveDeducedReturnTypes = LSI->RecursiveDeducedReturnTypes;
+        }
         // This attempts to deduce the type of a lambda's return
         // when the conditional operator is dependent and contains a
         // recursive call.
         // i.e.
         // auto Fact = [](auto f, auto n) !n ? 1 : f(f, n - 1) * n;
-         
+        //* 
         if (RetValExp->getType()->isDependentType() && 
-                  containsDependentNestedConditionalOperator(RetValExp)) {
+                  containsDependentConditionalOperatorAndCallExpr(RetValExp)) {
           
           RetValExp = 
             RebuildExprWhileTryingToDeduceTypeOfAnyDependentConditionals(
@@ -2767,7 +2777,7 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
                                                RecursiveDeducedReturnTypes);
 
         }
-
+        //*/
         if (DeduceFunctionTypeFromReturnExpr(FD, ReturnLoc, RetValExp, AT)) {
           FD->setInvalidDecl();
           return StmtError();

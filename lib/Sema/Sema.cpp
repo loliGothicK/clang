@@ -1016,16 +1016,14 @@ void Sema::PopFunctionScopeInfo(const AnalysisBasedWarnings::Policy *WP,
     // lambdaScopeInfo so that when specializations are
     // instantiated, we can reuse the LambdaScopeInfo
     // as a starting point for each new specialization
+    // and use the variables that were captured
     
-    // FVTODO: This could be generalized once support
-    // for return type deduction for functions is 
-    // implemented
-    
-    // FVTODO: Since when deducing return types through conditional
+    // Since when deducing return types through conditional
     // expressions, we try and define a lambda potentially
     // multiple times (ugh!!) lets just cache the CapturingScopeInfo
-    // in the LambdaClass - we need to get rid of caching
-    // this in the FunctionTemplateDecl -  
+    // in the LambdaClass even for non-generic-lambdas
+    // FVTODO: We need to get rid of caching this in the 
+    // FunctionTemplateDecl -  
     CXXMethodDecl* const GLambdaCallOp = D ?
                     dyn_cast<CXXMethodDecl>(const_cast<Decl *>(D)) 
                     : 0;
@@ -1044,6 +1042,8 @@ void Sema::PopFunctionScopeInfo(const AnalysisBasedWarnings::Policy *WP,
                         dyn_cast<CapturingScopeInfo>(Scope));
     }
     else if (GLambdaClass && GLambdaClass->isLambda()) {
+      delete GLambdaClass->getCachedCapturingScopeInfo();
+
       GLambdaClass->setCachedCapturingScopeInfo(
                       dyn_cast<CapturingScopeInfo>(Scope));
     }
