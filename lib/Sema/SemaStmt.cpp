@@ -2734,7 +2734,8 @@ bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
 }
 
 
-
+// Defined in SemaTemplateInstantiate.cpp
+bool isLambdaCallOperator(FunctionDecl*);
 
 /// ActOnCapScopeReturnStmt - Utility routine to type-check return statements
 /// for capturing scopes.
@@ -2751,8 +2752,7 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
     if (FunctionDecl *FD = dyn_cast<FunctionDecl>(CurContext)) {
       if (AutoType *AT = FD->getResultType()->getContainedAutoType()) { 
         ReturnTypeContainsAuto = true;      
-        // Defined in SemaTemplateInstantiate.cpp
-        bool isLambdaCallOperator(FunctionDecl*);
+        
 
         SmallVector<QualType, 5> RecursiveDeducedReturnTypes;
         // If we are a lambda, then copy over the recursive deduced
