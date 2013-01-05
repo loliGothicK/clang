@@ -920,6 +920,13 @@ getDepthAndIndex(NamedDecl *ND) {
   return std::make_pair(TTP->getDepth(), TTP->getIndex());
 }
 
+// These Function are defined in SemaStmt.cpp for now.
+void setFunctionReturnType( FunctionDecl *FD, 
+  QualType NewReturnType, 
+  ASTContext &Context );
+bool containsDependentCallExpr(Expr *E);
+// This Function is defined in SemaStmt.cpp for now.
+bool containsDependentConditionalOperatorAndCallExpr(Expr *E);
 
 namespace {
   
@@ -964,13 +971,7 @@ namespace {
     }
 
     ExprResult TransformConditionalOperator(ConditionalOperator *E) {
-      
-      // These Function are defined in SemaStmt.cpp for now.
-      void setFunctionReturnType( FunctionDecl *FD, 
-        QualType NewReturnType, 
-        ASTContext &Context );
-      bool containsDependentCallExpr(Expr *E);
-
+       
              
       ConditionalOperator *FullCondExpr = E;
       // Do Nothing if we are not a dependent expression to begin with
@@ -1101,9 +1102,6 @@ StmtResult TemplateInstantiator::TransformReturnStmt(ReturnStmt *S) {
   // operator...
   if ( CXXMethodDecl *SpecializedGenericLambdaCallOp = 
               getAsSpecializedGenericLambdaCallOperator(CurDC)) {
-    
-    // This Function is defined in SemaStmt.cpp for now.
-    bool containsDependentConditionalOperatorAndCallExpr(Expr *E);
     
     Expr *RetValExp = S->getRetValue();
        

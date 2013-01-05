@@ -89,9 +89,9 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
     AccessCheckingSFINAE(false), InNonInstantiationSFINAEContext(false),
     NonInstantiationEntries(0), ArgumentPackSubstitutionIndex(-1),
     CurrentInstantiationScope(0), TyposCorrected(0),
-    AnalysisWarnings(*this),
-    IsTransformingLambdaCallOperatorProtoType(false)
-{
+    IsTransformingLambdaCallOperatorProtoType(false),
+    AnalysisWarnings(*this) {
+
   TUScope = 0;
   
   LoadedExternalKnownNamespaces = false;

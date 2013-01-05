@@ -2348,7 +2348,7 @@ struct NestedConditionalTransformer :
    { }
 
    ExprResult TransformConditionalOperator(ConditionalOperator *E) {
-    DeclContext   *SemaCurDeclContext = getSema().CurContext;
+    //DeclContext   *SemaCurDeclContext = getSema().CurContext;
     FunctionDecl *CurFunctionDecl = TheFunctionDecl;
     if (LambdaStack.size())
       CurFunctionDecl = LambdaStack.back()->getCallOperator();
