@@ -301,7 +301,6 @@ static CXXMethodDecl* createGenericLambdaMethod(CXXRecordDecl *Class,
                             SourceLocation EndLoc,
                             llvm::ArrayRef<ParmVarDecl *> Params,
                             TemplateParameterList *OrigTemplateParamList,
-                            unsigned int TemplateParameterDepth,
                             Sema &S) {
   
   ASTContext &Context = S.Context;
@@ -523,8 +522,7 @@ CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
   TypeSourceInfo *MethodType,
   SourceLocation EndLoc,
   llvm::ArrayRef<ParmVarDecl *> Params,
-  TemplateParameterList *TemplateParams,
-  unsigned int TemplateParameterDepth) {
+  TemplateParameterList *TemplateParams) {
 
 
     bool IsGenericLambda = getLangOpts().GenericLambda &&
@@ -534,7 +532,7 @@ CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
     if (IsGenericLambda)
       Method = createGenericLambdaMethod(Class, IntroducerRange,
                                     MethodType, EndLoc, Params, 
-                                    TemplateParams, TemplateParameterDepth, *this); 
+                                    TemplateParams, *this); 
     else
       Method = createNonGenericLambdaMethod(Class, IntroducerRange,
                                     MethodType, EndLoc, Params, *this);
@@ -822,8 +820,7 @@ void Sema::deduceClosureReturnType(CapturingScopeInfo &CSI) {
 void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
                                         Declarator &ParamInfo,
                                         Scope *CurScope,
-                                        TemplateParameterList *TemplateParams,
-                                        unsigned int TemplateParameterDepth) {
+                                        TemplateParameterList *TemplateParams) {
   // Determine if we're within a context where we know that the lambda will
   // be dependent, because there are template parameters in scope.
   bool KnownDependent = false;
@@ -902,7 +899,7 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
 
   CXXMethodDecl *Method = startLambdaDefinition(Class, Intro.Range,
                                                 MethodTyInfo, EndLoc, Params, 
-                                                TemplateParams, TemplateParameterDepth);
+                                                TemplateParams);
   Class->setLambdaCallOperator(Method);
   if (ExplicitParams)
     CheckCXXDefaultArguments(Method);

@@ -7973,18 +7973,13 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
     Params.push_back(NewParamDeclArray[i]);
   }
   
-  //FVTODO: should this really be 0 if we do NOT have template params
-  //  need to think about this .... 
-  unsigned int NewTemplateParamsDepth = NewTemplateParamList ? 
-                                     NewTemplateParamList->getDepth() : 0;
   // Transform the call operator.
   CXXMethodDecl *CallOperator
     = getSema().startLambdaDefinition(Class, E->getIntroducerRange(),
                                       NewMethodTSI,
                                       E->getCallOperator()->getLocEnd(),
                                       Params, 
-                                      NewTemplateParamList, 
-                                      NewTemplateParamsDepth);
+                                      NewTemplateParamList);
   Class->setLambdaCallOperator(CallOperator);
   getDerived().transformAttrs(E->getCallOperator(), CallOperator);
   

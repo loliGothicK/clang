@@ -1064,44 +1064,10 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
   unsigned ScopeFlags = Scope::BlockScope | Scope::FnScope | Scope::DeclScope;
   ParseScope BodyScope(this, ScopeFlags);
 
-  TemplateParameterDepthCounter Depth(TemplateParameterDepth);
- 
-  
-  unsigned int ActualDepth = Actions.getTemplateParameterDepth(getCurScope());
-
-  // If we already have a template parameter list, (i.e. []<class T>()
-  // then use its depth
-  unsigned int LambdaTemplateParameterDepth = LambdaTemplateParams ? 
-                      LambdaTemplateParams->getDepth() : ActualDepth;
-
   Actions.ActOnStartOfLambdaDefinition(Intro, D, getCurScope(), 
-                      LambdaTemplateParams, LambdaTemplateParameterDepth);
+                      LambdaTemplateParams);
 
   sema::LambdaScopeInfo *LSI = Actions.getCurLambda();
-  // FVTODO: Ensure that the following assert is
-  // maintained:
-  // assert(getTemplateParameterDepth(gerCurScope()) == TemplateParameterDepth)
-  // We need to adjust the template parameter depth, in case
-  // we have nested generic lambdas.
-  // But we should only do this, if there was no explicit template
-  // parameter list specified, since if there was, we have already
-  // adjusted the depth while parsing it
-  if (LSI->Lambda && LSI->Lambda->isGenericLambda() && !LambdaTemplateParams)
-  {
-    // check if these are out of sync, and first sync accordingly
-    // if LambdaTemplateParams is non-null, then this has already been synced up
-    if (ActualDepth > TemplateParameterDepth)
-    {
-      unsigned diff = ActualDepth - TemplateParameterDepth;
-      while(diff-- > 0) ++Depth;
-    }  
-    assert(ActualDepth >= TemplateParameterDepth && "ActualDepth (calculated) "
-        "must be greater"
-        " than the member variable TemplateParameterDepth");
-
-    ++Depth; // Now increment for the actual addition of 
-             // the template parameter list in the lambda
-  }
 
   if (!Tok.is(tok::l_brace)) {
     // Try and parse a single expression that will become the return value

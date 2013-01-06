@@ -4134,8 +4134,7 @@ public:
                                        TypeSourceInfo *MethodType,
                                        SourceLocation EndLoc,
                                        llvm::ArrayRef<ParmVarDecl *> Params,
-                                       TemplateParameterList *TemplateParams,
-                                       unsigned int TemplateParameterDepth);
+                                       TemplateParameterList *TemplateParams);
 
   /// \brief Introduce the scope for a lambda expression.
   sema::LambdaScopeInfo *enterLambdaScope(CXXMethodDecl *CallOperator,
@@ -4162,8 +4161,7 @@ public:
   /// lambda.
   void ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
                                     Declarator &ParamInfo, Scope *CurScope,
-                                    TemplateParameterList *TemplateParams,
-                                    unsigned int TemplateParameterDepth);
+                                    TemplateParameterList *TemplateParams);
 
   /// ActOnLambdaError - If there is an error parsing a lambda, this callback
   /// is invoked to pop the information about the lambda.

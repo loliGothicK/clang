@@ -33,6 +33,18 @@ void check_nested_lambda_full_generic() {
   LL<double> ll;
   auto x = M(iarr, 6.5, ll);
   printf("x = %f\n", x);
+  
+  {
+    auto Ly = []<class T00>(auto x, T00 t00) 
+                [](auto a)
+                  []<class T20, int N21, template<class> class TT22>(
+                        T20 (&ta)[N21], decltype(a) b, TT22<decltype(a)> tt22) ta[0] + b +
+                                    ([](auto c) c)(b);
+    auto My = Ly('c', ll);
+    auto Ny = My(2.77);
+    auto Oy = Ny(iarr, 6.6, ll);
+    
+  }
 }
 void check_nested_variadic() {
   auto L = [](auto a) 
