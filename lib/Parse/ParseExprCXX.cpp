@@ -1070,9 +1070,15 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
   sema::LambdaScopeInfo *LSI = Actions.getCurLambda();
 
   if (!Tok.is(tok::l_brace)) {
-    // Try and parse a single expression that will become the return value
+    // Parse a single expression that will become the return value
     // [](auto a) a;
-    ExprResult SingleExpr(ParseExpression());
+    // We do not parse commas within expressions unless enclosed within a 
+    // parentheses. Thus we use ParseAssignmentExpressiona and
+    // not ParseExpression
+    //  For e.g.,:
+    //  template<class T, class U> void foo(T t, U u);
+    // foo([](auto a) a, [](auto b) b); // ok with AssignmentExpression
+    ExprResult SingleExpr(ParseAssignmentExpression());
     
     BodyScope.Exit();
     
