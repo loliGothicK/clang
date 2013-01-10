@@ -11056,6 +11056,21 @@ static inline bool IsGenericLambdaDeclContext(const DeclContext* DC)
     cast<CXXRecordDecl>(DC->getParent())->isGenericLambda();
 }
 
+
+static inline bool IsLambdaWithinGenericLambdaDeclContext(
+                                      const DeclContext* DC)
+{
+  const DeclContext *NextDC = DC;
+  while ( NextDC && IsLambdaDeclContext(NextDC) ) {
+    const CXXRecordDecl *LambdaClass = cast<CXXRecordDecl>(
+                                          NextDC->getParent());
+    if (LambdaClass->isGenericLambda()) return true;
+    NextDC = LambdaClass->getParent();
+  }
+  return false;
+}
+
+
 // Mark a VarDecl referenced, and perform the necessary handling to compute
 // odr-uses.
 static void DoMarkVarDeclReferenced(Sema &SemaRef, SourceLocation Loc,
@@ -11078,7 +11093,7 @@ static void DoMarkVarDeclReferenced(Sema &SemaRef, SourceLocation Loc,
     // at definition of the lambda expression
     // FVTODO: How do we check if we are trying to capture a variable
     //  or referring to a variable that is a parmeter or local to the lambda?
-    if (!IsGenericLambdaDeclContext(SemaRef.CurContext)) return;
+    if (!IsLambdaWithinGenericLambdaDeclContext(SemaRef.CurContext)) return;
   }
   // Implicit instantiation of static data members of class templates.
   if (Var->isStaticDataMember() && Var->getInstantiatedFromStaticDataMember()) {
