@@ -2596,8 +2596,19 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
         NestedNameSpecifier *NNSPrefix = NNS->getPrefix();
         switch (NNS->getKind()) {
         case NestedNameSpecifier::Identifier:
-          ClsType = Context.getDependentNameType(ETK_None, NNSPrefix,
+          if (NNSPrefix) 
+            ClsType = Context.getDependentNameType(ETK_None, NNSPrefix,
                                                  NNS->getAsIdentifier());
+          else {
+          // NNSPrefix can some how be null when parsing generic lambdas
+          // and is not caught as an error when the compiler is not 
+          // invoked with -cc1 error and we get a null pointer exception!
+          // FVTODO: We output some nonsense error for now - but this will need
+          // to be fixed. 
+            S.Diag(D.getLocStart(), diag::err_incomplete_nested_name_spec) 
+              << "<null>";
+            D.setInvalidType(true);
+          }
           break;
 
         case NestedNameSpecifier::Namespace:
