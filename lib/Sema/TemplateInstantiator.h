@@ -41,9 +41,9 @@ public:
   unsigned int getCurrentTemplateArgsLevel() const {
     return TemplateArgs.getNumLevels();
   }
-  const MultiLevelTemplateArgumentList& 
+  const MultiLevelTemplateArgumentList* 
     getDeducedTemplateArguments() const {
-      return TemplateArgs;
+      return &TemplateArgs;
   }
 
   TemplateInstantiator(Sema &SemaRef,

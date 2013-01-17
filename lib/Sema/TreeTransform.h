@@ -2515,6 +2515,16 @@ public:
                                             RParenLoc);
   }
 
+  /// \brief This returns a pointer to the Deduced template
+  ///  Arguments - FVTODO: As of now, it is used by TransformLambdaExpr
+  ///  to Transform the template parameter list, and we might
+  ///  have a better option than exposing this...
+  /// 
+  const MultiLevelTemplateArgumentList* 
+    getDeducedTemplateArguments() const {
+      return 0;
+  }
+
 private:
   TypeLoc TransformTypeInObjectScope(TypeLoc TL,
                                      QualType ObjectType,
@@ -7891,12 +7901,12 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
   TemplateParameterList *OrigTemplateParamList = E->getTemplateParameterList();
   TemplateParameterList *NewTemplateParamList = 0;
 
-  if (IsGenericLambda) { 
+  if (IsGenericLambda && getDerived().getDeducedTemplateArguments()) { 
     // If this is a generic Lambda, transform the template parameter list
     // and add it to the scope
     TemplateDeclInstantiator  DeclInstantiator(getSema(), 
                           /* DeclContext *Owner */ E->getCallOperator(),
-                          getDerived().getDeducedTemplateArguments());
+                          *getDerived().getDeducedTemplateArguments());
     NewTemplateParamList = DeclInstantiator.SubstTemplateParams(
                                          OrigTemplateParamList);
   }
