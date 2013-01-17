@@ -2471,29 +2471,28 @@ static void addInstantiatedParametersToScope(Sema &S, FunctionDecl *Function,
   
   // If this is a generic lambda, add the captures of the specialization 
   // to the scope
-  // We iterate through the NewLambdaClass (a specialization from the primary)
-  //  and the OrigLambdaClass and map them within our instantiation scope
   if (S.isNonTemplateLambdaCallOperator(Function)) {
-    CXXMethodDecl *NewLambdaCallOp = cast<CXXMethodDecl>(Function);
-    const CXXMethodDecl *OrigLambdaCallOp = cast<const CXXMethodDecl>(PatternDecl);
-    CXXRecordDecl *NewLambdaClass = NewLambdaCallOp->getParent();
-    const CXXRecordDecl *OrigLambdaClass = OrigLambdaCallOp->getParent();
-
-    typedef CXXRecordDecl::capture_const_iterator CI;
-    for (CI new_capture_it = NewLambdaClass->captures_begin(),
-      orig_capture_it = OrigLambdaClass->captures_begin(),
-      new_capture_end = NewLambdaClass->captures_end(),
-      orig_capture_end = OrigLambdaClass->captures_end();
-    (new_capture_it != new_capture_end) && (orig_capture_it != orig_capture_end);
-    ++new_capture_it, ++orig_capture_it) {
-      
-      const LambdaExpr::Capture* NewCapture = new_capture_it;
-      const LambdaExpr::Capture* OrigCapture = orig_capture_it;
-      //FVTODO: Do we need to worry about capturesThis??
-      if (NewCapture->capturesVariable())
-        Scope.InstantiatedLocal(OrigCapture->getCapturedVar(), 
-                                      NewCapture->getCapturedVar());
+    CXXMethodDecl *LambdaCallOp = cast<CXXMethodDecl>(Function);
     
+    CXXRecordDecl *LambdaClass = LambdaCallOp->getParent();
+    
+    typedef CXXRecordDecl::capture_const_iterator CI;
+    for (CI capture_it = LambdaClass->captures_begin(),
+            capture_end = LambdaClass->captures_end();
+              (capture_it != capture_end);
+                                            ++capture_it) {
+      
+      const LambdaExpr::Capture* NewCapture = capture_it;
+      
+      //FVTODO: Do we need to worry about capturesThis?
+      //  No - I don't believe so - it should be handled
+      if (NewCapture->capturesVariable()) {
+        // The captures should not be dependent
+        assert(!NewCapture->getCapturedVar()->getType()->isDependentType());
+
+        Scope.InstantiatedLocal(NewCapture->getCapturedVar(), 
+                                      NewCapture->getCapturedVar());
+      }
     }
   }
   
