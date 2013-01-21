@@ -281,7 +281,7 @@ public:
 //  since I think it works...
 
 namespace sema {
- class CapturingScopeInfo;
+ class LambdaScopeInfo;
 }
 /// CXXRecordDecl - Represents a C++ struct/union/class.
 /// FIXME: This class will disappear once we've properly taught RecordDecl
@@ -644,7 +644,7 @@ class CXXRecordDecl : public RecordDecl {
     /// so that codegen can forward the call appropriately
     StaticInvokerSpecToCallOpSpecMapType *StaticInvokerSpecToCallOpSpecMapPtr;
      // see comment at the forward declaration above for details
-    sema::CapturingScopeInfo* LambdaBlockScopeInfo;
+    sema::LambdaScopeInfo* LambdaBlockScopeInfo;
     
   };
 
@@ -1113,13 +1113,13 @@ public:
   /// Get the CachedCapturingScopeInfo
   // see comment at the forward declaration of CapturingScopeInfo above 
   // for more details ...
-  sema::CapturingScopeInfo* getCachedCapturingScopeInfo() 
+  sema::LambdaScopeInfo* getCachedLambdaScopeInfo() 
   { return getLambdaData().LambdaBlockScopeInfo; }
   //FVTODO: - this should delete a previous .LambdaBlockScopeInfo
   //   - introduce an assert here, to see if this is called when it 
   //    is already set
-  void setCachedCapturingScopeInfo(sema::CapturingScopeInfo* CSI) 
-  { getLambdaData().LambdaBlockScopeInfo = CSI; }
+  void setCachedLambdaScopeInfo(sema::LambdaScopeInfo* LSI) 
+  { getLambdaData().LambdaBlockScopeInfo = LSI; }
 
 
   /// \brief For a closure type, retrieve the mapping from captured

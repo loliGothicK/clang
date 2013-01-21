@@ -2943,6 +2943,34 @@ static const Decl* getCanonicalParmVarDecl(const Decl *D) {
   return D;
 }
 
+// This does not assert upon failure - is a simple query
+llvm::PointerUnion<Decl *, LocalInstantiationScope::DeclArgumentPack *> *
+      LocalInstantiationScope::hasInstantiationOf(const Decl *D) {
+  D = getCanonicalParmVarDecl(D);
+  for (LocalInstantiationScope *Current = this; Current;
+    Current = Current->Outer) {
+
+      // Check if we found something within this scope.
+      const Decl *CheckD = D;
+      do {
+        LocalDeclsMap::iterator Found = Current->LocalDecls.find(CheckD);
+        if (Found != Current->LocalDecls.end())
+          return &Found->second;
+
+        // If this is a tag declaration, it's possible that we need to look for
+        // a previous declaration.
+        if (const TagDecl *Tag = dyn_cast<TagDecl>(CheckD))
+          CheckD = Tag->getPreviousDecl();
+        else
+          CheckD = 0;
+      } while (CheckD);
+
+      // If we aren't combined with our outer scope, we're done. 
+      if (!Current->CombineWithOuterScope)
+        break;
+  }
+  return 0;
+}
 
 llvm::PointerUnion<Decl *, LocalInstantiationScope::DeclArgumentPack *> *
 LocalInstantiationScope::findInstantiationOf(const Decl *D) {

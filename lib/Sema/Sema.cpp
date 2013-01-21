@@ -1044,7 +1044,7 @@ void Sema::PopFunctionScopeInfo(const AnalysisBasedWarnings::Policy *WP,
       // invariants within PartialDiagnostics get violated
       // and noisy assertions can occur.
       CachedLambdaScopes.push_back(LSI);
-      LambdaClass->setCachedCapturingScopeInfo(LSI);
+      LambdaClass->setCachedLambdaScopeInfo(LSI);
       //FVTODO: For now, we use cache it in the 
       // FunctionTemplateDecl too, since that is what
       // was done initially - this should be updated & removed.

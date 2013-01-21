@@ -2336,8 +2336,8 @@ struct NestedConditionalTransformer :
   const MultiLevelTemplateArgumentList &TemplateArgs;
   SmallVectorImpl<QualType> &RecursivelyDeducedReturnTypes;
   std::vector<LambdaExpr*> LambdaStack;
-  const MultiLevelTemplateArgumentList& getDeducedTemplateArguments() const {
-    return TemplateArgs;
+  const MultiLevelTemplateArgumentList* getDeducedTemplateArguments() const {
+    return &TemplateArgs;
   }
   
   NestedConditionalTransformer(Sema &SemaRef, FunctionDecl *FD,
@@ -2385,10 +2385,10 @@ struct NestedConditionalTransformer :
 
     // Push our Lambda Expression Call operator on the DeclContext stack
     Sema::ContextRAII SavedContext(getSema(), CallOperator);
-    if (LambdaClass->getCachedCapturingScopeInfo())  {
+    if (LambdaClass->getCachedLambdaScopeInfo())  {
 
-      LambdaScopeInfo *CachedLSI = dyn_cast<LambdaScopeInfo>(
-        LambdaClass->getCachedCapturingScopeInfo());
+      LambdaScopeInfo *CachedLSI = 
+        LambdaClass->getCachedLambdaScopeInfo();
       // Make a copy of the LSI associated with this lambda
       LambdaScopeInfo *NewLSI = new LambdaScopeInfo(*CachedLSI);
 

@@ -181,14 +181,17 @@ namespace clang {
     /// \brief A set of declarations.
     typedef SmallVector<Decl *, 4> DeclArgumentPack;
     
+
+    typedef llvm::DenseMap<const Decl *, 
+        llvm::PointerUnion<Decl *, DeclArgumentPack *> >
+          LocalDeclsMap;
+
   private:
     /// \brief Reference to the semantic analysis that is performing
     /// this template instantiation.
     Sema &SemaRef;
 
-    typedef llvm::DenseMap<const Decl *, 
-                           llvm::PointerUnion<Decl *, DeclArgumentPack *> >
-      LocalDeclsMap;
+    
     
     /// \brief A mapping from local declarations that occur
     /// within a template to their instantiations.
@@ -330,6 +333,13 @@ namespace clang {
     /// returns NULL.
     llvm::PointerUnion<Decl *, DeclArgumentPack *> *
     findInstantiationOf(const Decl *D);
+
+    // Since findInstantionOf is not allowed to fail (i.e. it asserts if 
+    // declaration is not instantiated) lets introduce a helper that is
+    // more forgiving, and does just return null, if declaration is not found.
+    llvm::PointerUnion<Decl *, DeclArgumentPack *> *
+      hasInstantiationOf(const Decl *D);
+
 
     void InstantiatedLocal(const Decl *D, Decl *Inst);
     void InstantiatedLocalPackArg(const Decl *D, Decl *Inst);
