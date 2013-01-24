@@ -8327,11 +8327,24 @@ void DiagnoseBadDeduction(Sema &S, OverloadCandidate *Cand,
     else {
       which = 2;
     }
-
-    S.Diag(Fn->getLocation(), diag::note_ovl_candidate_inconsistent_deduction)
+    const TemplateArgument *FirstArg = Cand->DeductionFailure.getFirstArg();
+    const TemplateArgument *SecondArg = Cand->DeductionFailure.getSecondArg();
+    // We need to emit a slightly different diagnostic for Packs, since
+    // they get dumped as strings - and the "diff" modifier only affects
+    // types.
+    if (FirstArg->getKind() == TemplateArgument::Pack) {
+      S.Diag(Fn->getLocation(), 
+          diag::note_ovl_candidate_inconsistent_deduction_pack)
+        << which << ParamD->getDeclName()
+        << *FirstArg
+        << *SecondArg;
+    }
+    else {
+      S.Diag(Fn->getLocation(), diag::note_ovl_candidate_inconsistent_deduction)
       << which << ParamD->getDeclName()
-      << *Cand->DeductionFailure.getFirstArg()
-      << *Cand->DeductionFailure.getSecondArg();
+      << *FirstArg
+      << *SecondArg;
+    }
     MaybeEmitInheritedConstructorNote(S, Fn);
     return;
   }

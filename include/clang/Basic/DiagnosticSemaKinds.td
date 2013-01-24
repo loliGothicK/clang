@@ -2248,6 +2248,11 @@ def note_ovl_candidate_incomplete_deduction : Note<"candidate template ignored: 
 def note_ovl_candidate_inconsistent_deduction : Note<
     "candidate template ignored: deduced conflicting %select{types|values|"
     "templates}0 for parameter %1%diff{ ($ vs. $)|}2,3">;
+
+def note_ovl_candidate_inconsistent_deduction_pack : Note<
+    "candidate template ignored: deduced conflicting %select{types|values|"
+    "templates}0 for parameter %1 : %2 vs %3">;
+
 def note_ovl_candidate_explicit_arg_mismatch_named : Note<
     "candidate template ignored: invalid explicitly-specified argument "
     "for template parameter %0">;

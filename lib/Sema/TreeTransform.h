@@ -3189,10 +3189,26 @@ bool TreeTransform<Derived>::TransformTemplateArguments(InputIterator First,
 
         Outputs.addArgument(Out);
       }
+      // Get the ActiveInstantiation Info ...
+      Sema::ActiveTemplateInstantiation& Inst = 
+            getSema().ActiveTemplateInstantiations.back();
 
+      // If we are just doing deduced argument substitution, do NOT
+      // retain any expansion pattern i.e.
+      // Consider :
+      // struct F {
+      //   template<int ... Ns> void foo(int_pack<Ns ...> ip);
+      // };
+      // F().foo<1, 2>(int_pack<1, 2, 3> ip);
+      // When substituting <1, 2, 3> during FinalizingArgumentDeduction
+      // Do Not retain the pack expansion 'Ns ...' as int_pack<1, 2, 3, Ns ...>
+      // Because we will not be deducing any further, we are done with
+      // deduction and we are just substituting.
+      bool IsSubstitutingDeducedArguments = Inst.Kind == Sema::
+            ActiveTemplateInstantiation::DeducedTemplateArgumentSubstitution;
       // If we're supposed to retain a pack expansion, do so by temporarily
       // forgetting the partially-substituted parameter pack.
-      if (RetainExpansion) {
+      if (RetainExpansion && !IsSubstitutingDeducedArguments) {  
         ForgetPartiallySubstitutedPackRAII Forget(getDerived());
 
         if (getDerived().TransformTemplateArgument(Pattern, Out))
@@ -3995,9 +4011,26 @@ bool TreeTransform<Derived>::
               PVars->push_back(NewParm);
           }
 
+          // Get the ActiveInstantiation Info ...
+          Sema::ActiveTemplateInstantiation& Inst = 
+            getSema().ActiveTemplateInstantiations.back();
+
+          // If we are just doing deduced argument substitution, do NOT
+          // retain any expansion pattern i.e.
+          // Consider :
+          // struct F {
+          //   template<int ... Ns> void foo(int_pack<Ns ...> ip);
+          // };
+          // F().foo<1, 2>(int_pack<1, 2, 3> ip);
+          // When substituting <1, 2, 3> during FinalizingArgumentDeduction
+          // Do Not retain the pack expansion 'Ns ...' as int_pack<1, 2, 3, Ns ...>
+          // Because we will not be deducing any further, we are done with
+          // deduction and we are just substituting.
+          bool IsSubstitutingDeducedArguments = Inst.Kind == Sema::
+            ActiveTemplateInstantiation::DeducedTemplateArgumentSubstitution;
           // If we're supposed to retain a pack expansion, do so by temporarily
           // forgetting the partially-substituted parameter pack.
-          if (RetainExpansion) {
+          if (RetainExpansion && !IsSubstitutingDeducedArguments) {  
             ForgetPartiallySubstitutedPackRAII Forget(getDerived());
             ParmVarDecl *NewParm
               = getDerived().TransformFunctionTypeParam(OldParm,
