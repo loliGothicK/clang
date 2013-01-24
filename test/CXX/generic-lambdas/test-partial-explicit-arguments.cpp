@@ -90,8 +90,8 @@ int main()
   typedef int_pack<1, 2, 3, 4> ipack4;
   typedef type_pack<ipack4, ipack4, ipack4> tpack_ipack4_3;
   typedef type_pack<tpack_ipack4_3, tpack_ipack4_3> ttpack;
-  //CHECK: X4.operator()<char, double>( (char (*)(ttpack)) 0, (double (*)(ttpack, ttpack)) 0)) = 0
-  DUMP(X4.operator()<char, double>( (char (*)(ttpack)) 0, (double (*)(ttpack, ttpack)) 0));  
+  //CHECK: X4.operator()<char, double>( (char (*)(ttpack, ttpack)) 0, (double (*)(ttpack, ttpack)) 0) = 0
+  DUMP(X4.operator()<char, double>( (char (*)(ttpack, ttpack)) 0, (double (*)(ttpack, ttpack)) 0));  
   
   }
   
