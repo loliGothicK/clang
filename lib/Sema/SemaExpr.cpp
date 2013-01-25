@@ -10672,7 +10672,7 @@ static ExprResult captureInLambda(Sema &S, LambdaScopeInfo *LSI,
 //  1) Is it a Class Member Function
 //  2) Is the Member function the overloaded function call operator
 //  3) Is the Lambda property set in the containing/parent class
-static inline bool IsLambdaDeclContext(const DeclContext* DC)
+bool IsLambdaCallOpDeclContext(const DeclContext* DC)
 {
   return isa<CXXMethodDecl>(DC) &&
              cast<CXXMethodDecl>(DC)->getOverloadedOperator() == OO_Call &&
@@ -10707,7 +10707,7 @@ bool Sema::tryCaptureVariable(VarDecl *Var, SourceLocation Loc,
     DeclContext *ParentDC;
     if (isa<BlockDecl>(DC))
       ParentDC = DC->getParent();
-    else if (IsLambdaDeclContext(DC))
+    else if (IsLambdaCallOpDeclContext(DC))
       ParentDC = DC->getParent()->getParent();
     else {
       if (BuildAndDiagnose)
@@ -11052,7 +11052,7 @@ void Sema::CleanupVarDeclMarking() {
 
 static inline bool IsGenericLambdaDeclContext(const DeclContext* DC)
 {
-  return IsLambdaDeclContext(DC) &&
+  return IsLambdaCallOpDeclContext(DC) &&
     cast<CXXRecordDecl>(DC->getParent())->isGenericLambda();
 }
 
@@ -11061,7 +11061,7 @@ static inline bool IsLambdaWithinGenericLambdaDeclContext(
                                       const DeclContext* DC)
 {
   const DeclContext *NextDC = DC;
-  while ( NextDC && IsLambdaDeclContext(NextDC) ) {
+  while ( NextDC && IsLambdaCallOpDeclContext(NextDC) ) {
     const CXXRecordDecl *LambdaClass = cast<CXXRecordDecl>(
                                           NextDC->getParent());
     if (LambdaClass->isGenericLambda()) return true;

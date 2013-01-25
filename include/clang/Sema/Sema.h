@@ -783,7 +783,7 @@ public:
   // FVTODO: Track if we are transforming a generic lambda
   // This state may prove useful - for now I don't
   // have a clear use for it - we may be able to remove it.
-  std::vector<bool> IsTransformingGenericLambdaStack;
+  std::vector<LambdaExpr*> IsTransformingLambdaStack;
   // Are we transforming a Lambda call operator of a nested lambda?
   // This is useful when we are transforming the prototype 
   // and we want the parameters added to the CurrentInstantiationScope
@@ -802,14 +802,17 @@ public:
   bool isTransformingLambdaCallOperatorProtoType() const {
     return IsTransformingLambdaCallOperatorProtoType;
   }
+  // This returns true (and the LambdaExpr that is being transformed)
+  // if we are within the context of transforming a lambda
+  LambdaExpr* isTransformingLambda() const 
+  { return IsTransformingLambdaStack.size() > 0 
+              ? IsTransformingLambdaStack.back() : 0; }
 
-  bool isTransformingGenericLambda() const 
-  { return IsTransformingGenericLambdaStack.size() > 0; }
-  void pushTransformingGenericLambdaStateOnStack() {
-    IsTransformingGenericLambdaStack.push_back(true);
+  void pushTransformingLambdaOnStack(LambdaExpr *E) {
+    IsTransformingLambdaStack.push_back(E);
   }
-  void popTransformingGenericLambdaStateFromStack() {
-    IsTransformingGenericLambdaStack.pop_back();
+  void popTransformingLambdaFromStack() {
+    IsTransformingLambdaStack.pop_back();
   }
   /// \brief Perform initialization that occurs after the parser has been
   /// initialized but before it parses anything.

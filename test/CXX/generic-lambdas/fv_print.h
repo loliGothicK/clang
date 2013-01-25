@@ -34,9 +34,7 @@ namespace fv {
   template<class T> void print(T* p) {
     printf("%p", p);
   }
-  template<class T> void print(T obj) {
-    printf("%s", obj.to_string());
-  }
+  
   template<class T> void print(T t, const char* header = 0, const char* footer = 0) {
      if (header) printf("%s", header);
      print(t);

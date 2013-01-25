@@ -39,6 +39,9 @@
 #include "TypeLocBuilder.h"
 #include <algorithm>
 
+
+#include "clang/ast/RecursiveASTVisitor.h"
+
 namespace clang {
 using namespace sema;
 
@@ -576,6 +579,16 @@ public:
 
   /// \brief Transform the captures and body of a lambda expression.
   ExprResult TransformLambdaScope(LambdaExpr *E, CXXMethodDecl *CallOperator);
+  
+
+  enum TransformCapturesReturnTypeEnum {
+    TransformCapturesOk, // Captures transformed Successfully
+    TransformCapturesInvalid,  // Error - Capture transform Failed
+    TransformCapturesPackExpansionError // Error; on pack expansion of capture
+  };
+
+  TransformCapturesReturnTypeEnum TransformLambdaCaptures(LambdaExpr *E, 
+      LambdaScopeInfo *LSI);
 
   ExprResult TransformAddressOfOperand(Expr *E);
   ExprResult TransformDependentScopeDeclRefExpr(DependentScopeDeclRefExpr *E,
@@ -2587,6 +2600,11 @@ ExprResult TreeTransform<Derived>::TransformExpr(Expr *E) {
   return SemaRef.Owned(E);
 }
 
+//Defined in SemaTemplateVariadic.cpp
+bool refersToNestedLambdaParameterPack(Expr *E, 
+  const MultiLevelTemplateArgumentList& TemplateArgs, Sema &S, 
+  ParmVarDecl *PackDecl);
+
 template<typename Derived>
 bool TreeTransform<Derived>::TransformExprs(Expr **Inputs,
                                             unsigned NumInputs,
@@ -2605,9 +2623,31 @@ bool TreeTransform<Derived>::TransformExprs(Expr **Inputs,
     if (PackExpansionExpr *Expansion = dyn_cast<PackExpansionExpr>(Inputs[I])) {
       Expr *Pattern = Expansion->getPattern();
 
+      SmallVector<UnexpandedParameterPack, 2> AllUnexpanded;
+      getSema().collectUnexpandedParameterPacks(Pattern, AllUnexpanded);
+      assert(!AllUnexpanded.empty() && "Pack expansion without parameter packs?");
+      // If any of the unexpanded parameter packs, refers to nested lambdas parameter packs
+      // remove them from the check for expansion, since they will be expanded
+      // when the lambda itself is transformed - we can not expand them just yet
       SmallVector<UnexpandedParameterPack, 2> Unexpanded;
-      getSema().collectUnexpandedParameterPacks(Pattern, Unexpanded);
-      assert(!Unexpanded.empty() && "Pack expansion without parameter packs?");
+      for (size_t I = 0; I < AllUnexpanded.size(); ++I) {
+        const UnexpandedParameterPack& p = AllUnexpanded[I];
+        if (p.first.is<NamedDecl*>() && 
+                      getDerived().getDeducedTemplateArguments()) {
+          NamedDecl *ND = p.first.get<NamedDecl*>();
+          if (ParmVarDecl *PD = dyn_cast<ParmVarDecl>(ND)) {
+            bool ret = refersToNestedLambdaParameterPack(Pattern, 
+                *getDerived().getDeducedTemplateArguments(), SemaRef, PD);
+            if (!ret)
+              Unexpanded.push_back(p);
+          }
+          else
+            Unexpanded.push_back(p);
+        }
+        else
+          Unexpanded.push_back(p);
+      }
+        
 
       // Determine whether the set of unexpanded parameter packs can and should
       // be expanded.
@@ -7898,17 +7938,17 @@ TreeTransform<Derived>::TransformCXXTemporaryObjectExpr(
 // A RAII based class to track in Sema if we are ever transforming
 // a nested Generic lambda - At time of definition (12/23/12)
 // I do not use this information but might need it in the future
-struct IsTransformingGenericLambdaStateStack {
+struct IsTransformingLambdaStateStack {
   Sema &SemaRef;
-  bool IsGeneric;
-  IsTransformingGenericLambdaStateStack(Sema& S, bool IsGeneric) 
-    : SemaRef(S), IsGeneric(IsGeneric) {
-    if (IsGeneric)
-      SemaRef.pushTransformingGenericLambdaStateOnStack();
+  bool DisablePop;
+  IsTransformingLambdaStateStack(Sema& S, LambdaExpr *E, bool DisablePush = false) 
+    : SemaRef(S), DisablePop(false) {
+    if (!DisablePush)
+      SemaRef.pushTransformingLambdaOnStack(E);
   }
-  ~IsTransformingGenericLambdaStateStack() {
-    if (IsGeneric)
-      SemaRef.popTransformingGenericLambdaStateFromStack();
+  ~IsTransformingLambdaStateStack() {
+    if (!DisablePop)
+      SemaRef.popTransformingLambdaFromStack();
   }
 }; 
  
@@ -7928,9 +7968,8 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
   // This information is currently NOT used (12/23/12), but 
   // I have some sense it might prove useful in the future
   bool IsGenericLambda = !!E->getTemplateParameterList();
-  IsTransformingGenericLambdaStateStack ITGLSS(getSema(), 
-                              IsGenericLambda);
-  
+  IsTransformingLambdaStateStack LambdaTransformerRAII(getSema(), E); 
+                                
   TemplateParameterList *OrigTemplateParamList = E->getTemplateParameterList();
   TemplateParameterList *NewTemplateParamList = 0;
 
@@ -7954,10 +7993,41 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
   // FVTODO: We can probably get rid of this kludge, by checking
   //  getSema().CurContext to see if we are transforming
   //  a lambda call operator prototype.
-  SemaRef.setTransformingLambdaCallOperatorProtoType(true);
-  TypeSourceInfo *NewMethodTSI = TransformType(OldMethodTSI);
-  SemaRef.setTransformingLambdaCallOperatorProtoType(false);
-  
+  //  We do not want to add a new scope, because as we transform
+  //  lambda functions, we might have decltype's within the returns
+  //  that refer to parameters, that we do not want popped off
+  //  the localinstantiationscope, because otherwise when
+  //  we rebuild the parameters, a disconnect can happen.
+  TypeSourceInfo *NewMethodTSI = 0;
+  {
+    // Introduce the context of the old call operator when we transform
+    // the Call Operator's TypeSourceInfo
+    //  This is important, because for parameter packs that are 
+    //  partially explicitly specified, when the function type
+    //  is being transformed, within SemaTemplateVariadic.cpp's 
+    //  Sema::CheckParameterPacksForExpansion, the decision
+    //  to retain an expansion pattern is based on whether
+    //  the current pack is from the current call operator 
+    //  (i.e. retain) or if it is from a parent call operator
+    //    (i.e. don't retain).
+    //  For e.g.,:
+    //  auto X = []<int ... Ns>()
+    //               [](int_pack<Ns...> ip) 0;
+    //  auto Y = X.operator()<1>();
+    //    -- when the nested lambda is transformed, we want
+    //       [](int_pack<1> ip) as the signature and do NOT
+    //       want [](int_pack<1, Ns...> ip) as the method signature 
+    //       which can happen UNLESS we empower CheckParameterPackForExpansion
+    //       to check to see if the paramater pack that is being transformed
+    //       comes from a parent lambda, in which case, do NOT retain the
+    //       expansion pattern.
+    //  So now, Y(int_pack<1>{}); is ok.
+    Sema::ContextRAII SavedContext(getSema(), E->getCallOperator());
+
+    SemaRef.setTransformingLambdaCallOperatorProtoType(true);
+    NewMethodTSI = TransformType(OldMethodTSI);
+    SemaRef.setTransformingLambdaCallOperatorProtoType(false);
+  }
   if (!NewMethodTSI)
     return ExprError();
 
@@ -8025,8 +8095,269 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
                                       NewTemplateParamList);
   Class->setLambdaCallOperator(CallOperator);
   getDerived().transformAttrs(E->getCallOperator(), CallOperator);
-  
+
   return getDerived().TransformLambdaScope(E, CallOperator);
+}
+
+
+// A visitor that checks to see if the Capture that is a parameter pack
+// is expanded within the given expression (i.e. body of the lambda) 
+//
+// This is important because if a pack is NOT expanded within the 
+// lambda expression, we don't need to capture the entire pack, 
+// but just a certain element of the pack.
+// For example:
+// template<class ... Ts> void variadic_fun(Ts ... );
+// 
+// auto X = []<class ... Ts>(Ts ... args)
+//            [=]()                           // <-- 1
+//               variadic_fun(
+//                   ([=] { return args; })() ... // <-- 2
+//                );
+// auto Y = X(1, 'A', 3.14); 
+//     Y (i.e.) Lambda at '1' above captures the entire pack by value
+//     But all the lambdas at '2' should only capture a single element
+//       from the pack, corresponding to their expansion index.
+// 
+// This visitor uses a nested visitor to discover whether
+// an expansion occurs.
+// The algorithm is as follows:
+//   - visit each parameter pack in the expression/statement
+//     - check to see if the parameter pack refers to the
+//       capture declaration that we are interested in.
+
+struct CheckIfCaptureIsExpandedInExpr : 
+    RecursiveASTVisitor<CheckIfCaptureIsExpandedInExpr> {
+  private:
+  typedef RecursiveASTVisitor<CheckIfCaptureIsExpandedInExpr> 
+    inherited;
+  // A visitor that when passed in a Declaration during construction
+  //   will set 'Yes' to true, if during Visitation of an expression
+  //   the TheDecl is referred to.  
+  struct IsDeclReferredTo : RecursiveASTVisitor<IsDeclReferredTo> {
+    private:
+      VarDecl *TheDecl;
+      bool Yes;
+    public:
+      IsDeclReferredTo(VarDecl *TheDecl) : TheDecl(TheDecl), Yes(false)
+      { }
+      
+      bool VisitDeclRefExpr(DeclRefExpr* E) {
+        if (E->getDecl() == TheDecl)
+          Yes = true;
+        return true;
+      }
+      bool yes() const { return Yes; }
+  };
+
+  Sema    &SemaRef;
+  // The Capture which we are interested in regarding whether it is expanded
+  // in the body of the lambda
+  VarDecl *CaptureDecl;   
+  bool Yes;
+  
+  public:
+  CheckIfCaptureIsExpandedInExpr(Sema &S, VarDecl *CaptureDecl) : 
+    SemaRef(S), CaptureDecl(CaptureDecl), Yes(false) {
+  }
+  
+  // Visit each pack expansion within the body of the lambda
+  //  (i.e. the expression being visited), and check to 
+  // see if it refers to the Capture, and if it does
+  // then we know that the capture is expanded within
+  // the body.
+  bool VisitPackExpansionExpr(PackExpansionExpr *E) {
+    Expr *Pattern = E->getPattern();
+    SourceLocation EllipsisLoc = E->getEllipsisLoc();
+    if (!Yes) { // if we have already been set, no need to go deeper
+      IsDeclReferredTo DR(CaptureDecl);
+      DR.TraverseStmt(E);
+      Yes = DR.yes();
+    }
+    return true;
+  }
+
+  bool yes() const { return Yes; }
+};
+
+template<typename Derived> 
+typename TreeTransform<Derived>::TransformCapturesReturnTypeEnum 
+      TreeTransform<Derived>::TransformLambdaCaptures(LambdaExpr *E, 
+                  LambdaScopeInfo *LSI) {
+  // Transform captures.
+  TransformCapturesReturnTypeEnum Ret = TransformCapturesOk;
+
+  bool FinishedExplicitCaptures = false;
+  for (LambdaExpr::capture_iterator C = E->capture_begin(),
+                                 CEnd = E->capture_end();
+       C != CEnd; ++C) {
+    // When we hit the first implicit capture, tell Sema that we've finished
+    // the list of explicit captures.
+    if (!FinishedExplicitCaptures && C->isImplicit()) {
+      SemaRef.finishLambdaExplicitCaptures(LSI);
+      FinishedExplicitCaptures = true;
+    }
+
+    // Capturing 'this' is trivial.
+    if (C->capturesThis()) {
+      SemaRef.CheckCXXThisCapture(C->getLocation(), C->isExplicit());
+      continue;
+    }
+    VarDecl *OldCapturedVar = C->getCapturedVar();
+    // Determine the capture kind for Sema.
+    Sema::TryCaptureKind Kind
+      = C->isImplicit()? Sema::TryCapture_Implicit
+                       : C->getCaptureKind() == LCK_ByCopy
+                           ? Sema::TryCapture_ExplicitByVal
+                           : Sema::TryCapture_ExplicitByRef;
+    
+    SourceLocation EllipsisLoc;
+    
+    // isPackExpansion() is true only for explicit captures it seems ...
+    // since otherwise EllipsisLoc does not get set i.e
+    // []<class ... Ts>(Ts&& ... args)
+    //    [&args...]() { variadic_foo( args... ); } 
+    // args is captured explicitly above, so EllipsisLoc can be set
+    // and isPackExpansion will be true 
+    //    
+    if (C->isPackExpansion()) {
+      UnexpandedParameterPack Unexpanded(C->getCapturedVar(), C->getLocation());
+      bool ShouldExpand = false;
+      // RetainExpansion: set to true, if we are partially supplied explicit
+      //   parameters, then we need to expand the supplied ones, but retain
+      //   the pattern, so that it can be expanded later. 
+      // This is essentially ignored here, since when transforming a capture
+      // we never want to retain an expansion.
+      bool RetainExpansion = false;
+      llvm::Optional<unsigned> NumExpansions;
+      if (getDerived().TryExpandParameterPacks(C->getEllipsisLoc(),
+                                               C->getLocation(),
+                                               Unexpanded,
+                                               ShouldExpand, RetainExpansion,
+                                               NumExpansions))
+        return TransformCapturesPackExpansionError;
+
+
+      if (ShouldExpand) {
+        // The transform has determined that we should perform an expansion;
+        // transform and capture each of the arguments.
+        // expansion of the pattern. Do so.
+        VarDecl *Pack = C->getCapturedVar();
+        for (unsigned I = 0; I != *NumExpansions; ++I) {
+          // Set the ArgumentPackSubstitutionIndex in Sema to the appropriate
+          // pack element being expanded.
+          Sema::ArgumentPackSubstitutionIndexRAII SubstIndex(SemaRef, I);
+          VarDecl *CapturedVar
+            = cast_or_null<VarDecl>(getDerived().TransformDecl(C->getLocation(),
+                                                               Pack));
+          if (!CapturedVar) {
+            Ret = TransformCapturesInvalid;
+            continue;
+          }
+
+          // Capture the transformed variable.
+          SemaRef.tryCaptureVariable(CapturedVar, C->getLocation(), Kind);
+        }
+        continue;
+      }
+
+      EllipsisLoc = C->getEllipsisLoc();
+    }
+    // implicit capture of a parameter pack
+    else if (C->isImplicit() && OldCapturedVar->isParameterPack()) {
+      
+      assert(C->isImplicit() && "CapturedVar isExlpicit() and isParameterPack()"
+        " but EllipsisLoc was Not Set.");
+      bool IsCaptureExpandedInBody = false;
+      {
+        CompoundStmt *LambdaBody = E->getBody();
+        CheckIfCaptureIsExpandedInExpr ExpansionChecker(SemaRef, OldCapturedVar);
+        ExpansionChecker.TraverseStmt(LambdaBody);
+        IsCaptureExpandedInBody = ExpansionChecker.yes();
+
+      }
+      if (IsCaptureExpandedInBody) {
+        UnexpandedParameterPack Unexpanded(OldCapturedVar, C->getLocation());
+        bool ShouldExpand = false;
+        bool RetainExpansion = false;
+        llvm::Optional<unsigned> NumExpansions;
+        SourceLocation NoEllipsisLoc;
+        if (getDerived().TryExpandParameterPacks( NoEllipsisLoc,
+              C->getLocation(),
+              Unexpanded,
+              ShouldExpand, RetainExpansion,
+              NumExpansions))
+          return TransformCapturesPackExpansionError;
+
+        if (ShouldExpand && IsCaptureExpandedInBody) {
+          // The transform has determined that we should perform an expansion;
+          // transform and capture each of the arguments.
+          // expansion of the pattern. Do so.
+          VarDecl *Pack = C->getCapturedVar();
+          for (unsigned I = 0; I != *NumExpansions; ++I) {
+            Sema::ArgumentPackSubstitutionIndexRAII SubstIndex(SemaRef, I);
+            VarDecl *NewCapturedVar
+              = cast_or_null<VarDecl>(getDerived().TransformDecl(C->getLocation(),
+                                          Pack));
+            if (!NewCapturedVar) {
+              Ret = TransformCapturesInvalid;
+              continue;
+            }
+
+            // Capture the transformed variable.
+            SemaRef.tryCaptureVariable(NewCapturedVar, C->getLocation(), Kind);
+          }
+          continue;
+        }
+      } // IsCaptureExpandedInBody
+      else {
+        //TransformedCapturedPack = dyn_cast<VarDecl>(getDerived().TransformDefinition(
+        //       OldCapturedVar->getLocation(), OldCapturedVar));
+
+        // What we need to do here is check to see if the declaration maps to a declaration pack
+        // which means that it is expandable -- then save the local Decls Map from the LocalInstantiationScope
+        typedef LocalInstantiationScope::DeclArgumentPack DeclArgumentPack;
+
+        llvm::PointerUnion<Decl *, DeclArgumentPack *> *Instantiation
+          = SemaRef.CurrentInstantiationScope->hasInstantiationOf(OldCapturedVar);
+        assert(Instantiation && "Capture is Not expanded, but it should have an instantiation - right??");
+        if (Instantiation->is<DeclArgumentPack*>()) {
+
+          int CurPackIndex = SemaRef.ArgumentPackSubstitutionIndex;
+          assert(CurPackIndex != -1 && "We should be expanding a pack here - because if this "
+            "lambda is being transformed, and the pack is not expanded within the lambda "
+            " it should be part of a pattern that is getting expanded!");
+
+          VarDecl *NewCapturedVar
+            = cast_or_null<VarDecl>(getDerived().TransformDecl(C->getLocation(),
+            OldCapturedVar));
+          // Capture the transformed variable.
+          SemaRef.tryCaptureVariable(NewCapturedVar, C->getLocation(), Kind);
+          continue;
+           
+        } 
+       // and copy it into LSI - and then instantiate that when we are ready to expand
+       // Also instantiate the declaration as it self so it can be captured.
+       // instantiateLocal
+       // then SemaRef.tryCaptureVariable(....) 
+      }
+    } // OldCapturedVar->isParameterPack()
+    // Transform the captured variable.
+    VarDecl *NewCapturedVar
+      = cast_or_null<VarDecl>(getDerived().TransformDecl(C->getLocation(),
+                                                         C->getCapturedVar()));
+    if (!NewCapturedVar) {
+      Ret = TransformCapturesInvalid;
+      continue;
+    }
+
+    // Capture the transformed variable.
+    SemaRef.tryCaptureVariable(NewCapturedVar, C->getLocation(), Kind);
+  }
+  if (!FinishedExplicitCaptures)
+    SemaRef.finishLambdaExplicitCaptures(LSI);
+  
+  return Ret;
 }
 
 template<typename Derived>
@@ -8044,89 +8375,19 @@ TreeTransform<Derived>::TransformLambdaScope(LambdaExpr *E,
                                  E->hasExplicitResultType(),
                                  E->isMutable());
 
-  // Transform captures.
-  bool Invalid = false;
-  bool FinishedExplicitCaptures = false;
-  for (LambdaExpr::capture_iterator C = E->capture_begin(),
-                                 CEnd = E->capture_end();
-       C != CEnd; ++C) {
-    // When we hit the first implicit capture, tell Sema that we've finished
-    // the list of explicit captures.
-    if (!FinishedExplicitCaptures && C->isImplicit()) {
-      getSema().finishLambdaExplicitCaptures(LSI);
-      FinishedExplicitCaptures = true;
-    }
-
-    // Capturing 'this' is trivial.
-    if (C->capturesThis()) {
-      getSema().CheckCXXThisCapture(C->getLocation(), C->isExplicit());
-      continue;
-    }
-
-    // Determine the capture kind for Sema.
-    Sema::TryCaptureKind Kind
-      = C->isImplicit()? Sema::TryCapture_Implicit
-                       : C->getCaptureKind() == LCK_ByCopy
-                           ? Sema::TryCapture_ExplicitByVal
-                           : Sema::TryCapture_ExplicitByRef;
-    SourceLocation EllipsisLoc;
-    if (C->isPackExpansion()) {
-      UnexpandedParameterPack Unexpanded(C->getCapturedVar(), C->getLocation());
-      bool ShouldExpand = false;
-      bool RetainExpansion = false;
-      llvm::Optional<unsigned> NumExpansions;
-      if (getDerived().TryExpandParameterPacks(C->getEllipsisLoc(),
-                                               C->getLocation(),
-                                               Unexpanded,
-                                               ShouldExpand, RetainExpansion,
-                                               NumExpansions))
-        return ExprError();
-
-      if (ShouldExpand) {
-        // The transform has determined that we should perform an expansion;
-        // transform and capture each of the arguments.
-        // expansion of the pattern. Do so.
-        VarDecl *Pack = C->getCapturedVar();
-        for (unsigned I = 0; I != *NumExpansions; ++I) {
-          Sema::ArgumentPackSubstitutionIndexRAII SubstIndex(getSema(), I);
-          VarDecl *CapturedVar
-            = cast_or_null<VarDecl>(getDerived().TransformDecl(C->getLocation(),
-                                                               Pack));
-          if (!CapturedVar) {
-            Invalid = true;
-            continue;
-          }
-
-          // Capture the transformed variable.
-          getSema().tryCaptureVariable(CapturedVar, C->getLocation(), Kind);
-        }
-        continue;
-      }
-
-      EllipsisLoc = C->getEllipsisLoc();
-    }
-
-    // Transform the captured variable.
-    VarDecl *CapturedVar
-      = cast_or_null<VarDecl>(getDerived().TransformDecl(C->getLocation(),
-                                                         C->getCapturedVar()));
-    if (!CapturedVar) {
-      Invalid = true;
-      continue;
-    }
-
-    // Capture the transformed variable.
-    getSema().tryCaptureVariable(CapturedVar, C->getLocation(), Kind);
-  }
-  if (!FinishedExplicitCaptures)
-    getSema().finishLambdaExplicitCaptures(LSI);
-
-
+  
+  
+  TransformCapturesReturnTypeEnum CaptureRet = 
+    getDerived().TransformLambdaCaptures(E, LSI);
+  
+  if (CaptureRet == TransformCapturesPackExpansionError)
+    return ExprError(); 
+      
   // Enter a new evaluation context to insulate the lambda from any
   // cleanups from the enclosing full-expression.
   getSema().PushExpressionEvaluationContext(Sema::PotentiallyEvaluated);
 
-  if (Invalid) {
+  if (CaptureRet == TransformCapturesInvalid) {
     getSema().ActOnLambdaError(E->getLocStart(), /*CurScope=*/0,
                                /*IsInstantiation=*/true);
     return ExprError();

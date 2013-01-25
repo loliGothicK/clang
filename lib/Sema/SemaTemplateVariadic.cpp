@@ -526,6 +526,115 @@ getDepthAndIndex(NamedDecl *ND) {
   return std::make_pair(TTP->getDepth(), TTP->getIndex());
 }
 
+
+// A visitor that collects information about an expression as
+// it relates to nested lambdas within the expression ...
+// It currently collects the following information:
+
+ struct ContainsNestedLambdaWithExpandableParamPack : 
+     RecursiveASTVisitor<ContainsNestedLambdaWithExpandableParamPack> {
+
+   typedef RecursiveASTVisitor<ContainsNestedLambdaWithExpandableParamPack>
+       inherited;
+
+   std::vector<LambdaExpr*> LambdaStack;
+   std::vector<LambdaExpr*> AllNestedLambdas;
+   std::map<ParmVarDecl*, bool> AllLambdaParamPacks;
+   
+   std::vector<DeclRefExpr*> ExpandableLambdaPackReferringExprs;
+   // The packs that are expandable 
+   // [].. [](OuterTs ... args2) { .. }
+   //std::vector<ParmVarDecl*> ExpandableParamPacks;
+   std::map<ParmVarDecl*,bool> ExpandableLambdaParamPacks;
+   Sema &SemaRef;
+   const MultiLevelTemplateArgumentList& DeducedTemplateArgs;
+   ContainsNestedLambdaWithExpandableParamPack(Sema& S, 
+       const MultiLevelTemplateArgumentList &TemplateArgs) : 
+        SemaRef(S), DeducedTemplateArgs(TemplateArgs)
+   { }
+
+   bool VisitDeclRefExpr(DeclRefExpr* E) {
+     ParmVarDecl *D = dyn_cast_or_null<ParmVarDecl>(E->getDecl());
+     if (D && D->isParameterPack() && ExpandableLambdaParamPacks[D])
+     {
+       ExpandableLambdaPackReferringExprs.push_back(E);
+     }
+     return true;  
+   }
+   // There is no VisitLambdaExpr, since Traverse breaks
+   // a LambdaExpr into Visitable Parts - check
+   // TraverseLambdaExpr in RecursiveASTVisitor
+   // to see exactly what is visitable ...
+   bool TraverseLambdaExpr(LambdaExpr* E) {
+     // Push the Expr on to a running stack ...
+     LambdaStack.push_back(E);
+
+     // Record the nested lambda 
+     AllNestedLambdas.push_back(E);
+     
+     // Iterate through all the parameters of this 
+     // lambda and check if we have a parameter pack
+     CXXMethodDecl *CallOp = E->getCallOperator();
+     
+     for (size_t I = 0; I < CallOp->getNumParams(); ++I)
+     {
+       ParmVarDecl *PVD = CallOp->getParamDecl(I);
+       if (PVD->isParameterPack()) {
+         QualType QT = PVD->getType();
+
+         const PackExpansionType* PackType = 
+               dyn_cast<const PackExpansionType>(QT.getTypePtr());
+         assert(PackType && "isParameterPack() but not convertible to PackExpansionType!");
+         QualType Pattern = PackType->getPattern();
+         QualType BasePatternType = Pattern;
+         if (Pattern->isReferenceType() || Pattern->isPointerType()) 
+           BasePatternType = Pattern->getPointeeType();
+         //const TemplateTypeParmType* TTPT = 
+         //      dyn_cast<const TemplateTypeParmType>(BasePatternType.getTypePtr());
+         //assert(TTPT && "The parameter pack of a lambda should be convertible to a template type parm type - no "
+         //             "other packs have been implemented!");
+         /*
+         const MultiLevelTemplateArgumentList& TemplateArgs = DeducedTemplateArgs;
+         std::pair<unsigned, unsigned> DepthAndIndex = getDepthAndIndex(PVD);
+         
+         if (TTPT->getDepth() < TemplateArgs.getNumLevels()) {
+           TemplateArgument TArg = TemplateArgs(TTPT->getDepth(), TTPT->getIndex());
+           ExpandableLambdaParamPacks[PVD] = true;
+         }
+         
+         if (DepthAndIndex.first < TemplateArgs.getNumLevels()) {
+           TemplateArgument TArg = TemplateArgs(DepthAndIndex.first, DepthAndIndex.second);
+           ExpandableLambdaParamPacks[PVD] = true;
+         }
+         //*/
+         AllLambdaParamPacks[PVD] = true;
+       }
+     }
+     bool ret = inherited::TraverseLambdaExpr(E);
+     LambdaStack.pop_back();
+     return ret; 
+   }
+
+ };
+
+namespace clang {
+bool refersToNestedLambdaParameterPack(Expr *E, 
+        const MultiLevelTemplateArgumentList& TemplateArgs, Sema &S, 
+        ParmVarDecl *PackDecl) {
+
+ ContainsNestedLambdaWithExpandableParamPack C(S, TemplateArgs);
+ C.TraverseStmt(E);
+ return C.AllLambdaParamPacks[PackDecl];
+ 
+}
+
+}
+
+
+// Defined in SemaExpr.cpp
+bool IsLambdaCallOpDeclContext(const DeclContext* DC);
+
+
 bool Sema::CheckParameterPacksForExpansion(SourceLocation EllipsisLoc,
                                            SourceRange PatternRange,
                                    ArrayRef<UnexpandedParameterPack> Unexpanded,
@@ -545,16 +654,52 @@ bool Sema::CheckParameterPacksForExpansion(SourceLocation EllipsisLoc,
     unsigned Depth = 0, Index = 0;
     IdentifierInfo *Name;
     bool IsFunctionParameterPack = false;
+
+    // If this is a function parameter pack, set the type
+    // of the pack 
+    const TemplateTypeParmType *ParamDeclTypeOfPack = 0;
     
+
+    // If this is a template type param pack, the Type of this pack
+    const TemplateTypeParmType *PackTemplateType = 0;
+    
+    // Or If this is a Decl, then set the Decl of this pack - 
+    // can be a Decl of a NonType, Type and Template Decl Pack
+    NamedDecl *PackDecl = 0;
+
     if (const TemplateTypeParmType *TTP
         = i->first.dyn_cast<const TemplateTypeParmType *>()) {
       Depth = TTP->getDepth();
       Index = TTP->getIndex();
       Name = TTP->getIdentifier();
+      PackTemplateType = TTP;
     } else {
       NamedDecl *ND = i->first.get<NamedDecl *>();
-      if (isa<ParmVarDecl>(ND))
+      PackDecl = ND;
+      if (isa<ParmVarDecl>(ND)) {
+        ParmVarDecl *PD = cast<ParmVarDecl>(ND);
+        QualType ParamType = PD->getType();
+        assert(PD->isParameterPack() && "CheckParameterPacks passed a non Pack!");
+        const PackExpansionType* PackType = 
+                      dyn_cast<const PackExpansionType>(
+                                              ParamType.getTypePtr());
+        assert(PackType && 
+              "The Parameter could not be converted to a PackExpansionType!");
+        QualType PatternType = PackType->getPattern();
+        QualType BasePatternType = PatternType;
+        if (PatternType->isReferenceType() || PatternType->isPointerType())
+          BasePatternType = PatternType->getPointeeType(); 
+        ParamDeclTypeOfPack = 
+                  dyn_cast_or_null<const TemplateTypeParmType>(
+                                              BasePatternType.getTypePtr()); 
+        if (ParamDeclTypeOfPack) {
+          Depth = ParamDeclTypeOfPack->getDepth();
+          Index = ParamDeclTypeOfPack->getIndex();
+        }
         IsFunctionParameterPack = true;
+
+
+      }
       else
         llvm::tie(Depth, Index) = getDepthAndIndex(ND);        
       
@@ -563,14 +708,27 @@ bool Sema::CheckParameterPacksForExpansion(SourceLocation EllipsisLoc,
     
     // Determine the size of this argument pack.
     unsigned NewPackSize;    
-    if (IsFunctionParameterPack) {
+    if (IsFunctionParameterPack && 
+            (!ParamDeclTypeOfPack || (ParamDeclTypeOfPack->getDepth() < 
+                                              TemplateArgs.getNumLevels()))) {
       // Figure out whether we're instantiating to an argument pack or not.
       typedef LocalInstantiationScope::DeclArgumentPack DeclArgumentPack;
-      
+      NamedDecl *ND = i->first.get<NamedDecl *>();
+      ParmVarDecl *ParmDecl = cast<ParmVarDecl>(ND); 
       llvm::PointerUnion<Decl *, DeclArgumentPack *> *Instantiation
-        = CurrentInstantiationScope->findInstantiationOf(
-                                        i->first.get<NamedDecl *>());
-      if (Instantiation->is<DeclArgumentPack *>()) {
+        = CurrentInstantiationScope->hasInstantiationOf(ParmDecl);
+      //CurrentInstantiationScope->findInstantiationOf(
+      //                                ND);
+      assert(Instantiation && "There really should be an instantiation since we do "
+             " not pass in unexpanded packs that refer to deeper nested "
+             " as of yet un-transformed, lambda param packs");
+      if (!Instantiation) {
+        // We should be referring to a nested lambda parameter 
+        //bool refersToNestedLambda = refersToNestedLambdaParameterPack()
+        //ShouldExpand = false;
+        continue;
+      }
+      else if (Instantiation->is<DeclArgumentPack *>()) {
         // We could expand this function parameter pack.
         NewPackSize = Instantiation->get<DeclArgumentPack *>()->size();
       } else {
@@ -600,10 +758,53 @@ bool Sema::CheckParameterPacksForExpansion(SourceLocation EllipsisLoc,
     if (!IsFunctionParameterPack) {
       if (NamedDecl *PartialPack 
                     = CurrentInstantiationScope->getPartiallySubstitutedPack()){
+        // We only want to retain the expansion, if the PartialPack is in the
+        // same decl-context as the pack we are processing
+        // i.e. auto L =  []<int ... Ns, class ... Ts>(Ts ... args)
+        //                  [=]()
+        //                   [=](typename get_type<Ns, Ts>::type ... args2)
+        // L.operator<1, 2>('A', 3.14);
+        //  We can find the partial pack, but it is in a different decl-context
+        //  so we can not expand it via this deduction, so do not retain it...
+        //LambdaExpr *E = isTransformingLambda();
+        // get the current context
+        DeclContext *CurrentCtx = CurContext;
+        if (IsLambdaCallOpDeclContext(CurrentCtx))
+          CurrentCtx = CurrentCtx->getParent()->getParent();
+
+        bool SkipRetainExpansion = false;
+        // if we are within a nested lambda, and the decl is off an outer DeclContext
+        // we only need to retain expansion, if the outer one has not completely
+        // been deduced and can be deduced ...
+        DeclContext* PartialPackDC = PartialPack->getDeclContext();
+        DeclContext* PartialPackDCParent = PartialPackDC->getParent();
+        CXXRecordDecl* PLambdaClass = dyn_cast_or_null<CXXRecordDecl>(PartialPackDCParent);
+        if (PLambdaClass && !PLambdaClass->isLambda())
+          PLambdaClass = 0;
+        // FVTODO: this should also be made to work with function templates, not jus
+        // lambda call ops
+        while (CurrentCtx && PLambdaClass && IsLambdaCallOpDeclContext(CurrentCtx)) {
+          //int j = 50;
+          CXXRecordDecl *CurLambdaClass = dyn_cast<CXXRecordDecl>(CurrentCtx->getParent());
+          assert(CurLambdaClass->isLambda());
+          if (CurLambdaClass == PLambdaClass)
+            SkipRetainExpansion = true;
+          CurrentCtx = CurLambdaClass->getParent();
+        }
+
+       // if (isTransformingGenericLambda())
+        //if (PackDecl && PartialPackDC) {
+        //  DeclContext *PackDeclDC = PackDecl->getDeclContext();
+        //  int i = 42;
+          //if (PackDeclDC != PartialPackDC)
+        //}  
+        
         unsigned PartialDepth, PartialIndex;
         llvm::tie(PartialDepth, PartialIndex) = getDepthAndIndex(PartialPack);
+
         if (PartialDepth == Depth && PartialIndex == Index)
-          RetainExpansion = true;
+          if (!SkipRetainExpansion)
+            RetainExpansion = true;
       }
     }
     
