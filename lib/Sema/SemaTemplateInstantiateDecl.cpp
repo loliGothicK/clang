@@ -2469,8 +2469,8 @@ static void addInstantiatedParametersToScope(Sema &S, FunctionDecl *Function,
                                              LocalInstantiationScope &Scope,
                            const MultiLevelTemplateArgumentList &TemplateArgs) {
   
-  // If this is a generic lambda, add the captures of the specialization 
-  // to the scope
+  // If this is a generic lambda, add the captures within
+  // the lambda class, into the instantiation scope
   if (S.isNonTemplateLambdaCallOperator(Function)) {
     CXXMethodDecl *LambdaCallOp = cast<CXXMethodDecl>(Function);
     
@@ -2488,28 +2488,7 @@ static void addInstantiatedParametersToScope(Sema &S, FunctionDecl *Function,
       //  No - I don't believe so - it should be handled
       if (NewCapture->capturesVariable()) {
         VarDecl *VD = NewCapture->getCapturedVar(); 
-        // The captures should not be dependent
-        //assert(!NewCapture->getCapturedVar()->getType()->isDependentType());
-        if (VD->getType()->isDependentType()) {
-          typedef sema::LambdaScopeInfo LambdaScopeInfo;
-          typedef LambdaScopeInfo::CapturedPackMapTy CapturedPackMapTy;
-          LambdaScopeInfo *LSI = cast<sema::LambdaScopeInfo>(S.getCurLambda());
-          CapturedPackMapTy& CapturedPackMap = 
-                            LSI->getDeclPacksForLaterExpansionAndCapture();
-          //assert(CapturedPackMap.size());
-          SmallVectorImpl<Decl*> &ExpandedPack = CapturedPackMap[VD];
-          assert(ExpandedPack.size() && "If a dependent type makes it through the capture "
-            "process when the lambda call operator is being instantiated, it can only "
-            " happen if it is an expanded pack that was cached for later expansion "
-            " within the body of this lambda!");
-          Scope.MakeInstantiatedLocalArgPack(VD);
-          typedef LambdaScopeInfo::CapturedPackMapTy::iterator PackMapItTy;
-          for (size_t I = 0; I < ExpandedPack.size(); ++I)
-            Scope.InstantiatedLocalPackArg(VD, ExpandedPack[I]);
-
-        }
-        else 
-          Scope.InstantiatedLocal(VD, VD);
+        Scope.InstantiatedLocal(VD, VD);
       }
     }
   }

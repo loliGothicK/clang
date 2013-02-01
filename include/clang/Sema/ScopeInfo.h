@@ -404,10 +404,16 @@ public:
   /// Captures - The captures.
   SmallVector<Capture, 4> Captures;
 
-  /// Store an expansion pack, that we can not yet expand and capture
+  /// Store an expansion pack, that has been substituted by types/values/templates
+  /// but can not yet be expanded within the lambda that is nested (see 1 below)
+  /// within an expansion pattern.
+  /// e.g. .....[=]()
+  ///     { variadic_fun(
+  ///         [=] mutable { OuterPack = InnerPack; } <-- 1
+  ///          ...) }
   typedef llvm::DenseMap<VarDecl*, SmallVector<Decl*, 4> > CapturedPackMapTy;
-  
   CapturedPackMapTy CapturedPackMap;
+
   /// \brief - Whether the target type of return statements in this context
   /// is deduced (e.g. a lambda or block with omitted return type).
   bool HasImplicitReturnType;
@@ -415,6 +421,10 @@ public:
   /// ReturnType - The target type of return statements in this context,
   /// or null if unknown.
   QualType ReturnType;
+  
+  // Map a ParameterPackDecl to a the decl pack so that when we 
+  // are ready to capture certain elements of the substituted 
+  // parameter pack, we can instantiate the mapping.
   void addDeclPackForLaterExpansionAndCapture(VarDecl *CurCapture, 
       SmallVectorImpl<Decl*>& DeclPack) {
       SmallVector<Decl*, 4> & V = CapturedPackMap[CurCapture];
@@ -423,14 +433,26 @@ public:
           V.push_back(DeclPack[I]);
       }
       else {
-        assert(V.size() == DeclPack.size());
+        assert(V.size() == DeclPack.size() && "Two different sized "
+          "Substituted Parameter Packs should not arise during lambda "
+          " !" );
       }
         
   }
-
   CapturedPackMapTy& getDeclPacksForLaterExpansionAndCapture() {
     return CapturedPackMap;
   }
+  // When capturing a ParameterPackDecl that has been substituted
+  // but cannot yet be expanded, we map the ParameterPackDecl
+  // unto itself while transforming - this overload allows
+  // an easy addition of the capture...
+  void addCapture(VarDecl *Var, Capture &C) {
+      //assert(Var->isParameterPack() && "This was specifically introduced "
+      // "to help with capturing substituted but non-expanded parameter packs!");
+      Captures.push_back(C);
+      CaptureMap[Var] = Captures.size();
+  }
+
   void addCapture(VarDecl *Var, bool isBlock, bool isByref, bool isNested,
                   SourceLocation Loc, SourceLocation EllipsisLoc, 
                   QualType CaptureType, Expr *Cpy) {
@@ -438,10 +460,8 @@ public:
                                EllipsisLoc, CaptureType, Cpy));
     CaptureMap[Var] = Captures.size();
   }
-  void addCapture(VarDecl *Var, Capture &C) {
-      Captures.push_back(C);
-      CaptureMap[Var] = Captures.size();
-  }
+  
+  
 
   void addThisCapture(bool isNested, SourceLocation Loc, QualType CaptureType,
                       Expr *Cpy);

@@ -2639,12 +2639,17 @@ bool TreeTransform<Derived>::TransformExprs(Expr **Inputs,
       assert(!AllUnexpanded.empty() && "Pack expansion without parameter packs?");
       
       // If any of the unexpanded parameter packs within Pattern, 
-      // refer to nested lambda function parameter packs, or if they are expanded
-      // within the pattern, remove them from the check for expansion 
+      // either 1) refer to nested lambda function parameter packs, 
+      // or 2) if they refer to pack decls that are also referred to 
+      // by expansion patterns nested within the current Pattern, 
+      // we do not want to let them prevent the expansion.
+      // So remove them from the check for expansion 
       // since they should not affect whether the pattern should be
       // expanded.
-      // when the lambda itself is transformed - we can not expand them just yet
-      // and we do not have a local instantiation that corresponds to them
+      // The other issue with nested lambda parameter packs
+      // is that we do not have a local instantiation that corresponds to 
+      // them, so we should really just ignore them as we test if 'Pattern'
+      // can be expanded.
       // (since the nested pack expansions refer to parameter packs that 
       //    have not yet been transformed or instantiated) 
       // This can happen with:
@@ -2677,9 +2682,8 @@ bool TreeTransform<Derived>::TransformExprs(Expr **Inputs,
                       SemaRef, PD);
           }
           // Make sure that the decl is NOT expanded nested within the 
-          // pattern, because if it is, we do not want to try
-          // and expand it as part of the Outer Pattern, until
-          // we have expanded it as part of nested pattern
+          // pattern, because if it is, it will falsely
+          // prevent the expansion within TryExpandParameterPacks
           IsNotExpandedWithinPattern =
                   !refersOnlyToNestedPackExpansions(Pattern,
                     *getDerived().getDeducedTemplateArguments(),
@@ -2695,7 +2699,6 @@ bool TreeTransform<Derived>::TransformExprs(Expr **Inputs,
                       SemaRef, TTP);
 
         }
-        
         if (DoesNotReferToNestedParameterPack && IsNotExpandedWithinPattern)
           Unexpanded.push_back(p);
       }
@@ -3282,26 +3285,9 @@ bool TreeTransform<Derived>::TransformTemplateArguments(InputIterator First,
 
         Outputs.addArgument(Out);
       }
-      // Get the ActiveInstantiation Info ...
-      Sema::ActiveTemplateInstantiation& Inst = 
-            getSema().ActiveTemplateInstantiations.back();
-
-      // If we are just doing deduced argument substitution, do NOT
-      // retain any expansion pattern i.e.
-      // Consider :
-      // struct F {
-      //   template<int ... Ns> void foo(int_pack<Ns ...> ip);
-      // };
-      // F().foo<1, 2>(int_pack<1, 2, 3> ip);
-      // When substituting <1, 2, 3> during FinalizingArgumentDeduction
-      // Do Not retain the pack expansion 'Ns ...' as int_pack<1, 2, 3, Ns ...>
-      // Because we will not be deducing any further, we are done with
-      // deduction and we are just substituting.
-      bool IsSubstitutingDeducedArguments = Inst.Kind == Sema::
-            ActiveTemplateInstantiation::DeducedTemplateArgumentSubstitution;
       // If we're supposed to retain a pack expansion, do so by temporarily
       // forgetting the partially-substituted parameter pack.
-      if (RetainExpansion && !IsSubstitutingDeducedArguments) {  
+      if (RetainExpansion) {  
         ForgetPartiallySubstitutedPackRAII Forget(getDerived());
 
         if (getDerived().TransformTemplateArgument(Pattern, Out))
