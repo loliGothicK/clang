@@ -199,7 +199,7 @@ namespace VariadicPackExpansion {
     );
   }
   template void nested(int, int, int);
-
+  
   template<typename...Ts> void nested2(Ts ...ts) { // expected-note {{here}}
     // Capture all 'ts', use only one.
     f([&ts...] { return ts; } ()...);
@@ -223,6 +223,7 @@ namespace VariadicPackExpansion {
   }
   template void nested2(int); // ok
   template void nested2(int, int); // expected-note {{in instantiation of}}
+
 }
 
 namespace PR13860 {

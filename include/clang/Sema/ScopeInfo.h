@@ -404,6 +404,10 @@ public:
   /// Captures - The captures.
   SmallVector<Capture, 4> Captures;
 
+  /// Store an expansion pack, that we can not yet expand and capture
+  typedef llvm::DenseMap<VarDecl*, SmallVector<Decl*, 4> > CapturedPackMapTy;
+  
+  CapturedPackMapTy CapturedPackMap;
   /// \brief - Whether the target type of return statements in this context
   /// is deduced (e.g. a lambda or block with omitted return type).
   bool HasImplicitReturnType;
@@ -411,13 +415,32 @@ public:
   /// ReturnType - The target type of return statements in this context,
   /// or null if unknown.
   QualType ReturnType;
+  void addDeclPackForLaterExpansionAndCapture(VarDecl *CurCapture, 
+      SmallVectorImpl<Decl*>& DeclPack) {
+      SmallVector<Decl*, 4> & V = CapturedPackMap[CurCapture];
+      if (!V.size()) {
+        for (size_t I = 0; I < DeclPack.size(); ++I) 
+          V.push_back(DeclPack[I]);
+      }
+      else {
+        assert(V.size() == DeclPack.size());
+      }
+        
+  }
 
+  CapturedPackMapTy& getDeclPacksForLaterExpansionAndCapture() {
+    return CapturedPackMap;
+  }
   void addCapture(VarDecl *Var, bool isBlock, bool isByref, bool isNested,
                   SourceLocation Loc, SourceLocation EllipsisLoc, 
                   QualType CaptureType, Expr *Cpy) {
     Captures.push_back(Capture(Var, isBlock, isByref, isNested, Loc, 
                                EllipsisLoc, CaptureType, Cpy));
     CaptureMap[Var] = Captures.size();
+  }
+  void addCapture(VarDecl *Var, Capture &C) {
+      Captures.push_back(C);
+      CaptureMap[Var] = Captures.size();
   }
 
   void addThisCapture(bool isNested, SourceLocation Loc, QualType CaptureType,

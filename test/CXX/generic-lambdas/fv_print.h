@@ -11,7 +11,9 @@
 #define DUMP(...) fv::print(#__VA_ARGS__ " = ", (__VA_ARGS__), "\n")
 
 namespace fv {
-   
+  void print(bool b) {
+    printf("%s", b ? "true" : "false");
+  }  
   void print(int i) {
     printf("%d", i);  
   }
@@ -46,6 +48,16 @@ namespace fv {
      print(t);
      if (footer) printf("%s", footer);
    }
+   void print(const char* header, const char* str) {
+     print(header);
+     print(str);
+   }
+   void print(const char* header, const char* str, const char* tail) {
+     print(header);
+     print(str);
+     print(tail);
+   } 
+   
  } // end ns fv
  
 
