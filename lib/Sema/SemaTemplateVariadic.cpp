@@ -735,6 +735,10 @@ public:
       Yes = true;
     return true;
   }
+  bool TraversePackExpansionTypeLoc(PackExpansionTypeLoc TL)
+  {
+    return true;
+  }
   // If even one unexpanded capture refers to this Decl
   // we succeed.
   bool TraverseLambdaCapture(LambdaExpr::Capture C) {

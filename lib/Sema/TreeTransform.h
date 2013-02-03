@@ -2727,7 +2727,6 @@ bool TreeTransform<Derived>::TransformExprs(Expr **Inputs,
                 containsUnexpandableNestedLambdaParameterPack(
                   Pattern, *getDerived().getDeducedTemplateArguments(), 
                   SemaRef, PD);
-                
             }
           }
           

@@ -47,6 +47,124 @@ int main() {
 int run = main();
 }
 */
+namespace rand_fv_5987 {
+
+template<class T> void variadic_call(T t) {
+  t();
+}
+
+template<class T, class ... VTs> void variadic_call(T t, VTs ... vts) {
+  t();
+  variadic_call(vts...);
+}
+
+template<class T> void variadic_print(T t) {
+  print("\n", t);
+}
+
+template<class T, class ... VTs> void variadic_print(T t, VTs ... vts) {
+  variadic_print(t);
+  variadic_print(vts...);
+}
+
+
+template<class ... Ts> int variadic_fun(Ts ... ts) { return 0; }
+template<class ... Ts> struct V { };
+int main() {
+{
+  auto L = []<class ... OuterTs>(OuterTs ... OuterArgs)
+          [=]<class ... InnerTs>(InnerTs ... InnerArgs)
+           variadic_fun([=]<class ... InnerInnerTs>(InnerInnerTs ... IIArgs)
+                 {
+                    variadic_print(OuterArgs ...);
+                    variadic_print(InnerArgs ...);
+                    InnerTs I = InnerArgs;
+                    print("\nI = ", I);
+                    variadic_print(IIArgs ...);
+                    return 0;
+                 }(InnerArgs + 1 ... ) ...
+            );
+  
+  auto M = L('A', 3);  
+  auto N = M(3.14, true);
+  
+}
+//*
+{
+ auto L =  []<int ... Js>() {
+            variadic_fun(([]<class ... InnerTs>(InnerTs ... InnerArgs) {
+                //variadic_fun("\nJs = ", Js ...);
+                variadic_fun("\nInnerArgs = ", InnerArgs ...);
+                int j = Js;
+                V<decltype(InnerArgs) ...> v;
+                V<InnerTs ... > v2;
+                //int k = InnerArgs;
+                return 5;
+              }(1, 2))...
+            );
+        };
+  L.operator()<1, 2, 3>();
+ }
+//*/
+//*
+{
+ auto L = []<int ... Is>()
+              //[]() 
+                []<int ...Js>()
+                  //[]()
+                      variadic_call(
+                         []() {
+                            int j = Js;
+                              variadic_fun(([]<class ... InnerTs>(InnerTs ... InnerArgs) {
+                                  //variadic_fun("\nJs = ", Js ...);
+                                  variadic_fun("\nInnerArgs = ", InnerArgs ...);
+                                  //int i = Is;
+                                  int j = Js;
+                                  V<decltype(InnerArgs) ...> v;
+                                  V<InnerTs ... > v2;
+                                  //int k = InnerArgs;
+                                  return 5;
+                                }(1, 2, 3))...
+                              );
+                      }...);
+                      
+  //int_pack<1, 3, 5> ip;
+  //int_pack<2, 4, 6> jp;
+  auto M = L.operator()<1, 3, 5>();//L(ip);
+  M.operator()<2, 3, 6>();
+}
+//*/
+
+
+//*
+{
+ auto L = []<int ... Is>()
+              //[]() 
+                []<int ...Js>()
+                  //[]()
+                      variadic_call(
+                         []() {
+                            int j = Js;
+                              variadic_call([]<class ... InnerTs>(InnerTs ... InnerArgs) {
+                                variadic_fun("\nJs = ", Js ...);
+                                //variadic_fun("\nInnerArgs = ", InnerArgs ...);
+                                int i = Is;
+                                //int j = Js;
+                                //V<InnerTs ...> v;
+                              }...);
+                      }...);
+                      
+  //int_pack<1, 3, 5> ip;
+  //int_pack<2, 4, 6> jp;
+  auto M = L.operator()<1, 3, 5>();//L(ip);
+  M.operator()<2, 3, 6>();
+}
+//*/
+
+  return 0; 
+}  
+int run = main();
+} // end ns rand
 
 namespace fvghj531ran {
 template<class T> int variadic_print(T t) {
