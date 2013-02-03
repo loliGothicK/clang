@@ -3866,8 +3866,9 @@ Sema::DeduceTemplateArguments(FunctionTemplateDecl *FunctionTemplate,
       ToTypePtr->isFunctionType() ? 
       ToTypePtr->getAs<FunctionType>() : 0;
 
-    QualType ReturnType = FromFunType ? 
-      FromFunType->getResultType() : QualType();
+    // QualType ReturnType = FromFunType ? 
+    //  FromFunType->getResultType() : QualType();
+    
     // The specialization of the Generic Lambda Call Op, instantiated
     // using the deduced parameters from the conversion function
     // i.e.

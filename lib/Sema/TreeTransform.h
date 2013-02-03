@@ -8278,7 +8278,6 @@ struct CheckIfCaptureIsExpandedInExpr :
   // then we know that the capture is expanded within
   // the body.
   bool VisitPackExpansionExpr(PackExpansionExpr *E) {
-    Expr *Pattern = E->getPattern();
     if (!Yes) { // if we have already been set, no need to go deeper
       IsDeclReferredTo DR(CaptureDecl);
       DR.TraverseStmt(E);
@@ -8375,17 +8374,16 @@ typename TreeTransform<Derived>::TransformCapturesReturnTypeEnum
     if (AttemptPackExpansion) {
       UnexpandedParameterPack Unexpanded(C->getCapturedVar(), C->getLocation());
       bool ShouldExpand = false;
-      // RetainExpansion: set to true, if we are partially supplied explicit
-      //   parameters, then we need to expand the supplied ones, but retain
-      //   the pattern, so that it can be expanded later. 
+     
       // This is essentially ignored here, since when transforming a capture
       // we never want to retain an expansion.
-      bool RetainExpansion = false;
+      bool IgnoreRetainExpansion = false;
       llvm::Optional<unsigned> NumExpansions;
       if (getDerived().TryExpandParameterPacks(EllipsisLoc,
                                                C->getLocation(),
                                                Unexpanded,
-                                               ShouldExpand, RetainExpansion,
+                                               ShouldExpand, 
+                                               IgnoreRetainExpansion,
                                                NumExpansions))
         return TransformCapturesPackExpansionError;
 
@@ -8449,11 +8447,6 @@ typename TreeTransform<Derived>::TransformCapturesReturnTypeEnum
           // it when we are ready to expand.  This can occur in the
           // following:
           // 
-          // A potential solution:
-          //   - add the DeclArgumentPack to the LSI
-          //     - add it to the LambdaExpr
-          //     - but do NOT add it as a field in the class, or if we
-          //       do add it, add it as an unexpanded pack. 
           // auto L = []<class ... OuterTs>(OuterTs ... OuterArgs)
           //    [=]<class ... InnerTs>(InnerTs ... InnerArgs)
           //       variadic_foo(([=]() InnerArgs = OuterArgs) ...);

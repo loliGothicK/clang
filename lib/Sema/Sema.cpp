@@ -85,11 +85,11 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
     NSDictionaryDecl(0), DictionaryWithObjectsMethod(0),
     GlobalNewDeleteDeclared(false), 
     TUKind(TUKind),
-    NumSFINAEErrors(0), InFunctionDeclarator(0),
+    NumSFINAEErrors(0), IsTransformingLambdaCallOperatorProtoType(false),
+    InFunctionDeclarator(0),
     AccessCheckingSFINAE(false), InNonInstantiationSFINAEContext(false),
     NonInstantiationEntries(0), ArgumentPackSubstitutionIndex(-1),
     CurrentInstantiationScope(0), TyposCorrected(0),
-    IsTransformingLambdaCallOperatorProtoType(false),
     AnalysisWarnings(*this) {
 
   TUScope = 0;

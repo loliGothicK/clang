@@ -1067,8 +1067,6 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
   Actions.ActOnStartOfLambdaDefinition(Intro, D, getCurScope(), 
                       LambdaTemplateParams);
 
-  sema::LambdaScopeInfo *LSI = Actions.getCurLambda();
-
   if (!Tok.is(tok::l_brace)) {
     // Parse a single expression that will become the return value
     // [](auto a) a;

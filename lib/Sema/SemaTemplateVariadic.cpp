@@ -808,12 +808,11 @@ struct CheckIfPackDeclRefersToNestedLambdaParamPack :
     typedef RecursiveASTVisitor<CheckIfPackDeclRefersToNestedLambdaParamPack>
       inherited;
 
+    Sema &SemaRef;
+    const MultiLevelTemplateArgumentList& DeducedTemplateArgs;
     // The Decl which was are interested in
     NamedDecl *PackDeclOfInterest;   
     bool Yes;
-
-    Sema &SemaRef;
-    const MultiLevelTemplateArgumentList& DeducedTemplateArgs;
     CheckIfPackDeclRefersToNestedLambdaParamPack(Sema& S, 
       const MultiLevelTemplateArgumentList &TemplateArgs,
       NamedDecl *PackDeclOfInterest) : 
@@ -926,12 +925,13 @@ struct CheckIfPackDeclRefersToUnexpandableNestedLambdaParamPack :
     typedef RecursiveASTVisitor<CheckIfPackDeclRefersToUnexpandableNestedLambdaParamPack>
       inherited;
 
+    Sema &SemaRef;
+    const MultiLevelTemplateArgumentList& DeducedTemplateArgs;
+    
     // The Decl which was are interested in
     NamedDecl *PackDeclOfInterest;   
     bool Yes;
 
-    Sema &SemaRef;
-    const MultiLevelTemplateArgumentList& DeducedTemplateArgs;
     CheckIfPackDeclRefersToUnexpandableNestedLambdaParamPack(Sema& S, 
       const MultiLevelTemplateArgumentList &TemplateArgs,
       NamedDecl *PackDeclOfInterest) : 

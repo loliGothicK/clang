@@ -2455,14 +2455,6 @@ bool containsDependentCallExpr(Expr *E) {
   return NCEC.hasDependentCallExpr();
 }
 
-
-
-static bool IsGenericLambdaCallOperator(FunctionDecl *FD) {
-  CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(FD);
-  return MD &&
-      MD->getParent()->isGenericLambda();
-}
-
 void setFunctionReturnType( FunctionDecl *FD, 
                       QualType NewReturnType, 
                       ASTContext &Context ) {
