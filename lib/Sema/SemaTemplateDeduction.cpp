@@ -3859,9 +3859,9 @@ Sema::DeduceTemplateArguments(FunctionTemplateDecl *FunctionTemplate,
   if (getLangOpts().GenericLambda && LambdaClass && 
                                       LambdaClass->isGenericLambda())
   {
-    const FunctionType* FromFunType = 
-      FromTypePtr->isFunctionType() ? 
-      FromTypePtr->getAs<FunctionType>() : 0;
+    //const FunctionType* FromFunType = 
+    //  FromTypePtr->isFunctionType() ? 
+    //  FromTypePtr->getAs<FunctionType>() : 0;
     const FunctionType* ToFunType   = 
       ToTypePtr->isFunctionType() ? 
       ToTypePtr->getAs<FunctionType>() : 0;

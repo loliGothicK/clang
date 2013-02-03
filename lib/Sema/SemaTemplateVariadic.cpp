@@ -688,7 +688,7 @@ public:
   // for whether the DeclRefExpr refers to our
   // PackDeclOfInterest
   bool VisitPackExpansionExpr(PackExpansionExpr *E) {
-    Expr *Pattern = E->getPattern();
+   
     if (!Yes) { // if we have already been set, no need to go deeper
       IsDeclReferredTo DR(PackDeclOfInterest);
       DR.TraverseStmt(E);
@@ -955,9 +955,8 @@ struct CheckIfPackDeclRefersToUnexpandableNestedLambdaParamPack :
           Yes = CNot.yes();
         }
       }
-      bool ret = inherited::TraverseLambdaExpr(E);
-      return true; 
-    }
+      return inherited::TraverseLambdaExpr(E); 
+   }
 
     bool yes() const { return Yes; }
 };
