@@ -706,7 +706,7 @@ public:
 
 // Visits an expression to check if anywhere within it 
 // there is a place where the PackDecl is referred to and
-// NOT part of a pack expansion.
+// is NOT part of a pack expansion.
 // This can be checked by visiting all DeclRefExprs that are NOT part of a
 // PackExpansionExpr or a Capture that refers to the PackDecl but is not
 // a (is)PackExpansion...
@@ -747,18 +747,57 @@ public:
   }
 
   // We do NOT want to go deeper into a pack expansion expressions 
+  // returning true, allows the visitations to continue
+  // if we return false, then visitation of other nodes
+  // also gets aborted.
   bool TraversePackExpansionExpr(PackExpansionExpr *E) {      
-    return false;
+    return true;
   }
 
   bool yes() const { return Yes; }
 };
 
+namespace clang {
+  // This returns true, if the Expression E contains references to the
+  // PackDecl contained only within PackExpansionExpr's 
+  // i.e. consider:
 
-// A visitor that collects information about an expression as
-// it relates to nested lambdas within the expression ...
+  // []<class ... Ts, int ... Ns>(type_int_pack<Ts, Ns> ... Args)
+  //     variadic_fun( ([=]() {
+  //            Ts t = Args; // --> is a non-expansion that refers to Args
+  //            int i[]{ Ns ... };   // All references to Ns are expansions
+  //            variadic_fun(Args ... ); // All references to Args are not 
+  //                                     // all expansions
+  //          })() ...);
+  //  if PackDecl is 'Ns' above, will return true.             
+  bool refersOnlyToNestedPackExpansions(Expr *E, 
+    const MultiLevelTemplateArgumentList& TemplateArgs, Sema &S, 
+    NamedDecl *PackDecl) {
+      // First check to see if there is some expansion of this decl
+      CheckIfDeclIsExpandedInExpr C(S, PackDecl);
+      C.TraverseStmt(E);
+      // Next check and makes sure there is no instance where 
+      // the pack decl is referred to within 'E' in a non-expansion
+      // context.
+      CheckIfDeclIsNOTExpandedInExpr CNot(S, PackDecl);
+      CNot.TraverseStmt(E);
+      return C.yes() && !CNot.yes();
+  }
 
-// It currently collects the following information:
+
+}
+
+// A visitor that checks if a decl refers to a nested
+// lambda parameter pack ...
+// 
+//  InnerArgs below...
+// []<int ... Js>() 
+//   variadic_fun( []<class ... InnerTs>(InnerTs ... InnerArgs)
+//     {
+//       variadic_fun(InnerArgs...); //ok
+//       int j = Js; //  ok 
+//     } ...);
+//
 struct CheckIfPackDeclRefersToNestedLambdaParamPack : 
   RecursiveASTVisitor<CheckIfPackDeclRefersToNestedLambdaParamPack> {
 
@@ -854,10 +893,9 @@ bool refersToNestedLambdaParameterPack(Expr *E,
         const MultiLevelTemplateArgumentList& TemplateArgs, Sema &S, 
         ParmVarDecl *PackDecl) {
 
- CheckIfPackDeclRefersToNestedLambdaParamPack C(S, TemplateArgs, PackDecl);
- C.TraverseStmt(E);
- return C.yes(); // C.AllLambdaParamPacks[PackDecl];
- 
+  CheckIfPackDeclRefersToNestedLambdaParamPack C(S, TemplateArgs, PackDecl);
+  C.TraverseStmt(E);
+  return C.yes(); // C.AllLambdaParamPacks[PackDecl];
 }
 
 
@@ -865,48 +903,103 @@ bool refersToNestedLambdaParameterPackType(Expr *E,
     const MultiLevelTemplateArgumentList& TemplateArgs, Sema &S, 
     const TemplateTypeParmType *PackType) {
 
- CheckIfPackTypeRefersToNestedLambdaParamPack C(S, TemplateArgs, PackType);
- C.TraverseStmt(E);
- return C.yes();
-
-}
-
-// This returns true, if the Decl is only referred to by a nested pack expansion
-//  and not by a non-expanded pack.
-// i.e. consider:
- 
-// []<class ... Ts, int ... Ns>(type_int_pack<Ts, Ns> ... Args)
-//     variadic_fun( ([=]() {
-//            Ts t = Args; // --> is a non-expansion that refers to Args
-//            int i[]{ Ns ... };   // All references to Ns are expansions
-//            variadic_fun(Args ... ); // All references to Args are not 
-//                                     // all expansions
-//          })() ...);
-//  if PackDecl is 'Ns' above, will return true.             
-bool refersOnlyToNestedPackExpansions(Expr *E, 
-      const MultiLevelTemplateArgumentList& TemplateArgs, Sema &S, 
-      NamedDecl *PackDecl) {
-  // First check to see if there is some expansion of this decl
-  CheckIfDeclIsExpandedInExpr C(S, PackDecl);
+  CheckIfPackTypeRefersToNestedLambdaParamPack C(S, TemplateArgs, PackType);
   C.TraverseStmt(E);
-
-  // Next check and makes sure there is no instance where 
-  // the pack decl is referred to within 'E' in a non-expansion
-  // context.
-  CheckIfDeclIsNOTExpandedInExpr CNot(S, PackDecl);
-  CNot.TraverseStmt(E);
-  //return false;
-  return C.yes() && !CNot.yes();
-}
-
+  return C.yes();
 
 }
 
+} // end namespace clang
+
+
+// Check if the Expression contains a reference to the 
+// PackDecl in an unexpandable context
+// 
+struct CheckIfPackDeclRefersToUnexpandableNestedLambdaParamPack : 
+  RecursiveASTVisitor<
+          CheckIfPackDeclRefersToUnexpandableNestedLambdaParamPack> {
+
+    typedef RecursiveASTVisitor<CheckIfPackDeclRefersToUnexpandableNestedLambdaParamPack>
+      inherited;
+
+    // The Decl which was are interested in
+    NamedDecl *PackDeclOfInterest;   
+    bool Yes;
+
+    Sema &SemaRef;
+    const MultiLevelTemplateArgumentList& DeducedTemplateArgs;
+    CheckIfPackDeclRefersToUnexpandableNestedLambdaParamPack(Sema& S, 
+      const MultiLevelTemplateArgumentList &TemplateArgs,
+      NamedDecl *PackDeclOfInterest) : 
+    SemaRef(S), DeducedTemplateArgs(TemplateArgs), 
+      PackDeclOfInterest(PackDeclOfInterest), Yes(false)
+    { }
+
+    bool TraverseLambdaExpr(LambdaExpr* E) {
+
+      // Find the nested lambda whose pack it is
+      CXXMethodDecl *CallOp = E->getCallOperator();
+
+      for (size_t I = 0; I < CallOp->getNumParams(); ++I)
+      {
+        ParmVarDecl *PVD = CallOp->getParamDecl(I);
+        if (PVD == PackDeclOfInterest && !Yes)  {
+          // now check to see if we are referred to in the body of this lambda
+          // in a non pack expansion context
+          CheckIfDeclIsNOTExpandedInExpr CNot(SemaRef, PackDeclOfInterest);
+          CNot.TraverseStmt(E->getBody());
+          Yes = CNot.yes();
+        }
+      }
+      bool ret = inherited::TraverseLambdaExpr(E);
+      return true; 
+    }
+
+    bool yes() const { return Yes; }
+};
+
+namespace clang {
+  //
+  // []<int ... Js>() 
+  //   variadic_fun( []<class ... InnerTs>(InnerTs ... InnerArgs)
+  //     {
+  //       variadic_fun(InnerArgs...); //ok
+  //       int j = Js; //  ok
+  //       return InnerArgs; // Not ok <-- this is unexpandable
+  //     }(1, 2, 3) ...);
+  //
+  bool containsUnexpandableNestedLambdaParameterPack(Expr *E, 
+    const MultiLevelTemplateArgumentList& TemplateArgs, Sema &S, 
+    ParmVarDecl *NestedLambdaPackDecl) {
+      if ( refersToNestedLambdaParameterPack(E, TemplateArgs, S, 
+                                          NestedLambdaPackDecl) ) {
+        CheckIfPackDeclRefersToUnexpandableNestedLambdaParamPack 
+                                  C(S, TemplateArgs, NestedLambdaPackDecl);
+        C.TraverseStmt(E);
+        return C.yes(); 
+      }
+      return false;
+  }
+
+} // end namespace clang
 
 // Defined in SemaExpr.cpp
 bool IsLambdaCallOpDeclContext(const DeclContext* DC);
 
-
+// CheckParameterPacksForExpansion:
+// This checks to see if every unexpanded pack can be expanded
+// - if even one pack can not be expanded, none of the packs can
+//   be expanded.
+//   The algorithm is as follows:
+//     - if the UPP is a function parameter pack, check to see
+//         if TemplateArgs have a deduction for it
+//         and if so, do we have a local instantiation in the
+//         CurrentInstantiationScope that is a sequence of substituted
+//         declarations - if not, then we are not ready to expand this pack.
+//     - otherwise we just check to see if the pack has been deduced
+//       or not, and if not, don't expand.
+//
+//  It also checks to see whether the expansion pattern needs to be retained
 bool Sema::CheckParameterPacksForExpansion(SourceLocation EllipsisLoc,
                                            SourceRange PatternRange,
                                    ArrayRef<UnexpandedParameterPack> Unexpanded,
@@ -1056,7 +1149,7 @@ bool Sema::CheckParameterPacksForExpansion(SourceLocation EllipsisLoc,
         ShouldExpand = false;
         continue;
       }
-    } else {
+    } else { //!IsFunctionParameterPack || DepthOfFPack > TemplateArgs.levels 
       // If we don't have a template argument at this depth/index, then we 
       // cannot expand the pack expansion. Make a note of this, but we still 
       // want to check any parameter packs we *do* have arguments for.

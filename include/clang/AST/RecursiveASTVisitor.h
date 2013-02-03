@@ -2095,6 +2095,16 @@ DEF_TRAVERSE_STMT(CXXTemporaryObjectExpr, {
 // Walk only the visible parts of lambda expressions.  
 template<typename Derived>
 bool RecursiveASTVisitor<Derived>::TraverseLambdaExpr(LambdaExpr *S) {
+  // Iterate through all the template parameters of this 
+  // lambda and check if we have a parameter pack
+  TemplateParameterList *TPL = S->getTemplateParameterList();
+  if (TPL) {
+    for (size_t I = 0; I < TPL->size(); ++I) {
+      NamedDecl *ND = TPL->getParam(I);
+      TRY_TO(TraverseDecl(ND));
+    }
+  }
+  
   for (LambdaExpr::capture_iterator C = S->explicit_capture_begin(),
                                  CEnd = S->explicit_capture_end();
        C != CEnd; ++C) {

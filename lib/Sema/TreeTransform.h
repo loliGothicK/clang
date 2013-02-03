@@ -2609,6 +2609,14 @@ bool refersToNestedLambdaParameterPackType(Expr *E,
   const MultiLevelTemplateArgumentList& TemplateArgs, Sema &S, 
   const TemplateTypeParmType *PackType);
 
+// Check to see if the Expression E contains
+// an unexpanded reference to a nested lambda parameter pack
+// []<class ... Ts>(Ts ... args)
+//    { return args; }
+bool containsUnexpandableNestedLambdaParameterPack(Expr *E, 
+  const MultiLevelTemplateArgumentList& TemplateArgs, Sema &S, 
+  ParmVarDecl *NestedLambdaPackDecl);
+
 
 bool refersOnlyToNestedPackExpansions(Expr *E, 
   const MultiLevelTemplateArgumentList& TemplateArgs, Sema &S, 
@@ -2638,38 +2646,62 @@ bool TreeTransform<Derived>::TransformExprs(Expr **Inputs,
       getSema().collectUnexpandedParameterPacks(Pattern, AllUnexpanded);
       assert(!AllUnexpanded.empty() && "Pack expansion without parameter packs?");
       
-      // If any of the unexpanded parameter packs within Pattern, 
-      // either 1) refer to nested lambda function parameter packs, 
-      // or 2) if they refer to pack decls that are also referred to 
-      // by expansion patterns nested within the current Pattern, 
-      // we do not want to let them prevent the expansion.
-      // So remove them from the check for expansion 
-      // since they should not affect whether the pattern should be
-      // expanded.
-      // The other issue with nested lambda parameter packs
-      // is that we do not have a local instantiation that corresponds to 
-      // them, so we should really just ignore them as we test if 'Pattern'
-      // can be expanded.
-      // (since the nested pack expansions refer to parameter packs that 
-      //    have not yet been transformed or instantiated) 
-      // This can happen with:
-      //  -  nested lambdas, which can introduce  
-      //        new function parameter packs within expansion patterns
-      //     i.e. consider: []<class ... Ts>( Ts ... ARGS)
-      //                  { return variadic_fun(
-      //                        ([](Ts ... args2) 
-      //                            { return variadic_fun( args2 ... ) + ARGS; }) ...); }
-      //     Note: ARGS above within the lambda, makes the entire nested lambda an expansion 
-      //     pattern
-      // - 
+     
+      // Consider the following code:
+      // [](auto a)                                                // 0
+      //   []<class ... OuterTs>(OuterTs ... OuterArgs)            // 1
+      //     [=]<class ... InnerTs>(InnerTs ... InnerArgs)         // 2
+      //       variadic_fun([=]<class ... InnerInnerTs>            // 3
+      //                         (InnerInnerTs ... InnerInnerArgs) // 4
+      //           {
+      //              variadic_fun(InnerArgs ...);               // 5
+      //              InnerTs I = InnerArgs;                     // 6
+      //              variadic_fun(InnerInnerArgs ...);          // 7
+      //              variaric_fun(OuterArgs ... );              // 8
+      //         /*   InnerInnerTs II = InnerInnerArgs; */       // 9 
+      //              return 0;
+      //           }(OuterArgs ...);
+      //      );
+      //  Pattern = [=]<class ... InnerInnerTs> etc. @ '3' above
+      //  
+      // We separate the unexpanded packs within 'Pattern' into three
+      //  categories:
+      //  1) Those that refer to nested lambda parameter packs within 
+      //      the 'Pattern' (i.e. Line 7 above)
+      //  2) Those that are only nested expansions within
+      //      the 'Pattern' (and not references to nested lambda packs)
+      //      (i.e. Line 8 OuterArgs, NOT InnerArgs on '5' because of Line '6')
+      //  3) All other unexpanded packs
+      //
+      //  We then check to see if these packs can be expanded ...
+      //  a) Category 1 packs are essentially ignored, although we do check
+      //     to make sure they are used in expandable contexts
+      //     (i.e Line 7 is ok, but NOT Line 9 if uncommented)
+      //      The issue with nested lambda parameter packs
+      //      is that we do not have a local instantiation that corresponds to 
+      //      them, so we just ignore them as we test if 'Pattern'
+      //      can be expanded, and if the Pattern can be expanded, as the nested
+      //      lambda is transformed, it the nested pack will be expanded...
+      //      (since the nested pack expansions refer to parameter packs that 
+      //        have not yet been transformed or instantiated) 
+      //  b) Category 2 packs are checked for expansion, and if there are no 
+      //     Category 3 packs, their expansion status dictates expansion
+      //  c) If there are Category 3 packs, Category 2 packs are essentially
+      //      ignored, and decisions to expand are made entirely based on
+      //      Category 3 packs.
+      SmallVector<UnexpandedParameterPack, 2> UnexpandedNestedLambdaPacks;
+      SmallVector<UnexpandedParameterPack, 2> 
+                                  UnexpandedPacksOnlyWithNestedExpansions;
       SmallVector<UnexpandedParameterPack, 2> Unexpanded;
+
+      bool HasUnexpandableNestedLambdaParameterPack = false;
+
       for (size_t I = 0; I < AllUnexpanded.size(); ++I) {
         const UnexpandedParameterPack& p = AllUnexpanded[I];
+        
         bool DoesNotReferToNestedParameterPack = true;
-        bool IsNotExpandedWithinPattern = true;
+        bool DoesNotReferToNestedExpansionOnly = true;
         // If we are a parameter pack expansion, check if we refer to
-        // a nested function parameter pack expansion (i.e. is not instantiated
-        // or being expanded)
         if (p.first.is<NamedDecl*>() && 
                       getDerived().getDeducedTemplateArguments()) {
           NamedDecl *ND = p.first.get<NamedDecl*>();
@@ -2680,14 +2712,38 @@ bool TreeTransform<Derived>::TransformExprs(Expr **Inputs,
                   !refersToNestedLambdaParameterPack(Pattern, 
                     *getDerived().getDeducedTemplateArguments(), 
                       SemaRef, PD);
+            if (!DoesNotReferToNestedParameterPack) {
+              // Make sure that this is expanded within the body of the
+              // nested lambda
+              // i.e []<int ... Ns>()
+              //        variadic_fun([]<class ... Ts>(Ts ... ts)
+              //            {  
+              //               int N = Ns;      // 1
+              //               return ts;       // 2
+              //            }(1, 2, 3) ... );
+              // 'ts' in '1' above is ill-formed, and unexpandable, so
+              // recognize and error out. 
+              HasUnexpandableNestedLambdaParameterPack = 
+                containsUnexpandableNestedLambdaParameterPack(
+                  Pattern, *getDerived().getDeducedTemplateArguments(), 
+                  SemaRef, PD);
+                
+            }
           }
-          // Make sure that the decl is NOT expanded nested within the 
-          // pattern, because if it is, it will falsely
-          // prevent the expansion within TryExpandParameterPacks
-          IsNotExpandedWithinPattern =
+          
+          // The Unexpanded PackDecl might be a nested expansion, but 
+          // as long as somewhere within 'Pattern' there is a reference
+          // to it that is expandable when 'Pattern' is expanded, then
+          // add it to Category 3
+          // Refer to Line
+          DoesNotReferToNestedExpansionOnly =
                   !refersOnlyToNestedPackExpansions(Pattern,
                     *getDerived().getDeducedTemplateArguments(),
                     SemaRef, ND);
+          if (!DoesNotReferToNestedExpansionOnly && 
+                               DoesNotReferToNestedParameterPack) {
+            UnexpandedPacksOnlyWithNestedExpansions.push_back(p);
+          }
         }
         
         if (const TemplateTypeParmType *TTP
@@ -2699,25 +2755,59 @@ bool TreeTransform<Derived>::TransformExprs(Expr **Inputs,
                       SemaRef, TTP);
 
         }
-        if (DoesNotReferToNestedParameterPack && IsNotExpandedWithinPattern)
+        if(!DoesNotReferToNestedParameterPack)
+          UnexpandedNestedLambdaPacks.push_back(p);
+        if (DoesNotReferToNestedParameterPack && DoesNotReferToNestedExpansionOnly)
           Unexpanded.push_back(p);
       }
-        
+      
       // Determine whether the set of unexpanded parameter packs can and should
       // be expanded.
       bool Expand = true;
-      bool RetainExpansion = false;
+      bool ExpandNestedExpansions = true;
+      // Essentially ignored in this context, more useful when 
+      // expanding/transforming, function prototypes
+      bool RetainExpansionIgnore = false;
+     
       llvm::Optional<unsigned> OrigNumExpansions
         = Expansion->getNumExpansions();
       llvm::Optional<unsigned> NumExpansions = OrigNumExpansions;
-      if (getDerived().TryExpandParameterPacks(Expansion->getEllipsisLoc(),
+      
+      if (Unexpanded.size()) {
+        if (getDerived().TryExpandParameterPacks(Expansion->getEllipsisLoc(),
                                                Pattern->getSourceRange(),
                                                Unexpanded,
-                                               Expand, RetainExpansion,
+                                               Expand, RetainExpansionIgnore,
                                                NumExpansions))
         return true;
+      }
+      
+      if (UnexpandedPacksOnlyWithNestedExpansions.size()) {
+        if (getDerived().TryExpandParameterPacks(Expansion->getEllipsisLoc(),
+                                               Pattern->getSourceRange(),
+                                               UnexpandedPacksOnlyWithNestedExpansions,
+                                               ExpandNestedExpansions, 
+                                               RetainExpansionIgnore,
+                                               NumExpansions))
+        return true;
+      }
 
-      if (!Expand) {
+      if (UnexpandedNestedLambdaPacks.size()) {
+        size_t OtherUnexpandedPacks = Unexpanded.size() + 
+              UnexpandedPacksOnlyWithNestedExpansions.size();
+        if (!OtherUnexpandedPacks || 
+              HasUnexpandableNestedLambdaParameterPack) {
+          SemaRef.Diag(Pattern->getLocStart(), 
+              diag::err_unexpanded_parameter_pack_0) << 0;
+          return true;
+        }
+      }
+
+      // If we can not expand the packs in Unexpanded, or if the only
+      // unexpanded-packs are all NestedExpansions and even those
+      //  can not be expanded...
+      if (!Expand || 
+              (!ExpandNestedExpansions && !Unexpanded.size())) {
         // The transform has determined that we should perform a simple
         // transformation on the pack expansion, producing another pack
         // expansion.
