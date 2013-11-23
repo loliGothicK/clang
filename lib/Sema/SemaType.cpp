@@ -2152,9 +2152,18 @@ static QualType GetDeclSpecTypeForDeclarator(TypeProcessingState &state,
         break;
       switch (cast<TagDecl>(SemaRef.CurContext)->getTagKind()) {
       case TTK_Enum: llvm_unreachable("unhandled tag kind");
-      case TTK_Struct: Error = 1; /* Struct member */ break;
-      case TTK_Union:  Error = 2; /* Union member */ break;
-      case TTK_Class:  Error = 3; /* Class member */ break;
+      case TTK_Struct: /* Struct member */ 
+        if (!SemaRef.getLangOpts().AutoNSDMI) 
+          Error = 1; 
+        break;
+      case TTK_Union:  /* Union member */   
+        if (!SemaRef.getLangOpts().AutoNSDMI) 
+          Error = 2; 
+        break;
+      case TTK_Class:  /* Class member */ 
+        if (!SemaRef.getLangOpts().AutoNSDMI) 
+          Error = 3; 
+        break;
       case TTK_Interface: Error = 4; /* Interface member */ break;
       }
       break;
