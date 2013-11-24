@@ -12,6 +12,7 @@
 #include "clang/Sema/SemaInternal.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/ASTLambda.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/DeclVisitor.h"
 #include "clang/AST/DependentDiagnostic.h"
@@ -3257,13 +3258,16 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
     // };
     // X{}.GL(3.1);
     StmtResult Body;
-    sema::LambdaScopeInfo *const CurLambdaLSI = getCurLambda();
+
+    sema::LambdaScopeInfo *const CurLambdaLSI =
+        isGenericLambdaCallOperatorSpecialization(Function) ? getCurLambda()
+                                                            : 0;
     const bool CapturesThis = CurLambdaLSI && CurLambdaLSI->isCXXThisCaptured();
     DeclContext *const DeclCtxOfThisCapturingLambda = CapturesThis ?
         getFunctionLevelDeclContext() : 0;
-    if (CXXRecordDecl *const ClassDecl = 
+    if (CXXRecordDecl *const ClassDeclOfAutoNSDMI = 
         dyn_cast_or_null<CXXRecordDecl>(DeclCtxOfThisCapturingLambda)) {
-      Sema::CXXThisScopeRAII ThisScope(*this, ClassDecl,
+      Sema::CXXThisScopeRAII ThisScope(*this, ClassDeclOfAutoNSDMI,
         /*TypeQuals=*/(unsigned)0);
       Body = SubstStmt(Pattern, TemplateArgs);
     } else 
