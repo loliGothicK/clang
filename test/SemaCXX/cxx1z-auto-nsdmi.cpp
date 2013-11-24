@@ -35,3 +35,20 @@ struct X {
 static_assert(sizeof(X) == sizeof(double) * 3, "sizeof class should be 3 times a double");
 
 }
+
+namespace recursive_size_calc {
+struct X { 
+  // FIXME: this crashes for now with infinite recursion - we need to check
+  // to see if we are trying to capture the class being defined by copy
+  // when creating a lambda, and if so, error out.
+  //auto c_not_ok = [x = *this]() ->decltype(auto) { return x; }; 
+  auto r_ok = [&x = *this]() ->decltype(auto) { return x; };
+  auto p_ok = [x = this]() ->decltype(auto) { return x; };
+};
+int test() {
+  auto L = X{}.m;
+  return 0;
+}
+int run = test();
+
+}
