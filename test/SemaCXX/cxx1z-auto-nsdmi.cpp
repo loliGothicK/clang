@@ -60,6 +60,46 @@ int run = test();
 
 }
 
+
+namespace capturing_this_in_generic_lambdas {
+
+namespace explicit_capture {
+struct X {
+  int mi = 5;
+  auto GL = [this](auto i) {
+    return this->mi;
+  };
+};
+
+int test() {
+  X x;
+  x.GL(3);
+  return 0;
+}
+
+int run = test();
+} // explicit capture
+
+namespace implicit_capture {
+struct X {
+  int mi = 5;
+  auto GL = [=](auto i) {
+    return this->mi;
+  };
+};
+
+int test() {
+  X x;
+  x.GL(3);
+  return 0;
+}
+
+int run = test();
+} // end ns
+
+
+} //end ns capturing_this_in_generic_lambdas
+
 namespace static_auto_nsdmi {
 // was already allowed
 struct X {
@@ -91,6 +131,7 @@ int test() {
 }
 int run = test();
 }
+
 namespace more_tests {
 struct Y { };
 char foo(int, Y) { return 'a'; }
@@ -116,10 +157,9 @@ int test() {
   X<Y> x;
   auto M = x.mem_foo();
   auto M2 = x.GL;
-  //M(4);
-  DUMP(x.a);
-  DUMP(x.mem_foo()(5));
-  DUMP(M(5));
+ 
+  x.mem_foo()(5);
+  M(5);
   //FV_DUMP(M2(5));
 }
 int run = test();

@@ -3246,9 +3246,30 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
                                  TemplateArgs);
     }
 
-    // Instantiate the function body.
-    StmtResult Body = SubstStmt(Pattern, TemplateArgs);
-
+    // If this is a lambda and we capture 'this' make sure we establish
+    // a CXXThisOverride for any generic lambdas used in auto nsdmi's.
+    // i.e we want the following to work:
+    // struct X {
+    //    int mi = 5;
+    //    auto GL = [this](auto a) {
+    //       return this->mi;
+    //    };
+    // };
+    // X{}.GL(3.1);
+    StmtResult Body;
+    sema::LambdaScopeInfo *const CurLambdaLSI = getCurLambda();
+    const bool CapturesThis = CurLambdaLSI && CurLambdaLSI->isCXXThisCaptured();
+    DeclContext *const DeclCtxOfThisCapturingLambda = CapturesThis ?
+        getFunctionLevelDeclContext() : 0;
+    if (CXXRecordDecl *const ClassDecl = 
+        dyn_cast_or_null<CXXRecordDecl>(DeclCtxOfThisCapturingLambda)) {
+      Sema::CXXThisScopeRAII ThisScope(*this, ClassDecl,
+        /*TypeQuals=*/(unsigned)0);
+      Body = SubstStmt(Pattern, TemplateArgs);
+    } else 
+      // Instantiate the function body without synthesizing a CXXThisOverride.
+      Body = SubstStmt(Pattern, TemplateArgs);
+    
     if (Body.isInvalid())
       Function->setInvalidDecl();
 
