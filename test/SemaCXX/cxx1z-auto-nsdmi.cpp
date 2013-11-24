@@ -1,4 +1,5 @@
 // RUN: %clang_cc1 -std=c++1y -verify -fsyntax-only -fblocks -emit-llvm-only %s
+#define DUMP(x) x
 
 namespace ansdmi1 {
 struct Y {
@@ -57,4 +58,69 @@ int test() {
 }
 int run = test();
 
+}
+
+namespace static_auto_nsdmi {
+// was already allowed
+struct X {
+  const static auto s = 3;
+  auto x = s;
+};
+
+}
+
+namespace adl_with_auto_nsdmi {
+
+namespace yns {
+  struct Y { };
+}
+char foo(int, yns::Y) { return 'a'; }
+template<class T>
+struct X {
+  //auto L = [this](auto a) { return 0; };
+  const static auto s = 3;
+  auto a = s + foo(3.14, T{});
+};
+namespace yns {
+double foo(double, Y) { return 1000; }
+}
+int test() {
+ X<yns::Y> x; 
+ static_assert(sizeof(x) == sizeof(double), "adl should play a role in determining type");
+ return 0;
+}
+int run = test();
+}
+namespace more_tests {
+struct Y { };
+char foo(int, Y) { return 'a'; }
+template<class T>
+struct X {
+  //auto L = [this](auto a) { return 0; };
+  const static auto s = 3;
+  auto a = s + foo(3.14, T{});
+  auto mem_foo() {
+    return [this](auto i) {
+      return this->mi;
+    };
+  }
+  int mi = 5;
+  auto GL = [this](auto i) {
+    return this->mi;
+  };
+};
+
+double foo(double, Y) { return 1000; }
+
+int test() {
+  X<Y> x;
+  auto M = x.mem_foo();
+  auto M2 = x.GL;
+  //M(4);
+  DUMP(x.a);
+  DUMP(x.mem_foo()(5));
+  DUMP(M(5));
+  //FV_DUMP(M2(5));
+}
+int run = test();
 }

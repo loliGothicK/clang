@@ -2343,7 +2343,6 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
         Diag(Tok, diag::err_auto_var_requires_init) << FD << FD->getType();
       }
     }
-   
 
     if (ThisDecl) {
       if (!ThisDecl->isInvalidDecl()) {
