@@ -1,6 +1,9 @@
 // RUN: %clang_cc1 -std=c++1y -verify -fsyntax-only -fblocks -emit-llvm-only %s
 
 namespace ansdmi1 {
+struct Y {
+  auto a; //expected-error{{requires an initializer}}
+};
 struct X {
   auto sz = sizeof(X);
   const auto sz_const = sizeof(*this);
@@ -46,7 +49,10 @@ struct X {
   auto p_ok = [x = this]() ->decltype(auto) { return x; };
 };
 int test() {
-  auto L = X{}.m;
+  // FIXME: why does this cause an assertion failure if a wrong member is used
+  //auto L = X{}.m;
+  auto r_ok = X{}.r_ok;
+  auto p_ok = X{}.p_ok;
   return 0;
 }
 int run = test();

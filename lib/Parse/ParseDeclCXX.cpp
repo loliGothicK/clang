@@ -2333,9 +2333,17 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
       else if (ThisDecl)
         Actions.AddInitializerToDecl(ThisDecl, Init.get(), EqualLoc.isInvalid(),
                                      DS.containsPlaceholderType());
-    } else if (ThisDecl && DS.getStorageClassSpec() == DeclSpec::SCS_static)
+    } else if (ThisDecl && DS.getStorageClassSpec() == DeclSpec::SCS_static) {
       // No initializer.
       Actions.ActOnUninitializedDecl(ThisDecl, DS.containsPlaceholderType());
+    } else if (ThisDecl && isa<FieldDecl>(ThisDecl)) {
+      // placeholder/auto NSDMI's must have an initializer.
+      FieldDecl *FD = cast<FieldDecl>(ThisDecl);
+      if (FD->getType()->getContainedAutoType()) {
+        Diag(Tok, diag::err_auto_var_requires_init) << FD << FD->getType();
+      }
+    }
+   
 
     if (ThisDecl) {
       if (!ThisDecl->isInvalidDecl()) {
