@@ -120,7 +120,13 @@ struct X {
     };
   };
   auto GL2 = [=](auto i) {
-    return [&x = *this](auto j) { //expected-error{{incomplete}}
+    return [&x = *this](int j) { 
+      return 0;
+    };
+  };
+  //FXIME: this should not create an error
+   auto GL3 = [=](auto i) {
+    return [&x = *this](auto j) { 
       return 0;
     };
   };
