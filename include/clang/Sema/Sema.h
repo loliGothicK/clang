@@ -240,14 +240,8 @@ public:
   DiagnosticsEngine &Diags;
   SourceManager &SourceMgr;
 
-  typedef llvm::SmallVector<CXXRecordDecl *, 8> ClassUndergoingNSDMIParsingStackTy;
-  ClassUndergoingNSDMIParsingStackTy ClassUndergoingNSDMIParsingStack;
-  void PushClassUndergoingNSDMIParsing(CXXRecordDecl *D) {
-    ClassUndergoingNSDMIParsingStack.push_back(D);
-  }
-  void PopClassUndergoingNSDMIParsing() {
-    ClassUndergoingNSDMIParsingStack.pop_back();
-  }
+  void pushClassUndergoingNSDMIParsing(CXXRecordDecl *D); 
+  void popClassUndergoingNSDMIParsing(); 
 
   /// \brief Flag indicating whether or not to collect detailed statistics.
   bool CollectStats;

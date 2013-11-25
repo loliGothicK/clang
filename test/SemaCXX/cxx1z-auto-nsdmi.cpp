@@ -49,8 +49,7 @@ struct X {
   auto r_ok = [&x = *this]() ->decltype(auto) { return x; };
   auto p_ok = [x = this]() ->decltype(auto) { return x; };
   auto &rx = *this;
-  auto cx = *this; //expected-error{{incomplete type}} \
-                   //expected-error{{no viable conversion}}
+  auto cx = *this; //expected-error{{incomplete type}}
   auto *px = this;
 
 };
@@ -205,3 +204,27 @@ int test() {
 }
 int run = test();
 }
+
+namespace nested_structs_with_auto_nsdmi {
+struct X1 {
+
+  struct X2 {
+    auto sz1 = sizeof(X1);
+    auto sz2 = sizeof(X2);
+    auto x1 = X1{}; //expected-error{{incomplete}}
+    auto *x2 = this;
+    //FIXME: this is an error currently.
+    //int L = ([] (int i) { return i; })(2);
+  };
+};
+
+}
+
+namespace inconsistent_types {
+  struct A { };
+  struct B { };
+  struct X {
+    auto a = A{};
+    X() : a(B{}) { }
+  };
+} // end ns

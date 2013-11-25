@@ -514,11 +514,11 @@ void Parser::ParseLexedMemberInitializers(ParsingClass &Class) {
     else
       Record = cast<CXXRecordDecl>(Class.TagOrTemplate);
 
-    Actions.PushClassUndergoingNSDMIParsing(Record);
+    Actions.pushClassUndergoingNSDMIParsing(Record);
     for (size_t i = 0; i < Class.LateParsedDeclarations.size(); ++i) {
       Class.LateParsedDeclarations[i]->ParseLexedMemberInitializers();
     }
-    Actions.PopClassUndergoingNSDMIParsing();
+    Actions.popClassUndergoingNSDMIParsing();
   }
   
   if (!AlreadyHasClassScope)

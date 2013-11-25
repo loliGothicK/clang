@@ -8106,18 +8106,13 @@ void Sema::AddInitializerToDecl(Decl *RealDecl, Expr *Init,
       //  auto L = [x = *this]() <-- this is not ok.
       //                   { ... };
       // };
-      // 
+      //
       const Type *DeducedTypePtr =
-        DeducedType->getCanonicalTypeUnqualified().getTypePtr();
-      for (unsigned I = ClassUndergoingNSDMIParsingStack.size(); I--; ) {
-        const Type *Ty = Context.getRecordType(
-          ClassUndergoingNSDMIParsingStack[I]).getTypePtr();
-        if (Ty == DeducedTypePtr) {
-          Diag(VDecl->getLocation(), diag::err_field_incomplete) 
-            << DeducedType;
-          VDecl->setInvalidDecl();
-          return;
-        }
+          DeducedType->getCanonicalTypeUnqualified().getTypePtr();
+      if (Context.isClassTypeUndergoingNSDMIParsing(DeducedTypePtr)) {
+        Diag(VDecl->getLocation(), diag::err_field_incomplete) << DeducedType;
+        VDecl->setInvalidDecl();
+        return;
       }
     }
     VDecl->setType(DeducedType);

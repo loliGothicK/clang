@@ -8251,3 +8251,24 @@ ASTContext::ObjCMethodsAreEqual(const ObjCMethodDecl *MethodDecl,
   return (MethodDecl->isVariadic() == MethodImpl->isVariadic());
   
 }
+
+void ASTContext::pushClassUndergoingNSDMIParsing(CXXRecordDecl *D) {
+  ClassesUndergoingNSDMIParsingStack.push_back(D);
+}
+void ASTContext::popClassUndergoingNSDMIParsing() {
+  ClassesUndergoingNSDMIParsingStack.pop_back();
+}
+
+bool ASTContext::isClassUndergoingNSDMIParsing(CXXRecordDecl *D) {
+  return false;
+}
+bool ASTContext::isClassTypeUndergoingNSDMIParsing(const Type *ClassTy) {
+  for (unsigned I = ClassesUndergoingNSDMIParsingStack.size(); I--; ) {
+    const Type *Ty = getRecordType(
+      ClassesUndergoingNSDMIParsingStack[I]).getTypePtr();
+    if (Ty == ClassTy) {
+      return true;
+    }
+  }
+  return false;
+}

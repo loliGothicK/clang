@@ -2401,20 +2401,24 @@ static inline void DeduceAutoPlaceHolderType(Expr *Init, FieldDecl *FDecl, Sema 
     // are being deduced - this is to prevent recursion.
     const Type *DeducedTypePtr =
         DeducedType->getCanonicalTypeUnqualified().getTypePtr();
-    for (unsigned I = S.ClassUndergoingNSDMIParsingStack.size(); I--; ) {
-      const Type *Ty = S.Context.getRecordType(
-        S.ClassUndergoingNSDMIParsingStack[I]).getTypePtr();
-      if (Ty == DeducedTypePtr) {
-        S.Diag(FDecl->getLocation(), diag::err_field_incomplete) 
-            << DeducedType;
-        FDecl->setInvalidDecl();
-        FDecl->getParent()->setInvalidDecl();
-        return;
-      }
+    if (S.Context.isClassTypeUndergoingNSDMIParsing(DeducedTypePtr)) {
+      S.Diag(FDecl->getLocation(), diag::err_field_incomplete) 
+        << DeducedType;
+      FDecl->setInvalidDecl();
+      FDecl->getParent()->setInvalidDecl();
     }
     FDecl->setType(DeducedType);
   }
 }
+
+
+void Sema::pushClassUndergoingNSDMIParsing(CXXRecordDecl *D) {
+  Context.pushClassUndergoingNSDMIParsing(D);
+}
+void Sema::popClassUndergoingNSDMIParsing() {
+  Context.popClassUndergoingNSDMIParsing();
+}
+
 /// ActOnCXXInClassMemberInitializer - This is invoked after parsing an
 /// in-class initializer for a non-static C++ class member, and after
 /// instantiating an in-class initializer in a class template. Such actions
@@ -2438,6 +2442,7 @@ Sema::ActOnCXXInClassMemberInitializer(Decl *D, SourceLocation InitLoc,
     return;
   }
   DeduceAutoPlaceHolderType(InitExpr, FD, *this);
+  if (FD->isInvalidDecl()) return;
   ExprResult Init = InitExpr;
   if (!FD->getType()->isDependentType() && !InitExpr->isTypeDependent()) {
     InitializedEntity Entity = InitializedEntity::InitializeMember(FD);

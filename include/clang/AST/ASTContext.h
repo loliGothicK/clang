@@ -169,6 +169,16 @@ class ASTContext : public RefCountedBase<ASTContext> {
   /// that appear in constant initializers to their evaluated values.
   llvm::DenseMap<const MaterializeTemporaryExpr*, APValue>
     MaterializedTemporaryValues;
+  
+  /// \brief A stack of classes undergoing NSDMI parsing, to detect circularity
+  typedef llvm::SmallVector<CXXRecordDecl *, 8> ClassUndergoingNSDMIParsingStackTy;
+  mutable ClassUndergoingNSDMIParsingStackTy ClassesUndergoingNSDMIParsingStack;
+public:
+  void pushClassUndergoingNSDMIParsing(CXXRecordDecl *D); 
+  void popClassUndergoingNSDMIParsing();
+  bool isClassUndergoingNSDMIParsing(CXXRecordDecl *D);
+  bool isClassTypeUndergoingNSDMIParsing(const Type *ClassTy);
+private:
 
   /// \brief Representation of a "canonical" template template parameter that
   /// is used in canonical template names.
