@@ -8099,6 +8099,27 @@ void Sema::AddInitializerToDecl(Decl *RealDecl, Expr *Init,
       RealDecl->setInvalidDecl();
       return;
     }
+    {
+      // Check if the DeducedType is the same as a class whose AutoNSDMI's
+      // are being deduced - this is to prevent recursion:
+      // struct X {
+      //  auto L = [x = *this]() <-- this is not ok.
+      //                   { ... };
+      // };
+      // 
+      const Type *DeducedTypePtr =
+        DeducedType->getCanonicalTypeUnqualified().getTypePtr();
+      for (unsigned I = ClassUndergoingNSDMIParsingStack.size(); I--; ) {
+        const Type *Ty = Context.getRecordType(
+          ClassUndergoingNSDMIParsingStack[I]).getTypePtr();
+        if (Ty == DeducedTypePtr) {
+          Diag(VDecl->getLocation(), diag::err_field_incomplete) 
+            << DeducedType;
+          VDecl->setInvalidDecl();
+          return;
+        }
+      }
+    }
     VDecl->setType(DeducedType);
     assert(VDecl->isLinkageValid());
 

@@ -2391,6 +2391,27 @@ static inline void DeduceAutoPlaceHolderType(Expr *Init, FieldDecl *FDecl, Sema 
       FDecl->setInvalidDecl();
       return;
     }
+    if (S.RequireCompleteType(FDecl->getLocation(), DeducedType, 
+        diag::err_field_incomplete)) {
+      // Fields of incomplete type force their record to be invalid.
+      FDecl->setInvalidDecl();
+      return;
+    }
+    // Check if the DeducedType is the same as a class whose AutoNSDMI's
+    // are being deduced - this is to prevent recursion.
+    const Type *DeducedTypePtr =
+        DeducedType->getCanonicalTypeUnqualified().getTypePtr();
+    for (unsigned I = S.ClassUndergoingNSDMIParsingStack.size(); I--; ) {
+      const Type *Ty = S.Context.getRecordType(
+        S.ClassUndergoingNSDMIParsingStack[I]).getTypePtr();
+      if (Ty == DeducedTypePtr) {
+        S.Diag(FDecl->getLocation(), diag::err_field_incomplete) 
+            << DeducedType;
+        FDecl->setInvalidDecl();
+        FDecl->getParent()->setInvalidDecl();
+        return;
+      }
+    }
     FDecl->setType(DeducedType);
   }
 }

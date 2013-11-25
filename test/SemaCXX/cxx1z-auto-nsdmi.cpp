@@ -45,10 +45,18 @@ struct X {
   // FIXME: this crashes for now with infinite recursion - we need to check
   // to see if we are trying to capture the class being defined by copy
   // when creating a lambda, and if so, error out.
-  //auto c_not_ok = [x = *this]() ->decltype(auto) { return x; }; 
+  auto c_not_ok = [x = *this]() ->decltype(auto) { return x; }; //expected-error{{incomplete type}}
   auto r_ok = [&x = *this]() ->decltype(auto) { return x; };
   auto p_ok = [x = this]() ->decltype(auto) { return x; };
+  auto &rx = *this;
+  auto cx = *this; //expected-error{{incomplete type}} \
+                   //expected-error{{no viable conversion}}
+  auto *px = this;
+
 };
+
+X global_x;
+
 int test() {
   // FIXME: why does this cause an assertion failure if a wrong member is used
   //auto L = X{}.m;
@@ -97,6 +105,34 @@ int test() {
 int run = test();
 } // end ns
 
+namespace nested_lambda_this_capture {
+
+struct X {
+  int mi = 5;
+  auto GL = [=](auto i) {
+    return [=](auto j) {
+      return this->mi + i + j;
+    };
+  };
+  auto GL_bad = [=](auto i) {
+    return [x = *this](auto j) { //expected-error{{incomplete}}
+      return 0;
+    };
+  };
+  auto GL2 = [=](auto i) {
+    return [&x = *this](auto j) { //expected-error{{incomplete}}
+      return 0;
+    };
+  };
+};
+
+int test() {
+  X x;
+  x.GL(3)(6.26);
+  return 0;
+}
+int run = test();
+} // end ns nested_lambda_this_capture
 
 } //end ns capturing_this_in_generic_lambdas
 
@@ -117,7 +153,6 @@ namespace yns {
 char foo(int, yns::Y) { return 'a'; }
 template<class T>
 struct X {
-  //auto L = [this](auto a) { return 0; };
   const static auto s = 3;
   auto a = s + foo(3.14, T{});
 };
@@ -137,7 +172,7 @@ struct Y { };
 char foo(int, Y) { return 'a'; }
 template<class T>
 struct X {
-  //auto L = [this](auto a) { return 0; };
+  auto L = [this](auto a) { return 0; };
   const static auto s = 3;
   auto a = s + foo(3.14, T{});
   auto mem_foo() {
