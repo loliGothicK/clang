@@ -8260,6 +8260,8 @@ void ASTContext::popClassUndergoingNSDMIParsing() {
 }
 
 bool ASTContext::isClassUndergoingNSDMIParsing(CXXRecordDecl *D) {
+  if (!D)
+    return ClassesUndergoingNSDMIParsingStack.size() != 0;
   return false;
 }
 bool ASTContext::isClassTypeUndergoingNSDMIParsing(const Type *ClassTy) {

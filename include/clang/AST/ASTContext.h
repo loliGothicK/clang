@@ -172,12 +172,13 @@ class ASTContext : public RefCountedBase<ASTContext> {
   
   /// \brief A stack of classes undergoing NSDMI parsing, to detect circularity
   typedef llvm::SmallVector<CXXRecordDecl *, 8> ClassUndergoingNSDMIParsingStackTy;
-  mutable ClassUndergoingNSDMIParsingStackTy ClassesUndergoingNSDMIParsingStack;
 public:
+  mutable ClassUndergoingNSDMIParsingStackTy ClassesUndergoingNSDMIParsingStack;
   void pushClassUndergoingNSDMIParsing(CXXRecordDecl *D); 
   void popClassUndergoingNSDMIParsing();
   bool isClassUndergoingNSDMIParsing(CXXRecordDecl *D);
   bool isClassTypeUndergoingNSDMIParsing(const Type *ClassTy);
+  //bool isAnyClassUndergoingNSDMIParsing();
 private:
 
   /// \brief Representation of a "canonical" template template parameter that

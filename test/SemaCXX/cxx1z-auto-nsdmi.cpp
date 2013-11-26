@@ -207,7 +207,7 @@ int run = test();
 
 namespace nested_structs_with_auto_nsdmi {
 struct X1 {
-
+  auto az1 = alignof(X1);
   struct X2 {
     auto sz1 = sizeof(X1);
     auto sz2 = sizeof(X2);
@@ -221,10 +221,25 @@ struct X1 {
 }
 
 namespace inconsistent_types {
-  struct A { };
+  struct A { }; //expected-note 3{{candidate constructor}}
   struct B { };
   struct X {
     auto a = A{};
-    X() : a(B{}) { }
+    X() : a(B{}) { } //expected-error{{no matching constructor}}
   };
 } // end ns
+
+namespace sizeof_and_alignof_and_create_object_within_lambda {
+  struct A {
+    auto L = []() {
+      return sizeof(*this); 
+    };
+    auto L2 = []() {
+      int sz = sizeof(*this);
+      int az = alignof(*this);
+    };
+    auto az = sizeof(az);
+    auto az2 = alignof(decltype(az2));
+  };
+
+}
