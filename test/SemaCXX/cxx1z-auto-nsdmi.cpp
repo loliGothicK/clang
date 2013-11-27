@@ -130,7 +130,44 @@ struct X {
 static_assert(sizeof(X) == sizeof(double) * 3, "sizeof class should be 3 times a double");
 
 }
+namespace no_sfinae {
+namespace ns1 {
+template<class T> struct A {
+  int i = T{}; //expected-error {{no matching constructor}}
+  A(T t) : i(t) { }
+};
+struct X { //expected-note 2{{candidate}}
+  X(int) { } //expected-note {{candidate}}
+  operator int() const { return 0; }
+};
 
+A<X> ax{X{3}}; //expected-note {{instantiation}}
+} // end ns
+
+namespace ns2 {
+template<class T> struct A {
+  auto i = T{}; //expected-error {{no matching constructor}}
+  A(T t) : i(t) { }
+};
+struct X { //expected-note 2{{candidate}}
+  X(int) { } //expected-note {{candidate}}
+  operator int() const { return 0; }
+};
+
+A<X> ax{X{3}}; //expected-note {{instantiation}}
+} // end ns
+
+} //end ns no_sfinae
+namespace deduced_return_type_members {
+namespace ns1 {
+  struct X {
+    auto f() { return 1; } //expected-note {{declared here}}
+    int x = f(); //expected-error {{cannot be used before}}
+  };
+}
+
+
+}
 namespace recursive_size_calc {
 struct X { //expected-note 2{{not complete until the closing}}
   // FIXME: this crashes for now with infinite recursion - we need to check
@@ -493,8 +530,29 @@ struct Y {
 MyType<Y> mt;
 
 static_assert(sizeof(mt.data) == sizeof(int), " should be deduced to int");
-
-
 } // end ns5
+
+} //end ns template_tests_1
+
+namespace more_tests_537 {
+  struct X { //expected-note{{implicit default constructor}}
+    auto a1 = sizeof(this);
+    auto& self = *this;
+    auto a2 = this->mem; //expected-warning {{uninitialized}}
+    auto *a3 = this;
+    auto a4 = a3;
+    auto a5 = mem_fun(); // double
+    auto a6 = const_cast<const X*>(this)->mem_fun(); // char   
+    auto L = [this, &r = *this,  p = this] (auto a) { 
+          return r(a, this->self, p->a2); 
+    };
+    auto a7 = ([=](auto a) { return a->a1 + a1; })(this);
+    auto L2 = [=](auto a) { return self(a, *this, 3); };
+    int mem = 5;
+    double mem_fun() { return 3.14; }
+    char mem_fun() const { return 'a'; }
+    template<class T> bool operator()(T t, X&, int) { return true; }
+  };
+X x; 
 
 }
