@@ -2,7 +2,7 @@
 // expected-no-diagnostics
 namespace ansdmi1 {
 struct X {
-  auto sz = sizeof(X);
+  auto sz = sizeof(this);
   auto L = [](auto a) { return a; };
   auto L2 = [this](auto a) { return a + this->sz + f(); };
   int f() const { return 0; }
