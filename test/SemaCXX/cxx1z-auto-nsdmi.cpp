@@ -369,6 +369,46 @@ struct MyType : T {
   int func() { return 0; }
 };
 
+
 } // end ns3
+
+namespace ns4 {
+template< class T >
+struct MyType : T {
+  auto data = func();
+  const int erm = sizeof(data); 
+  int func() { return 0; }
+};
+
+struct Y {
+  double func() { return 0.0; }
+};
+
+MyType<Y> mt;
+
+static_assert(sizeof(mt.data) == sizeof(int), " should be deduced to int");
+
+
+} // end ns4
+
+
+namespace ns5 {
+template< class T >
+struct MyType : T {
+  auto data = func();
+  const int erm = sizeof(data); 
+  typedef int func;
+};
+
+struct Y {
+  double func() { return 0.0; }
+};
+
+MyType<Y> mt;
+
+static_assert(sizeof(mt.data) == sizeof(int), " should be deduced to int");
+
+
+} // end ns5
 
 }
