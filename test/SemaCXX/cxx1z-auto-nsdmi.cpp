@@ -46,7 +46,7 @@ static_assert(sizeof(X) == sizeof(double) * 3, "sizeof class should be 3 times a
 }
 
 namespace recursive_size_calc {
-struct X { 
+struct X { //expected-note 2{{not complete until the closing}}
   // FIXME: this crashes for now with infinite recursion - we need to check
   // to see if we are trying to capture the class being defined by copy
   // when creating a lambda, and if so, error out.
@@ -111,7 +111,7 @@ int run = test();
 
 namespace nested_lambda_this_capture {
 
-struct X {
+struct X { //expected-note {{not complete until the closing}}
   int mi = 5;
   auto GL = [=](auto i) {
     return [=](auto j) {
@@ -213,9 +213,9 @@ int run = test();
 namespace nested_structs_with_auto_nsdmi {
 struct X1 { //expected-note 3{{not complete until the closing '}'}}
   auto az1 = alignof(X1); //expected-error{{incomplete type}}
-  struct X2 {
+  struct X2 { //expected-note {{not complete until the closing}}
     auto sz1 = sizeof(X1); //expected-error{{incomplete type}}
-    auto sz2 = sizeof(X2); 
+    auto sz2 = sizeof(X2); //expected-error{{incomplete type}}
     auto x1 = X1{}; //expected-error{{incomplete}}
     auto *x2 = this;
     //FIXME: this is an error currently.
@@ -255,7 +255,20 @@ struct X1 { //expected-note{{is not complete}}
     X1 x1{5}; //expected-error{{incomplete type}}
     return 4;
   };
+  
+  struct X2 { //expected-note {{is not complete}}
+    auto sz = sizeof(X2); //expected-error{{incomplete type}} 
+  };
 };
+
+struct X2 { //expected-note 3{{is not complete}}
+  auto az = []() {
+    int i = alignof(decltype(*this));   //expected-error{{incomplete type}} 
+    constexpr auto sz = alignof(decltype(*this)); //expected-error{{incomplete type}} 
+  };
+  static const int AZ = sizeof(X2); //expected-error{{incomplete type}} 
+};
+
 
 }
 
@@ -267,16 +280,12 @@ struct X1 {
    X1 x1(3);
    return 1;
  })();
- 
- struct X2 {
-   auto sz = sizeof(X2); 
+ X1 &x12 = *this;
+ auto &x13 = *this;
+ auto L12 = [=](int a) {
+   return [&x = *this]() { };
  };
- X2 x2;
- //X1 &x1 = *this;
- //auto &x1 = *this;
- //auto L = [=](auto a) {
- //  return [&x = *this]() { };
- //};
+ auto InnerL12 = L12(4);
  int i = 10;
  auto a = this->i;
  int f() { return 0; }
@@ -285,7 +294,11 @@ struct X1 {
  const auto c = const_cast<const X1*>(this)->f();
  auto ptr = this;
  auto &self = *this;
+ struct X2 {
+  auto *self = this;
+  
  
+ };
  auto L = [&r = *this, p = this, this]() {
    return this->f();
  };
@@ -293,29 +306,64 @@ struct X1 {
  auto L2 = ([&r = *this, p = this, this]() {
    return const_cast<const X1*>(this)->f();
  })();
- 
- /*
- auto L = []() { 
-   int sz = sizeof(X1);
-   //sz = alignof(X1);
-   return sz;
- };
- //*/
- /*
- auto f() const {
+ auto fc() const {
    constexpr unsigned sz = sizeof(*this);
  }
- //*/
- /*
- auto az = []() {
-  //int i = alignof(decltype(*this)); 
-  constexpr auto sz = alignof(decltype(*this));
- };
- //static const int AZ = sizeof(X1);
- //*/
- //auto az = sizeof(az);
- //auto az2 = alignof(decltype(az2));
+
+ 
 };
 
+} // end ns more_tests_fv
+
+namespace template_tests_1 {
+namespace ns1 {
+template<class T> 
+struct X1 {
+  auto t = T{4};
+  auto GL = [=](auto a, T t2) {
+    return t;
+  };
+};
+
+int test() {
+  X1<int> x1i;
+  x1i.GL(x1i, 4);
+  X1<double> xld;
+  xld.GL(xld, 3.14);
+  struct Y { Y(int) { } };
+  X1<Y> x1y;
+  x1y.GL(x1y, Y{2});
+} // end test
+} // end ns1
+
+namespace ns2 {
+template<class T> 
+struct X1 : T {
+  //using T::f;
+  static void f(int i) { }
+  auto GL = [=](auto a) {
+    f(a);
+  };
+};
+
+int test() {
+  struct Y { 
+    static void f(int i) { } 
+  };
+  X1<Y> x1y;
+  x1y.GL(3);
+  static_assert(sizeof(x1y.GL) == 1, "no capture of this for static function");
+} // end test
+} // end ns2
+
+namespace ns3 {
+template< class T >
+struct MyType : T {
+  auto data = func();
+  static const int erm = sizeof(data);
+  int func() { return 0; }
+};
+
+} // end ns3
 
 }
