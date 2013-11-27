@@ -579,11 +579,11 @@ void Parser::ParseLexedAutoMemberInitializers(ParsingClass &Class) {
     else
       Record = cast<CXXRecordDecl>(Class.TagOrTemplate);
 
-    Actions.pushClassUndergoingNSDMIParsing(Record);
+    //Actions.pushClassUndergoingNSDMIParsing(Record);
     for (size_t i = 0; i < Class.LateParsedDeclarations.size(); ++i) {
       Class.LateParsedDeclarations[i]->ParseLexedAutoMemberInitializers();
     }
-    Actions.popClassUndergoingNSDMIParsing();
+    //Actions.popClassUndergoingNSDMIParsing();
   }
 
   //if (!AlreadyHasClassScope)
@@ -633,6 +633,18 @@ void Parser::ParseLexedMemberInitializer(LateParsedMemberInitializer &MI) {
 void
 Parser::ParseLexedAutoMemberInitializer(LateParsedAutoMemberInitializer &MI) {
   if (!MI.Field || MI.Field->isInvalidDecl())
+    return;
+  // For nested classes, auto member's must be parsed at their closing brace.
+  // Typically - all delayed parsing of a nested class is delayed until the
+  //   outermost class's closing brace - but we can not wait for a nested 
+  //   class with an auto member, since we must determine its layout at
+  //   closing brace.  
+  // Since this routine can get called again when the outermost class is being
+  // completed, we need to maintain idempotency by checking if the InitExpression
+  // has already been parsed - and if so, do not reparse it.
+  //  Note: the ActOnInitializerExpression is only called once, and that is 
+  //  at the completion of the outer most class.
+  if (MI.InitExpr) 
     return;
 
   // Append the current token at the end of the new token stream so that it

@@ -2692,8 +2692,8 @@ void Parser::ParseCXXMemberSpecification(SourceLocation RecordLoc,
   MaybeParseGNUAttributes(attrs);
 
   if (TagDecl) {
-    if (NonNestedClass)
-      ParseLexedAutoMemberInitializers(getCurrentClass());
+    //if (NonNestedClass)
+    ParseLexedAutoMemberInitializers(getCurrentClass());
 
     Actions.ActOnFinishCXXMemberSpecification(getCurScope(), RecordLoc, TagDecl,
                                               T.getOpenLocation(), 
