@@ -2331,86 +2331,6 @@ namespace {
   }
 } // namespace
 
-static inline void DeduceAutoPlaceHolderType(Expr *Init, FieldDecl *FDecl, Sema &S) {
-  ParenListExpr *CXXDirectInit = dyn_cast<ParenListExpr>(Init);
-
-  // C++11 [decl.spec.auto]p6. Deduce the type which 'auto' stands in for.
-  if (FDecl->getType()->isUndeducedType()) {
-    Expr *DeduceInit = Init;
-    // Initializer could be a C++ direct-initializer. Deduction only works if it
-    // contains exactly one expression.
-    if (CXXDirectInit) {
-      if (CXXDirectInit->getNumExprs() == 0) {
-        // It isn't possible to write this directly, but it is possible to
-        // end up in this situation with "auto x(some_pack...);"
-        S.Diag(CXXDirectInit->getLocStart(),
-          diag::err_auto_var_init_no_expression)
-          << FDecl->getDeclName() << FDecl->getType()
-          << FDecl->getSourceRange();
-        FDecl->setInvalidDecl();
-        return;
-      } else if (CXXDirectInit->getNumExprs() > 1) {
-        S.Diag(CXXDirectInit->getExpr(1)->getLocStart(),
-          diag::err_auto_var_init_multiple_expressions)
-          << FDecl->getDeclName() << FDecl->getType()
-          << FDecl->getSourceRange();
-        FDecl->setInvalidDecl();
-        return;
-      } else {
-        DeduceInit = CXXDirectInit->getExpr(0);
-      }
-    }
-
-    // Expressions default to 'id' when we're in a debugger.
-    bool DefaultedToAuto = false;
-    if (S.getLangOpts().DebuggerCastResultToId &&
-      Init->getType() == S.Context.UnknownAnyTy) {
-        ExprResult Result = S.forceUnknownAnyToType(Init, S.Context.getObjCIdType());
-        if (Result.isInvalid()) {
-          FDecl->setInvalidDecl();
-          return;
-        }
-        Init = Result.take();
-        DefaultedToAuto = true;
-    }
-
-    QualType DeducedType;
-    if (S.DeduceAutoType(FDecl->getTypeSourceInfo(), DeduceInit, DeducedType) ==
-      Sema::DAR_Failed) {
-        if (isa<InitListExpr>(Init))
-          S.Diag(FDecl->getLocation(),
-          diag::err_auto_var_deduction_failure_from_init_list)
-          << FDecl->getDeclName() << FDecl->getType() << Init->getSourceRange();
-        else
-          S.Diag(FDecl->getLocation(),
-          diag::err_auto_var_deduction_failure)
-          << FDecl->getDeclName() << FDecl->getType() << Init->getType()
-          << Init->getSourceRange();
-    }
-    if (DeducedType.isNull()) {
-      FDecl->setInvalidDecl();
-      return;
-    }
-    if (S.RequireCompleteType(FDecl->getLocation(), DeducedType, 
-        diag::err_field_incomplete)) {
-      // Fields of incomplete type force their record to be invalid.
-      FDecl->setInvalidDecl();
-      return;
-    }
-    // Check if the DeducedType is the same as a class whose AutoNSDMI's
-    // are being deduced - this is to prevent recursion.
-    const Type *DeducedTypePtr =
-        DeducedType->getCanonicalTypeUnqualified().getTypePtr();
-    if (S.Context.isClassTypeUndergoingNSDMIParsing(DeducedTypePtr)) {
-      S.Diag(FDecl->getLocation(), diag::err_field_incomplete) 
-        << DeducedType;
-      FDecl->setInvalidDecl();
-      FDecl->getParent()->setInvalidDecl();
-    }
-    FDecl->setType(DeducedType);
-  }
-}
-
 
 void Sema::pushClassUndergoingNSDMIParsing(CXXRecordDecl *D) {
   Context.pushClassUndergoingNSDMIParsing(D);
@@ -2441,8 +2361,7 @@ Sema::ActOnCXXInClassMemberInitializer(Decl *D, SourceLocation InitLoc,
     FD->removeInClassInitializer();
     return;
   }
-  DeduceAutoPlaceHolderType(InitExpr, FD, *this);
-  if (FD->isInvalidDecl()) return;
+
   ExprResult Init = InitExpr;
   if (!FD->getType()->isDependentType() && !InitExpr->isTypeDependent()) {
     InitializedEntity Entity = InitializedEntity::InitializeMember(FD);

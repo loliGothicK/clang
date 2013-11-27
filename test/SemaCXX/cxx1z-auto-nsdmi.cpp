@@ -5,18 +5,23 @@ namespace ansdmi1 {
 struct Y {
   auto a; //expected-error{{requires an initializer}}
 };
+struct BadSizeof { //expected-note{{not complete until the closing '}'}}
+  auto sz = sizeof(BadSizeof); //expected-error{{incomplete type}}
+};
+struct BadSizeof2 { //expected-note{{not complete until the closing '}'}}
+  const auto sz = sizeof(*this); //expected-error{{incomplete type}}
+};
+
 struct X {
-  auto sz = sizeof(X);
-  const auto sz_const = sizeof(*this);
+  auto sz = sizeof(this);
   auto L = [](auto a) { return a; };
   auto L2 = [this](auto a) { return a + this->sz + f(); };
   int f() const { return 0; }
   // FIXME: this error should say something along the lines of 'sz' not being deduced yet
-  auto f2() const -> decltype(this->sz) { return sizeof(sz); } //expected-error{{cannot initialize return object}}
+  auto f2() const -> decltype(this->sz) { return sz; } //expected-error{{cannot initialize return}}
 };
 
 auto x1 = X{};
-auto x11 = X{}.sz_const;
 auto x12 = X{}.L;
 auto x123 = x12(5);
 
@@ -31,7 +36,7 @@ auto x123 = x12(5);
 namespace size_calc {
 
 struct X {
-  auto sz1 = sizeof(X);
+  auto sz1 = sizeof(this);
   auto d = 3.5;
   auto sz2 = d + sz1;
 }; 
@@ -206,11 +211,11 @@ int run = test();
 }
 
 namespace nested_structs_with_auto_nsdmi {
-struct X1 {
-  auto az1 = alignof(X1);
+struct X1 { //expected-note 3{{not complete until the closing '}'}}
+  auto az1 = alignof(X1); //expected-error{{incomplete type}}
   struct X2 {
-    auto sz1 = sizeof(X1);
-    auto sz2 = sizeof(X2);
+    auto sz1 = sizeof(X1); //expected-error{{incomplete type}}
+    auto sz2 = sizeof(X2); 
     auto x1 = X1{}; //expected-error{{incomplete}}
     auto *x2 = this;
     //FIXME: this is an error currently.
@@ -230,16 +235,87 @@ namespace inconsistent_types {
 } // end ns
 
 namespace sizeof_and_alignof_and_create_object_within_lambda {
-  struct A {
+  struct A { //expected-note 3{{not complete until the closing '}'}}
     auto L = []() {
-      return sizeof(*this); 
+      return sizeof(*this);//expected-error{{incomplete type}} 
     };
     auto L2 = []() {
-      int sz = sizeof(*this);
-      int az = alignof(*this);
+      int sz = sizeof(*this); //expected-error{{incomplete type}}
+      int az = alignof(decltype(*this)); //expected-error{{incomplete type}}
     };
     auto az = sizeof(az);
     auto az2 = alignof(decltype(az2));
   };
+}
+
+namespace bad_tests_fv2 {
+struct X1 { //expected-note{{is not complete}}
+  X1(int) { }
+  auto LI = []() {
+    X1 x1{5}; //expected-error{{incomplete type}}
+    return 4;
+  };
+};
+
+}
+
+namespace more_tests_fv2 {
+
+struct X1 { 
+ X1(int i) { }
+ int I = ([]() {
+   X1 x1(3);
+   return 1;
+ })();
+ 
+ struct X2 {
+   auto sz = sizeof(X2); 
+ };
+ X2 x2;
+ //X1 &x1 = *this;
+ //auto &x1 = *this;
+ //auto L = [=](auto a) {
+ //  return [&x = *this]() { };
+ //};
+ int i = 10;
+ auto a = this->i;
+ int f() { return 0; }
+ char f() const { return 0; }
+ auto b = f();
+ const auto c = const_cast<const X1*>(this)->f();
+ auto ptr = this;
+ auto &self = *this;
+ 
+ auto L = [&r = *this, p = this, this]() {
+   return this->f();
+ };
+ 
+ auto L2 = ([&r = *this, p = this, this]() {
+   return const_cast<const X1*>(this)->f();
+ })();
+ 
+ /*
+ auto L = []() { 
+   int sz = sizeof(X1);
+   //sz = alignof(X1);
+   return sz;
+ };
+ //*/
+ /*
+ auto f() const {
+   constexpr unsigned sz = sizeof(*this);
+ }
+ //*/
+ /*
+ auto az = []() {
+  //int i = alignof(decltype(*this)); 
+  constexpr auto sz = alignof(decltype(*this));
+ };
+ //static const int AZ = sizeof(X1);
+ //*/
+ //auto az = sizeof(az);
+ //auto az2 = alignof(decltype(az2));
+};
+
 
 }

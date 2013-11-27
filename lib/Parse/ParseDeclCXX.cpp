@@ -2691,11 +2691,15 @@ void Parser::ParseCXXMemberSpecification(SourceLocation RecordLoc,
   ParsedAttributes attrs(AttrFactory);
   MaybeParseGNUAttributes(attrs);
 
-  if (TagDecl)
+  if (TagDecl) {
+    if (NonNestedClass)
+      ParseLexedAutoMemberInitializers(getCurrentClass());
+
     Actions.ActOnFinishCXXMemberSpecification(getCurScope(), RecordLoc, TagDecl,
                                               T.getOpenLocation(), 
                                               T.getCloseLocation(),
                                               attrs.getList());
+  }
 
   // C++11 [class.mem]p2:
   //   Within the class member-specification, the class is regarded as complete

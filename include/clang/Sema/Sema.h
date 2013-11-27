@@ -5913,6 +5913,7 @@ public:
                                   QualType &Result);
   DeduceAutoResult DeduceAutoType(TypeLoc AutoTypeLoc, Expr *&Initializer,
                                   QualType &Result);
+  void DeduceAutoMemberTypeFromInitExpr(Expr *Init, FieldDecl *FDecl);
   void DiagnoseAutoDeductionFailure(VarDecl *VDecl, Expr *Init);
   bool DeduceReturnType(FunctionDecl *FD, SourceLocation Loc,
                         bool Diagnose = true);

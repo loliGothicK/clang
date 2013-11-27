@@ -2130,6 +2130,9 @@ Sema::InstantiateClass(SourceLocation PointOfInstantiation,
         Expr *Init = NewInit.take();
         assert(Init && "no-argument initializer in class");
         assert(!isa<ParenListExpr>(Init) && "call-style init in class");
+        // If we are an auto member, deduce the type from the initializer.
+        if (NewField->getType()->getContainedAutoType()) 
+          DeduceAutoMemberTypeFromInitExpr(Init, NewField);
         ActOnCXXInClassMemberInitializer(NewField, Init->getLocStart(), Init);
       }
     }
