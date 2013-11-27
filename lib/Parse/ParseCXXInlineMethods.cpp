@@ -200,10 +200,12 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
 void Parser::ParseCXXNonStaticMemberInitializer(Decl *VarD) {
   assert((Tok.is(tok::l_brace) || Tok.is(tok::equal)) &&
          "Current token not a '{' or '='!");
-  assert(isa<ValueDecl>(VarD) && "Should at least have a type for query");
-  ValueDecl *const ValD = cast<ValueDecl>(VarD);
+  // This assert has to be disabled, since VarD can be null - for
+  // instance when parsing variable member templates.
+  //assert(isa<ValueDecl>(VarD) && "Should at least have a type for query");
+  ValueDecl *const ValD = dyn_cast_or_null<ValueDecl>(VarD);
   LateParsedMemberInitializer *MI = 0;
-  if (ValD->getType()->getContainedAutoType())
+  if (ValD && ValD->getType()->getContainedAutoType())
     MI = new LateParsedAutoMemberInitializer(this, VarD);
   else
     MI = new LateParsedMemberInitializer(this, VarD);
