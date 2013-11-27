@@ -243,10 +243,14 @@ namespace sizeof_and_alignof_and_create_object_within_lambda {
       int sz = sizeof(*this); //expected-error{{incomplete type}}
       int az = alignof(decltype(*this)); //expected-error{{incomplete type}}
     };
-    auto az = sizeof(az);
-    auto az2 = alignof(decltype(az2));
+    // FIXME: this error message should say sizeof of an undeduced type
+    auto az = sizeof(az);  //expected-error{{incomplete type}}
   };
-}
+  struct X {
+    // FIXME: this error message should say undeduced type
+    auto az2 = alignof(decltype(az2)); //expected-error{{incomplete type}}
+  }; 
+} //end ns
 
 namespace bad_tests_fv2 {
 struct X1 { //expected-note{{is not complete}}
@@ -360,7 +364,8 @@ namespace ns3 {
 template< class T >
 struct MyType : T {
   auto data = func();
-  static const int erm = sizeof(data);
+  // FIXME: this error message should say sizeof of an undeduced type
+  static const int erm = sizeof(data); //expected-error{{incomplete type}}
   int func() { return 0; }
 };
 
