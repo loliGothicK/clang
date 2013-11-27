@@ -11,11 +11,21 @@ struct BadSizeof { //expected-note{{not complete until the closing '}'}}
 struct BadSizeof2 { //expected-note{{not complete until the closing '}'}}
   const auto sz = sizeof(*this); //expected-error{{incomplete type}}
 };
+struct BadAlignOf { //expected-note{{not complete until the closing '}'}}
+  auto a = sizeof(*this); //expected-error{{incomplete type}}
+}; 
 
+struct NoObjectAllowed { //expected-note 2{{not complete until the closing '}'}}
+  NoObjectAllowed(int) { }
+  auto L = [](auto a) {
+    NoObjectAllowed o{2};  //expected-error{{incomplete type}}
+    return NoObjectAllowed{4}; //expected-error{{incomplete type}}
+  };
+};
 struct X {
   auto sz = sizeof(this);
   auto L = [](auto a) { return a; };
-  auto L2 = [this](auto a) { return a + this->sz + f(); };
+  auto L2 = [this, s = this->sz, &l = this->L](auto a) { return a + this->sz + f() + l(a); };
   int f() const { return 0; }
   // FIXME: this error should say something along the lines of 'sz' not being deduced yet
   auto f2() const -> decltype(this->sz) { return sz; } //expected-error{{cannot initialize return}}
@@ -23,16 +33,92 @@ struct X {
 
 auto x1 = X{};
 auto x12 = X{}.L;
+auto x13 = X{}.L2(3.14);
 auto x123 = x12(5);
 
-//auto x2 = X{}.L(5);
-//auto x3 = X{}.L2(5);
-//auto x4 = X{}.L2;
-//auto x5 = x4(7);
+namespace multiple_inits {
+namespace ns1 {
+
+struct X { } X_obj;
+struct Y { } Y_obj;
+template<class T>
+struct A {
+  auto &&x = T{}; //expected-warning {{reference member 'x' to a temporary value}}\
+                  //expected-note {{declared here}}
+  template<class T2> A(T2 t2) : x{t2} { }
+  A(T* pt) : x{static_cast<T&&>(*pt)} { }
+};
+A<Y> a1{&Y_obj}; //expected-note{{instantiation}}
+} // end ns1
+namespace ns2 {
+struct X { } X_obj;
+struct Y { } Y_obj;
+template<class T>
+struct A {
+  auto &&x = T{}; //expected-warning {{reference member 'x' to a temporary value}}\
+                  //expected-note {{declared here}}
+  template<class T2> A(T2 t2) : 
+    x{t2} { } //expected-error{{cannot bind}}
+  A(T* pt) : x{static_cast<T&&>(*pt)} { }
+};
+A<Y> a1{Y_obj}; //expected-note 2{{instantiation}}
+} // end ns
+
+namespace ns3 {
+struct X { } X_obj;
+struct Y { } Y_obj; //expected-note 2{{candidate constructor}}
+template<class T>
+struct A {
+  auto &&x = T{}; //expected-warning {{reference member 'x' to a temporary value}}\
+                  //expected-note {{declared here}}
+  template<class T2> A(T2 t2) : x{T2{}} { } //expected-error{{no viable conversion}}
+  A(T* pt) : x{static_cast<T&&>(*pt)} { }
+};
+A<Y> a1{X_obj}; //expected-note 2{{instantiation}}
+} // end ns
 
 
-}
+namespace ns4 {
+struct X { } X_obj;
+struct Y { } Y_obj;
+template<class T>
+struct A {
+  auto &&x = T{}; //expected-warning {{reference member 'x' to a temporary value}}\
+                  //expected-note 2{{declared here}}
+  template<class T2> A(T2 t2) : x{T2{}} { } //expected-warning {{reference member 'x' to a temporary value}}
+  A(T* pt) : x{static_cast<T&&>(*pt)} { }
+};
+A<Y> a1{Y_obj}; //expected-note 2{{instantiation}}
+} // end ns
 
+} // end multiple_inits
+
+namespace static_and_decltypes {
+namespace ns1 {
+  template<class T> struct A {
+    int i;
+    template<class U> static const U u = sizeof(i);
+  };
+} //end ns
+
+namespace ns2 {
+  template<class T> 
+  struct A0 {
+    auto a = sizeof(A0*);
+  };
+  A0<int> a0;
+  template<class T> 
+  struct A {
+    auto a = sizeof(A*);
+    template<class U> static const U u = sizeof(a); //expected-error{{incomplete type}}
+  };
+  
+} //end ns
+
+
+
+} //end static_and_decltypes
+} //end ansdmi
 namespace size_calc {
 
 struct X {
