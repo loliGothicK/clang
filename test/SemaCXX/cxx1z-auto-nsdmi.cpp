@@ -12,7 +12,7 @@ struct BadSizeof2 { //expected-note{{not complete until the closing '}'}}
   const auto sz = sizeof(*this); //expected-error{{incomplete type}}
 };
 struct BadAlignOf { //expected-note{{not complete until the closing '}'}}
-  auto a = sizeof(*this); //expected-error{{incomplete type}}
+  auto a = alignof(decltype(*this)); //expected-error{{incomplete type}}
 }; 
 
 struct NoObjectAllowed { //expected-note 2{{not complete until the closing '}'}}
