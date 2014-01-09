@@ -556,3 +556,33 @@ namespace more_tests_537 {
 X x; 
 
 }
+
+namespace rs_tests_560 {
+template<int*> struct something { typedef int type; };
+
+template<typename T> auto stuff() {
+  static T t;  //expected-error{{incomplete type}}
+  constexpr int *p = &t.z; // may need layout here
+  return typename something<p>::type();
+}
+
+struct A { //expected-note{{not complete}}
+  int x;
+  auto y = stuff<A>(); //expected-note{{instantiation}}
+  int z;
+};
+namespace offsetof_test {
+
+#define offsetof(t,  d) __builtin_offsetof(t, d) 
+
+template<int> struct something { typedef int type; };
+
+struct A { //expected-note{{not complete}}
+  int x;
+  auto y = something<offsetof(A, z)>::type{}; //expected-error{{incomplete type}}\
+        //expected-error{{expected ';'}}
+  int z;
+};
+
+}
+}
