@@ -24,3 +24,6 @@ on the Clang development mailing list:
 
 If you find a bug in Clang, please file it in the LLVM bug tracker:
   http://llvm.org/bugs/
+  
+Use LLVM r212377 with the using-auto branch.
+
