@@ -2818,6 +2818,30 @@ public:
   friend class ASTDeclWriter;
 };
 
+/// AutoAliasDecl - Represents the declaration of a using auto
+class AutoAliasDecl : public Decl {
+  TypeSourceInfo *TypeToUseInsteadOfAuto;
+
+  AutoAliasDecl(DeclContext *DC, SourceLocation StartLoc,
+                SourceLocation AutoLoc, TypeSourceInfo *TInfo)
+      : Decl(AutoAlias, DC, StartLoc), TypeToUseInsteadOfAuto(TInfo) {}
+
+public:
+  static AutoAliasDecl *Create(ASTContext &C, DeclContext *DC,
+                               SourceLocation StartLoc, SourceLocation AutoLoc,
+                               TypeSourceInfo *TInfo);
+  static AutoAliasDecl *CreateDeserialized(ASTContext &C, unsigned ID);
+
+  SourceRange getSourceRange() const override LLVM_READONLY;
+  const TypeSourceInfo *getTypeToUseInsteadOfAuto() const {
+    return TypeToUseInsteadOfAuto;
+  }
+
+  // Implement isa/cast/dyncast/etc.
+  static bool classof(const Decl *D) { return classofKind(D->getKind()); }
+  static bool classofKind(Kind K) { return K == AutoAlias; }
+};
+
 /// \brief Represents a C++ using-declaration.
 ///
 /// For example:

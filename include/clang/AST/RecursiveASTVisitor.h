@@ -1579,6 +1579,10 @@ DEF_TRAVERSE_DECL(TypeAliasDecl, {
   // source.
 })
 
+DEF_TRAVERSE_DECL(AutoAliasDecl, {
+  TRY_TO(TraverseTypeLoc(D->getTypeToUseInsteadOfAuto()->getTypeLoc()));
+})
+
 DEF_TRAVERSE_DECL(TypeAliasTemplateDecl, {
   TRY_TO(TraverseDecl(D->getTemplatedDecl()));
   TRY_TO(TraverseTemplateParameterListHelper(D->getTemplateParameters()));

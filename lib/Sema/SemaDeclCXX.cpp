@@ -8025,7 +8025,7 @@ Decl *Sema::ActOnAliasDeclaration(Scope *S,
                                   SourceLocation UsingLoc,
                                   UnqualifiedId &Name,
                                   AttributeList *AttrList,
-                                  TypeResult Type) {
+                                  TypeResult Type, bool IsAutoAliasMember) {
   // Skip up to the relevant declaration scope.
   while (S->getFlags() & Scope::TemplateParamScope)
     S = S->getParent();
@@ -8036,9 +8036,11 @@ Decl *Sema::ActOnAliasDeclaration(Scope *S,
     return nullptr;
 
   bool Invalid = false;
-  DeclarationNameInfo NameInfo = GetNameFromUnqualifiedId(Name);
   TypeSourceInfo *TInfo = nullptr;
   GetTypeFromParser(Type.get(), &TInfo);
+
+  //if (!IsAutoAliasMember) {
+  DeclarationNameInfo NameInfo = GetNameFromUnqualifiedId(Name);
 
   if (DiagnoseClassNameShadow(CurContext, NameInfo))
     return nullptr;
@@ -8046,7 +8048,7 @@ Decl *Sema::ActOnAliasDeclaration(Scope *S,
   if (DiagnoseUnexpandedParameterPack(Name.StartLocation, TInfo,
                                       UPPC_DeclarationType)) {
     Invalid = true;
-    TInfo = Context.getTrivialTypeSourceInfo(Context.IntTy, 
+    TInfo = Context.getTrivialTypeSourceInfo(Context.IntTy,
                                              TInfo->getTypeLoc().getBeginLoc());
   }
 
@@ -8056,12 +8058,14 @@ Decl *Sema::ActOnAliasDeclaration(Scope *S,
   // Warn about shadowing the name of a template parameter.
   if (Previous.isSingleResult() &&
       Previous.getFoundDecl()->isTemplateParameter()) {
-    DiagnoseTemplateParameterShadow(Name.StartLocation,Previous.getFoundDecl());
+    DiagnoseTemplateParameterShadow(Name.StartLocation,
+                                    Previous.getFoundDecl());
     Previous.clear();
   }
 
-  assert(Name.Kind == UnqualifiedId::IK_Identifier &&
-         "name in alias declaration must be an identifier");
+  assert(IsAutoAliasMember || Name.Kind == UnqualifiedId::IK_Identifier &&
+         "name in alias declaration must be an identifier or auto");
+  
   TypeAliasDecl *NewTD = TypeAliasDecl::Create(Context, CurContext, UsingLoc,
                                                Name.StartLocation,
                                                Name.Identifier, TInfo);

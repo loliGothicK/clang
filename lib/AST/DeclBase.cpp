@@ -590,6 +590,7 @@ unsigned Decl::getIdentifierNamespaceForKind(Kind DeclKind) {
     case Import:
     case OMPThreadPrivate:
     case Empty:
+    case AutoAlias:
       // Never looked up by name.
       return 0;
   }

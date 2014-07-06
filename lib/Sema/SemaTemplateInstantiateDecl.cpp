@@ -326,6 +326,30 @@ Decl *TemplateDeclInstantiator::VisitTypeAliasDecl(TypeAliasDecl *D) {
   return Typedef;
 }
 
+Decl *TemplateDeclInstantiator::VisitAutoAliasDecl(AutoAliasDecl *D) {
+  Decl *NewAutoAlias = nullptr;
+  bool Invalid = false;
+  TypeSourceInfo *OldTSI =
+      const_cast<TypeSourceInfo *>(D->getTypeToUseInsteadOfAuto());
+  TypeSourceInfo *NewTSI = nullptr;
+  if (OldTSI->getType()->isInstantiationDependentType() ||
+      OldTSI->getType()->isVariablyModifiedType()) {
+    NewTSI = SemaRef.SubstType(OldTSI, TemplateArgs, D->getLocation(),
+                               DeclarationName());
+    if (!NewTSI) {
+      Invalid = true;
+      NewTSI = SemaRef.Context.getTrivialTypeSourceInfo(SemaRef.Context.IntTy);
+    }
+  } else {
+    SemaRef.MarkDeclarationsReferencedInType(D->getLocation(),
+                                             OldTSI->getType());
+  }
+  NewAutoAlias = nullptr; // FIXME: Create a new auto-alias
+  Owner->addDecl(NewAutoAlias);
+  return NewAutoAlias;
+}
+
+
 Decl *
 TemplateDeclInstantiator::VisitTypeAliasTemplateDecl(TypeAliasTemplateDecl *D) {
   // Create a local instantiation scope for this type alias template, which

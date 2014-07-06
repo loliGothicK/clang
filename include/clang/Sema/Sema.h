@@ -3842,7 +3842,7 @@ public:
                               SourceLocation UsingLoc,
                               UnqualifiedId &Name,
                               AttributeList *AttrList,
-                              TypeResult Type);
+                              TypeResult Type, bool IsAutoAliasMember = false);
 
   /// BuildCXXConstructExpr - Creates a complete call to a constructor,
   /// including handling of its default argument expressions.

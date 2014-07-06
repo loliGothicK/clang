@@ -508,7 +508,9 @@ Decl *Parser::ParseUsingDeclaration(unsigned Context,
 
   SourceLocation TemplateKWLoc;
   UnqualifiedId Name;
-
+  
+  // struct X { using auto = int; };
+  bool IsAutoAliasMemberDecl = false;
   // Parse the unqualified-id. We allow parsing of both constructor and
   // destructor names and allow the action module to diagnose any semantic
   // errors.
@@ -527,9 +529,25 @@ Decl *Parser::ParseUsingDeclaration(unsigned Context,
     SourceLocation IdLoc = ConsumeToken();
     ParsedType Type = Actions.getInheritingConstructorName(SS, IdLoc, *LastII);
     Name.setConstructorName(Type, IdLoc, IdLoc);
-  } else if (ParseUnqualifiedId(SS, /*EnteringContext=*/ false,
-                                /*AllowDestructorName=*/ true,
-                                /*AllowConstructorName=*/ true, ParsedType(),
+  } else if (getLangOpts().CPlusPlus1z &&
+             Context == Declarator::MemberContext && Tok.is(tok::kw_auto) &&
+             NextToken().is(tok::equal) && !TemplateInfo.TemplateParams) {
+    // struct X { using auto = int; };
+
+    SourceLocation AutoLoc = ConsumeToken();
+    IsAutoAliasMemberDecl = true;
+    //SourceLocation EqualLoc = ConsumeToken();
+#if 0
+    if (ParseUnqualifiedId(
+            SS, /*EnteringContext=*/false, /*AllowDestructorName=*/false,
+            /*AllowConstructorName=*/false, ParsedType(), TemplateKWLoc, Name)) {
+      SkipUntil(tok::semi);
+      return nullptr;
+    }
+#endif
+  } else if (ParseUnqualifiedId(SS, /*EnteringContext=*/false,
+                                /*AllowDestructorName=*/true,
+                                /*AllowConstructorName=*/true, ParsedType(),
                                 TemplateKWLoc, Name)) {
     SkipUntil(tok::semi);
     return nullptr;
@@ -581,21 +599,22 @@ Decl *Parser::ParseUsingDeclaration(unsigned Context,
       SkipUntil(tok::semi);
       return nullptr;
     }
-
-    // Name must be an identifier.
-    if (Name.getKind() != UnqualifiedId::IK_Identifier) {
-      Diag(Name.StartLocation, diag::err_alias_declaration_not_identifier);
-      // No removal fixit: can't recover from this.
-      SkipUntil(tok::semi);
-      return nullptr;
-    } else if (HasTypenameKeyword)
-      Diag(TypenameLoc, diag::err_alias_declaration_not_identifier)
-        << FixItHint::CreateRemoval(SourceRange(TypenameLoc,
-                             SS.isNotEmpty() ? SS.getEndLoc() : TypenameLoc));
-    else if (SS.isNotEmpty())
-      Diag(SS.getBeginLoc(), diag::err_alias_declaration_not_identifier)
-        << FixItHint::CreateRemoval(SS.getRange());
-
+    // If we are not a using auto decl, check to make sure we have using <id>
+    if (!IsAutoAliasMemberDecl) {
+      // Name must be an identifier.
+      if (Name.getKind() != UnqualifiedId::IK_Identifier) {
+        Diag(Name.StartLocation, diag::err_alias_declaration_not_identifier);
+        // No removal fixit: can't recover from this.
+        SkipUntil(tok::semi);
+        return nullptr;
+      } else if (HasTypenameKeyword)
+        Diag(TypenameLoc, diag::err_alias_declaration_not_identifier)
+            << FixItHint::CreateRemoval(SourceRange(
+                TypenameLoc, SS.isNotEmpty() ? SS.getEndLoc() : TypenameLoc));
+      else if (SS.isNotEmpty())
+        Diag(SS.getBeginLoc(), diag::err_alias_declaration_not_identifier)
+            << FixItHint::CreateRemoval(SS.getRange());
+    }
     TypeAlias = ParseTypeName(nullptr, TemplateInfo.Kind ?
                               Declarator::AliasTemplateContext :
                               Declarator::AliasDeclContext, AS, OwnedType,
@@ -648,7 +667,7 @@ Decl *Parser::ParseUsingDeclaration(unsigned Context,
       TemplateParams ? TemplateParams->size() : 0);
     return Actions.ActOnAliasDeclaration(getCurScope(), AS, TemplateParamsArg,
                                          UsingLoc, Name, Attrs.getList(),
-                                         TypeAlias);
+                                         TypeAlias, IsAutoAliasMemberDecl);
   }
 
   return Actions.ActOnUsingDeclaration(getCurScope(), AS,
