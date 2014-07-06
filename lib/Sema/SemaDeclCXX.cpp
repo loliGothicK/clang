@@ -8039,7 +8039,32 @@ Decl *Sema::ActOnAliasDeclaration(Scope *S,
   TypeSourceInfo *TInfo = nullptr;
   GetTypeFromParser(Type.get(), &TInfo);
 
-  //if (!IsAutoAliasMember) {
+  if (IsAutoAliasMember) {
+    assert(!TemplateParamLists.size() && "auto alias can not be a template");
+    assert(isa<CXXRecordDecl>(CurContext) && "auto alias must be a class member");
+    if (!TInfo) return nullptr;
+    AutoAliasDecl *PreviousAutoAlias = nullptr;
+    // FIXME: Should this be forbidden in a union?
+    // FIXME: Check to make sure there is not more than one!
+    CXXRecordDecl *ParentClass = cast<CXXRecordDecl>(CurContext);
+    for (auto *MemberDecl : ParentClass->decls())
+      if (isa<AutoAliasDecl>(MemberDecl)) {
+        PreviousAutoAlias = cast<AutoAliasDecl>(MemberDecl);
+        break;
+      }
+    if (PreviousAutoAlias) {
+      Diag(UsingLoc, diag::err_auto_alias_redeclaration)
+          << SourceRange(UsingLoc, TInfo->getTypeLoc().getEndLoc());
+      Diag(PreviousAutoAlias->getLocation(), diag::note_previous_auto_alias);
+      return nullptr;
+    }  
+    // FIXME: This should be the location of the auto
+    SourceLocation AutoLoc = UsingLoc;
+    auto *D =
+        AutoAliasDecl::Create(Context, CurContext, UsingLoc, AutoLoc, TInfo);
+    CurContext->addDecl(D);
+    return D;
+  }
   DeclarationNameInfo NameInfo = GetNameFromUnqualifiedId(Name);
 
   if (DiagnoseClassNameShadow(CurContext, NameInfo))

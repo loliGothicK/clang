@@ -344,7 +344,11 @@ Decl *TemplateDeclInstantiator::VisitAutoAliasDecl(AutoAliasDecl *D) {
     SemaRef.MarkDeclarationsReferencedInType(D->getLocation(),
                                              OldTSI->getType());
   }
-  NewAutoAlias = nullptr; // FIXME: Create a new auto-alias
+  // FIXME: AutoLocation needs to be properly threaded - also need an accessor
+  // in AutoAliasDecl
+  SourceLocation NewAutoLocation = D->getLocation();
+  NewAutoAlias = AutoAliasDecl::Create(SemaRef.Context, Owner, D->getLocation(),
+                                       NewAutoLocation, NewTSI);
   Owner->addDecl(NewAutoAlias);
   return NewAutoAlias;
 }

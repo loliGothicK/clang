@@ -2059,6 +2059,18 @@ SourceRange UsingDecl::getSourceRange() const {
   return SourceRange(Begin, getNameInfo().getEndLoc());
 }
 
+AutoAliasDecl *AutoAliasDecl::Create(ASTContext &C, DeclContext *DC,
+                                     SourceLocation StartLoc,
+                                     SourceLocation AutoLoc,
+                                     TypeSourceInfo *TInfo) {
+  return new (C, DC) AutoAliasDecl(DC, StartLoc, AutoLoc, TInfo);
+}
+
+SourceRange AutoAliasDecl::getSourceRange() const {
+  SourceLocation Begin = getLocation();
+  return SourceRange(Begin, TypeToUseInsteadOfAuto->getTypeLoc().getEndLoc());
+}
+
 void UnresolvedUsingValueDecl::anchor() { }
 
 UnresolvedUsingValueDecl *

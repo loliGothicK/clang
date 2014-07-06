@@ -318,6 +318,11 @@ def err_using_decl_conflict_reverse : Error<
   "declaration conflicts with target of using declaration already in scope">;
 def note_using_decl : Note<"%select{|previous }0using declaration">;
 
+//C++1z using auto alias
+def note_previous_auto_alias : Note<"previous auto alias">;
+def err_auto_alias_redeclaration : Error<"redeclaration of auto alias">;
+
+
 def warn_access_decl_deprecated : Warning<
   "access declarations are deprecated; use using declarations instead">,
   InGroup<Deprecated>;

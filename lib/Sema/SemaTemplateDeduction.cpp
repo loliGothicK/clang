@@ -3979,7 +3979,6 @@ Sema::DeduceAutoType(TypeLoc Type, Expr *&Init, QualType &Result) {
     assert(!Result.isNull() && "substituting DependentTy can't fail");
     return DAR_Succeeded;
   }
-
   // If this is a 'decltype(auto)' specifier, do the decltype dance.
   // Since 'decltype(auto)' can only occur at the top of the type, we
   // don't need to go digging for it.
@@ -3997,6 +3996,29 @@ Sema::DeduceAutoType(TypeLoc Type, Expr *&Init, QualType &Result) {
       if (Result.isNull())
         return DAR_FailedAlreadyDiagnosed;
       return DAR_Succeeded;
+    }
+  }
+
+  // If we have a class/struct check to see if we have an auto-alias,
+  // and if so use it.
+  if (Init->getType()->isRecordType()) {
+    if (CXXRecordDecl *Cls = Init->getType()->getAsCXXRecordDecl()) {
+      const TypeSourceInfo *AutoAliasTSI = nullptr;
+      for (Decl *M : Cls->decls())
+        if (AutoAliasDecl *AAD = dyn_cast<AutoAliasDecl>(M)) {
+          AutoAliasTSI = AAD->getTypeToUseInsteadOfAuto();
+          break;
+        }
+      if (AutoAliasTSI) {
+        QualType CanonicalAutoAliasType =
+            Context.getCanonicalType(AutoAliasTSI->getType());
+        Result =
+            SubstituteAutoTransform(*this, CanonicalAutoAliasType).Apply(Type);
+        if (!Result.isNull())
+          return DAR_Succeeded;
+        // FIXME: Make Sure that the error is diagnosed!
+        return DAR_FailedAlreadyDiagnosed;
+      }
     }
   }
 
