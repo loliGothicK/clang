@@ -319,7 +319,7 @@ def err_using_decl_conflict_reverse : Error<
 def note_using_decl : Note<"%select{|previous }0using declaration">;
 
 //C++1z using auto alias
-def note_previous_auto_alias : Note<"previous auto alias">;
+def note_auto_alias : Note<"%select{|previous }0auto alias">;
 def err_auto_alias_redeclaration : Error<"redeclaration of auto alias">;
 
 

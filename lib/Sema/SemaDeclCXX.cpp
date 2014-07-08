@@ -8055,7 +8055,7 @@ Decl *Sema::ActOnAliasDeclaration(Scope *S,
     if (PreviousAutoAlias) {
       Diag(UsingLoc, diag::err_auto_alias_redeclaration)
           << SourceRange(UsingLoc, TInfo->getTypeLoc().getEndLoc());
-      Diag(PreviousAutoAlias->getLocation(), diag::note_previous_auto_alias);
+      Diag(PreviousAutoAlias->getLocation(), diag::note_auto_alias) << 1 << PreviousAutoAlias->getSourceRange() ;
       return nullptr;
     }  
     // FIXME: This should be the location of the auto

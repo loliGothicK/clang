@@ -4004,12 +4004,16 @@ Sema::DeduceAutoType(TypeLoc Type, Expr *&Init, QualType &Result) {
   if (Init->getType()->isRecordType()) {
     if (CXXRecordDecl *Cls = Init->getType()->getAsCXXRecordDecl()) {
       const TypeSourceInfo *AutoAliasTSI = nullptr;
+      SourceRange AutoAliasLocRange;
       for (Decl *M : Cls->decls())
         if (AutoAliasDecl *AAD = dyn_cast<AutoAliasDecl>(M)) {
           AutoAliasTSI = AAD->getTypeToUseInsteadOfAuto();
+          AutoAliasLocRange = AAD->getSourceRange();
           break;
         }
       if (AutoAliasTSI) {
+
+#ifdef USE_AUTO_SUBSTITUTION
         QualType CanonicalAutoAliasType =
             Context.getCanonicalType(AutoAliasTSI->getType());
         Result =
@@ -4018,6 +4022,38 @@ Sema::DeduceAutoType(TypeLoc Type, Expr *&Init, QualType &Result) {
           return DAR_Succeeded;
         // FIXME: Make Sure that the error is diagnosed!
         return DAR_FailedAlreadyDiagnosed;
+#else
+        // Construct a TSI as if the type was typed at the head of the
+        // initializer expression.  This helps emit the error at the right
+        // location.
+        TypeSourceInfo *TSIWithExprLoc = Context.getTrivialTypeSourceInfo(
+            AutoAliasTSI->getType(), Init->getLocStart());
+        SourceLocation OpLoc, LAngleBracketLoc, RAngleBracketLoc, LParenLoc,
+            RParenLoc;
+        OpLoc = LAngleBracketLoc = LParenLoc = Init->getLocStart();
+        RAngleBracketLoc = RParenLoc = Init->getLocEnd();
+        DiagnosticErrorTrap DiagTrap(getDiagnostics());
+#ifdef USE_CPP_TYPE_CTOR
+        ExprResult ConvInitRes = BuildCXXTypeConstructExpr(
+            TSIWithExprLoc, Init->getLocStart(), InitExprAsArgToTypeConstructor,
+            Init->getLocEnd());
+#else // USE_CPP_STATIC_CAST
+
+        ExprResult ConvInitRes =
+            BuildCXXNamedCast(OpLoc, tok::kw_static_cast, TSIWithExprLoc, Init,
+                              SourceRange(LAngleBracketLoc, RAngleBracketLoc),
+                              SourceRange(LParenLoc, RParenLoc));
+#endif
+        if (ConvInitRes.isInvalid() || DiagTrap.hasErrorOccurred()) {
+          // FIXME: This should not state previous auto alias.
+          Diag(AutoAliasLocRange.getBegin(), diag::note_auto_alias)
+              << 0 << AutoAliasLocRange;
+          return DAR_FailedAlreadyDiagnosed;
+        }
+        Init = ConvInitRes.get();
+// FIXME if this was an error - just output the using alias decl that required
+// the conversion.
+#endif
       }
     }
   }

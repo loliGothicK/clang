@@ -33,7 +33,7 @@ namespace check_works_as_var_decl {
     auto d = X{};
     static_assert(is_same_type<double, decltype(d)>::value, "");
     auto noeval_d = noeval(X{});
-    static_assert(is_same_type<const X&, decltype(noeval_d)>::value, "");
+    static_assert(is_same_type<X, decltype(noeval_d)>::value, "");
     
     return 0;
   }
@@ -179,7 +179,7 @@ namespace deduce_to_base {
   void test() {
     D d;
     auto d2 = d;
-    static_assert(is_same_type<B&, decltype(d2)>::value, "");
+    static_assert(is_same_type<B, decltype(d2)>::value, "");
   }
 } // deduce_to_base
 
@@ -189,7 +189,7 @@ namespace deduce_to_rref {
   };
   void test() {
     auto b = B{};
-    static_assert(is_same_type<B&&, decltype(b)>::value, "");
+    static_assert(is_same_type<B, decltype(b)>::value, "");
   }
 }
 
