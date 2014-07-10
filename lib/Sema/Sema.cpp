@@ -1051,16 +1051,18 @@ Scope *Sema::getScopeForContext(DeclContext *Ctx) {
 }
 
 /// \brief Enter a new function scope
-void Sema::PushFunctionScope() {
+void Sema::PushFunctionScope(FunctionDecl *FD) {
   if (FunctionScopes.size() == 1) {
     // Use the "top" function scope rather than having to allocate
     // memory for a new scope.
     FunctionScopes.back()->Clear();
     FunctionScopes.push_back(FunctionScopes.back());
+    FunctionScopes.back()->MyFunctionDecl = FD;
     return;
   }
 
   FunctionScopes.push_back(new FunctionScopeInfo(getDiagnostics()));
+  FunctionScopes.back()->MyFunctionDecl = FD;
 }
 
 void Sema::PushBlockScope(Scope *BlockScope, BlockDecl *Block) {

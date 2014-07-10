@@ -4107,6 +4107,35 @@ bool Sema::DeduceReturnType(FunctionDecl *FD, SourceLocation Loc,
   if (FD->getTemplateInstantiationPattern())
     InstantiateFunctionDefinition(Loc, FD);
 
+  // Are we deducing the return type of a function that we are defining?
+  bool IsDeducingReturnTypeOfFunctionOnSemaStackBeingDefined = false;
+  FunctionScopeInfo *FunctionInfoOfFunctionBeingDeduced = nullptr;
+  for (auto *FSI : FunctionScopes) {
+    if (FSI->MyFunctionDecl &&
+        FSI->MyFunctionDecl->getCanonicalDecl() == FD->getCanonicalDecl()) {
+      if (!FD->getBody()) {
+        IsDeducingReturnTypeOfFunctionOnSemaStackBeingDefined = true;
+        FunctionInfoOfFunctionBeingDeduced = FSI;
+      }
+      break;
+    }
+  }
+  if (IsDeducingReturnTypeOfFunctionOnSemaStackBeingDefined) {
+    // Use the Return statements to freeze and adjust the return
+    // type of the function.
+    for (ReturnStmt *RetStmt : FunctionInfoOfFunctionBeingDeduced->Returns) {
+      Expr *RetExpr = RetStmt->getRetValue();
+      // Now find the common type between two - as soon as we find something
+      // that is different, we have to go back and adjust all the other return
+      // expressions.
+
+      // You should be able to convert any of the returns to another return type
+      // and if doing it in a different order gives you a different result
+      // it is an error!
+      //  
+
+    }
+  }  
   bool StillUndeduced = FD->getReturnType()->isUndeducedType();
   if (StillUndeduced && Diagnose && !FD->isInvalidDecl()) {
     Diag(Loc, diag::err_auto_fn_used_before_defined) << FD;

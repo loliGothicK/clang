@@ -8716,7 +8716,7 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
                                       E->getCallOperator()->getLocEnd(),
                                       Params);
   LSI->CallOperator = NewCallOperator;
-
+  LSI->MyFunctionDecl = NewCallOperator;
   getDerived().transformAttrs(E->getCallOperator(), NewCallOperator);
 
   return getDerived().TransformLambdaScope(E, NewCallOperator, 

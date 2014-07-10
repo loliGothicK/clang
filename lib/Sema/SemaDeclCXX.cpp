@@ -2409,7 +2409,7 @@ namespace {
 void Sema::ActOnStartCXXInClassMemberInitializer() {
   // Create a synthetic function scope to represent the call to the constructor
   // that notionally surrounds a use of this initializer.
-  PushFunctionScope();
+  PushFunctionScope(nullptr);
 }
 
 /// \brief This is invoked after parsing an in-class initializer for a

@@ -586,7 +586,7 @@ public:
     SynthesizedFunctionScope(Sema &S, DeclContext *DC)
       : S(S), SavedContext(S, DC) 
     {
-      S.PushFunctionScope();
+      S.PushFunctionScope(dyn_cast<FunctionDecl>(DC));
       S.PushExpressionEvaluationContext(Sema::PotentiallyEvaluated);
     }
     
@@ -1039,7 +1039,7 @@ public:
 
   Scope *getScopeForContext(DeclContext *Ctx);
 
-  void PushFunctionScope();
+  void PushFunctionScope(FunctionDecl *FD);
   void PushBlockScope(Scope *BlockScope, BlockDecl *Block);
   sema::LambdaScopeInfo *PushLambdaScope();
 

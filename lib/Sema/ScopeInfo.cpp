@@ -32,6 +32,7 @@ void FunctionScopeInfo::Clear() {
   ObjCWarnForNoDesignatedInitChain = false;
   ObjCIsSecondaryInit = false;
   ObjCWarnForNoInitDelegation = false;
+  MyFunctionDecl = nullptr;
 
   SwitchStack.clear();
   Returns.clear();

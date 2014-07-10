@@ -146,6 +146,10 @@ public:
   /// prior to being emitted.
   SmallVector<PossiblyUnreachableDiag, 4> PossiblyUnreachableDiags;
 
+  /// \brief The FunctionDecl (function or block or lambda-call-op) that this
+  /// scope info object represents.
+  FunctionDecl *MyFunctionDecl;
+
 public:
   /// Represents a simple identification of a weak object.
   ///
@@ -337,7 +341,7 @@ public:
       ObjCWarnForNoDesignatedInitChain(false),
       ObjCIsSecondaryInit(false),
       ObjCWarnForNoInitDelegation(false),
-      ErrorTrap(Diag) { }
+      ErrorTrap(Diag), MyFunctionDecl(nullptr) { }
 
   virtual ~FunctionScopeInfo();
 

@@ -9732,6 +9732,7 @@ static void RebuildLambdaScopeInfo(CXXMethodDecl *CallOperator,
   
   LambdaScopeInfo *LSI = S.PushLambdaScope();
   LSI->CallOperator = CallOperator;
+  LSI->MyFunctionDecl = CallOperator;
   LSI->Lambda = LambdaClass;
   LSI->ReturnType = CallOperator->getReturnType();
   const LambdaCaptureDefault LCD = LambdaClass->getLambdaCaptureDefault();
@@ -9798,7 +9799,7 @@ Decl *Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Decl *D) {
   }
   else
     // Enter a new function scope
-    PushFunctionScope();
+    PushFunctionScope(FD);
 
   // See if this is a redefinition.
   if (!FD->isLateTemplateParsed())

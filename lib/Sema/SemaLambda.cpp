@@ -441,6 +441,7 @@ void Sema::buildLambdaScope(LambdaScopeInfo *LSI,
                                         bool ExplicitResultType,
                                         bool Mutable) {
   LSI->CallOperator = CallOperator;
+  LSI->MyFunctionDecl = CallOperator;
   CXXRecordDecl *LambdaClass = CallOperator->getParent();
   LSI->Lambda = LambdaClass;
   if (CaptureDefault == LCD_ByCopy)

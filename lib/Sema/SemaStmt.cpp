@@ -14,6 +14,7 @@
 #include "clang/Sema/SemaInternal.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTDiagnostic.h"
+#include "clang/AST/ASTLambda.h"
 #include "clang/AST/CharUnits.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/EvaluatedExprVisitor.h"
@@ -2782,26 +2783,76 @@ bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
     if (Deduced.isNull())
       return true;
   }
-
   //  If a function with a declared return type that contains a placeholder type
   //  has multiple return statements, the return type is deduced for each return
   //  statement. [...] if the type deduced is not the same in each deduction,
   //  the program is ill-formed.
   if (AT->isDeduced() && !FD->isInvalidDecl()) {
     AutoType *NewAT = Deduced->getContainedAutoType();
+    const FunctionScopeInfo *FSI = getCurFunction();
+    //FD->dump();
+    // assert((FSI->Returns.size() || isLambdaConversionOperator(FD)) &&
+    //       "If we have a previously deduced return type "
+    //       "we must have a previous return stmt - or a manufactured conversion "
+    //       "op!");
+
+    ReturnStmt *const PrevRetStmt =
+        FSI->Returns.size() ? FSI->Returns.back() : nullptr;
+    Expr *const PrevRetExpr =
+        PrevRetStmt ? PrevRetStmt->getRetValue() : nullptr;
+
+    // Collect all the return-stmts - and write a function that takes the set of
+    // return stmts, the function and tries to merge them using the conditional
+    // op and adjust the return stmts - since all of them will need the right
+    // initialization conversions performed.
+    // Only then do the deduction - against auto, and set it.  Don't forget to
+    // call CheckReturnExpr and ActOnFinishFullExpression. 
+    
+    // The exception is recursion: if a function is called where in its return
+    // type is expected to be deduced and Sema::DeduceReturnType is called and
+    // this function is on the function stack - then get all its returns
+    // and lock it in.
+
     if (!FD->isDependentContext() &&
         !Context.hasSameType(AT->getDeducedType(), NewAT->getDeducedType())) {
-      const LambdaScopeInfo *LambdaSI = getCurLambda();
-      if (LambdaSI && LambdaSI->HasImplicitReturnType) {
-        Diag(ReturnLoc, diag::err_typecheck_missing_return_type_incompatible)
-          << NewAT->getDeducedType() << AT->getDeducedType()
-          << true /*IsLambda*/;
-      } else {
-        Diag(ReturnLoc, diag::err_auto_fn_different_deductions)
-          << (AT->isDecltypeAuto() ? 1 : 0)
-          << NewAT->getDeducedType() << AT->getDeducedType();
+      bool TypeWasConditionallyOpMerged = false;
+      if (PrevRetExpr && getLangOpts().CPlusPlus1z) {
+        ExprResult IgnoreCond, LHS = PrevRetExpr, RHS = RetExpr;
+        ExprValueKind VK = ExprValueKind();
+        ExprObjectKind OK = ExprObjectKind();
+        QualType PreviouslyDeducedType = FD->getReturnType();//AT->getDeducedType();
+        QualType CurrentlyDeducedType = Deduced; //NewAT->getDeducedType();
+        QualType CommonType = CXXCheckConditionalOperands(
+            IgnoreCond, LHS, RHS, VK, OK, RetExpr->getLocStart());
+//            PreviouslyDeducedType, CurrentlyDeducedType);
+        llvm::errs() << "\nPreviousType = "; PreviouslyDeducedType.dump();
+        llvm::errs() << "\nCurrentType = "; CurrentlyDeducedType.dump();
+        llvm::errs() << "\nCommonType = "; CommonType.dump();
+        TypeWasConditionallyOpMerged = !CommonType.isNull();
+        
+        const bool MatchesOneOfTheDeducedTypes =
+            TypeWasConditionallyOpMerged &&
+            (Context.hasSameType(PreviouslyDeducedType, CommonType) ||
+             Context.hasSameType(CurrentlyDeducedType, CommonType));
+
+        if (TypeWasConditionallyOpMerged && !MatchesOneOfTheDeducedTypes)
+          llvm::errs()
+              << "CommonType is NOT the same as one of the deduced types!";
+        // if (!Context.hasSameType(CommonType
       }
-      return true;
+      //if (!TypeWasConditionallyOpMerged) {
+        const LambdaScopeInfo *LambdaSI = getCurLambda();
+        if (LambdaSI && LambdaSI->HasImplicitReturnType) {
+          Diag(ReturnLoc, diag::err_typecheck_missing_return_type_incompatible)
+              << NewAT->getDeducedType() << AT->getDeducedType()
+              << true /*IsLambda*/;
+        } else {
+          Diag(ReturnLoc, diag::err_auto_fn_different_deductions)
+              << (AT->isDecltypeAuto() ? 1 : 0) << NewAT->getDeducedType()
+              << AT->getDeducedType();
+        }
+        return true;
+      //}
     }
   } else if (!FD->isInvalidDecl()) {
     // Update all declarations of the function to have the deduced return type.
@@ -2841,7 +2892,7 @@ StmtResult Sema::BuildReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
   QualType RelatedRetType;
   const AttrVec *Attrs = nullptr;
   bool isObjCMethod = false;
-
+  bool HasDeducedReturnType = false;
   if (const FunctionDecl *FD = getCurFunctionDecl()) {
     FnRetType = FD->getReturnType();
     if (FD->hasAttrs())
@@ -2868,6 +2919,7 @@ StmtResult Sema::BuildReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
   // deduction.
   if (getLangOpts().CPlusPlus1y) {
     if (AutoType *AT = FnRetType->getContainedAutoType()) {
+      HasDeducedReturnType = true;
       FunctionDecl *FD = cast<FunctionDecl>(CurContext);
       if (DeduceFunctionTypeFromReturnExpr(FD, ReturnLoc, RetValExp, AT)) {
         FD->setInvalidDecl();
@@ -2981,7 +3033,8 @@ StmtResult Sema::BuildReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
     // the C version of which boils down to CheckSingleAssignmentConstraints.
     if (RetValExp)
       NRVOCandidate = getCopyElisionCandidate(FnRetType, RetValExp, false);
-    if (!HasDependentReturnType && !RetValExp->isTypeDependent()) {
+    if (!HasDependentReturnType && !RetValExp->isTypeDependent() /*&&
+        !HasDeducedReturnType*/) {
       // we have a non-void function with an expression, continue checking
       InitializedEntity Entity = InitializedEntity::InitializeResult(ReturnLoc,
                                                                      RetType,
@@ -3023,8 +3076,9 @@ StmtResult Sema::BuildReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
   }
 
   // If we need to check for the named return value optimization, save the
-  // return statement in our scope for later processing.
-  if (Result->getNRVOCandidate())
+  // return statement in our scope for later processing.  Additionally if our
+  // return type needs to be deduced, save the return statement.
+  if (Result->getNRVOCandidate() || HasDeducedReturnType)
     FunctionScopes.back()->Returns.push_back(Result);
 
   return Result;
