@@ -4365,13 +4365,20 @@ static bool ConvertForConditional(Sema &Self, ExprResult &E, QualType T) {
 QualType Sema::CXXCheckConditionalOperands(ExprResult &Cond, ExprResult &LHS,
                                            ExprResult &RHS, ExprValueKind &VK,
                                            ExprObjectKind &OK,
-                                           SourceLocation QuestionLoc) {
+                                           SourceLocation QuestionLoc, 
+                                           bool Complain) {
   // FIXME: Handle C99's complex types, vector types, block pointers and Obj-C++
   // interface pointers.
-
+  
+  std::unique_ptr<SFINAETrap> TrapComplaints;
+  if (!Complain) {
+    TrapComplaints.reset(new SFINAETrap(*this));
+  }
   // C++11 [expr.cond]p1
   //   The first expression is contextually converted to bool.
-  if (!Cond.isInvalid() && !Cond.get()->isTypeDependent()) {
+  // FIXME: Checking if Cond.get() is valid seems crude ...
+  if (Cond.get() && !Cond.get()->isTypeDependent()) {
+    // FIXME: propagate complain into CheckCXXBoleanCondition
     ExprResult CondRes = CheckCXXBooleanCondition(Cond.get());
     if (CondRes.isInvalid())
       return QualType();

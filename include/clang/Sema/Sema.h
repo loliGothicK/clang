@@ -7762,7 +7762,8 @@ public:
     ExprValueKind &VK, ExprObjectKind &OK, SourceLocation QuestionLoc);
   QualType CXXCheckConditionalOperands( // C++ 5.16
     ExprResult &cond, ExprResult &lhs, ExprResult &rhs,
-    ExprValueKind &VK, ExprObjectKind &OK, SourceLocation questionLoc);
+    ExprValueKind &VK, ExprObjectKind &OK, SourceLocation questionLoc, 
+    bool Complain = true);
   QualType FindCompositePointerType(SourceLocation Loc, Expr *&E1, Expr *&E2,
                                     bool *NonStandardCompositeType = nullptr);
   QualType FindCompositePointerType(SourceLocation Loc,

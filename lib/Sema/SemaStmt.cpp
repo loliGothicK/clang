@@ -2823,9 +2823,11 @@ bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
         QualType PreviouslyDeducedType = FD->getReturnType();//AT->getDeducedType();
         QualType CurrentlyDeducedType = Deduced; //NewAT->getDeducedType();
         QualType CommonType = CXXCheckConditionalOperands(
-            IgnoreCond, LHS, RHS, VK, OK, RetExpr->getLocStart());
-//            PreviouslyDeducedType, CurrentlyDeducedType);
-        llvm::errs() << "\nPreviousType = "; PreviouslyDeducedType.dump();
+            IgnoreCond, LHS, RHS, VK, OK, RetExpr->getLocStart(),
+            /*Complain=*/false);
+        //            PreviouslyDeducedType, CurrentlyDeducedType);
+        llvm::errs() << "\nPreviousType = ";
+        PreviouslyDeducedType.dump();
         llvm::errs() << "\nCurrentType = "; CurrentlyDeducedType.dump();
         llvm::errs() << "\nCommonType = "; CommonType.dump();
         TypeWasConditionallyOpMerged = !CommonType.isNull();
