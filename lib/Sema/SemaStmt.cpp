@@ -3094,15 +3094,25 @@ StmtResult Sema::BuildReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
     // skip this check, since it will get done when deduce return type gets
     // called.
 
-    if (RetValExp &&
-        (CurContext->isDependentContext() || !HasDeducedReturnType)) {
-      ExprResult ER = ActOnFinishFullExpr(RetValExp, ReturnLoc);
-      if (ER.isInvalid())
-        return StmtError();
-      RetValExp = ER.get();
+    std::shared_ptr<Sema::ExpressionEvaluationContextRecord>
+    CurEvaluationContextP;
+    if (RetValExp) {
+      if (CurContext->isDependentContext() || !HasDeducedReturnType) {
+        ExprResult ER = ActOnFinishFullExpr(RetValExp, ReturnLoc);
+        if (ER.isInvalid())
+          return StmtError();
+        RetValExp = ER.get();
+      } else if (HasDeducedReturnType) {
+        std::shared_ptr<Sema::ExpressionEvaluationContextRecord>
+        stealCurrentExpressionEvaluationContext(Sema & S);
+        CurEvaluationContextP = stealCurrentExpressionEvaluationContext(*this);
+      }
     }
-
     Result = new (Context) ReturnStmt(ReturnLoc, RetValExp, NRVOCandidate);
+    if (CurEvaluationContextP) {
+      FunctionScopes.back()->ReturnStmtToExprEvaluationContextMap[Result] =
+          CurEvaluationContextP;
+    }
   }
 
   // If we need to check for the named return value optimization, save the

@@ -673,6 +673,17 @@ public:
 
   SourceLocation PotentialThisCaptureLocation;
 
+  // Save PotentiallyCapturingExprs, NonODRUsedCapturingExprs, and
+  // PotentialThisCaptureLocation - so that when analyzing the return-stmt
+  // we can place it back within context.
+  // FIXME: I don't think we need to do this, since potential captures
+  // are always within a dependent lambda.
+  // std::map<
+  //    ReturnStmt *,
+  //    std::shared_ptr<std::tuple<llvm::SmallVector<Expr *, 8>,
+  //                               llvm::SmallSet<Expr *, 8>, SourceLocation>>>
+  // ReturnStmtToSavedStateMap;
+
   LambdaScopeInfo(DiagnosticsEngine &Diag)
     : CapturingScopeInfo(Diag, ImpCap_None), Lambda(nullptr),
       CallOperator(nullptr), NumExplicitCaptures(0), Mutable(false),
@@ -712,6 +723,8 @@ public:
   ///   };
   /// }
   void addPotentialCapture(Expr *VarExpr) {
+    assert(CallOperator);
+    assert(cast<DeclContext>(CallOperator)->isDependentContext());
     assert(isa<DeclRefExpr>(VarExpr) || isa<MemberExpr>(VarExpr));
     PotentiallyCapturingExprs.push_back(VarExpr);
   }
@@ -773,15 +786,12 @@ public:
       || isa<MemberExpr>(CapturingVarExpr));
     return NonODRUsedCapturingExprs.count(CapturingVarExpr);
   }
-  void removePotentialCapture(Expr *E) {
-    PotentiallyCapturingExprs.erase(
-        std::remove(PotentiallyCapturingExprs.begin(), 
-            PotentiallyCapturingExprs.end(), E), 
-        PotentiallyCapturingExprs.end());
-  }
+  
   void clearPotentialCaptures() {
     PotentiallyCapturingExprs.clear();
     PotentialThisCaptureLocation = SourceLocation();
+    // FIXME: This fix should be added to clang-trunk separately!
+    NonODRUsedCapturingExprs.clear();
   }
   unsigned getNumPotentialVariableCaptures() const { 
     return PotentiallyCapturingExprs.size(); 
