@@ -743,6 +743,8 @@ public:
 
     llvm::SmallPtrSet<Expr*, 2> SavedMaybeODRUseExprs;
 
+    SmallVector<BlockDecl*, 8> SavedExprCleanupObjects;
+
     /// \brief The lambdas that are present within this context, if it
     /// is indeed an unevaluated context.
     SmallVector<LambdaExpr *, 2> Lambdas;

@@ -11260,6 +11260,17 @@ ExprResult Sema::TransformToPotentiallyEvaluated(Expr *E) {
   return TransformToPE(*this).TransformExpr(E);
 }
 
+Sema::ExpressionEvaluationContextRecord
+stealCurrentExpressionEvaluationContext(Sema &S) {
+  auto E = S.ExprEvalContexts.back();
+  E.SavedMaybeODRUseExprs = S.MaybeODRUseExprs;
+  E.SavedExprCleanupObjects = S.ExprCleanupObjects;
+  E.ParentNeedsCleanups = S.ExprNeedsCleanups;
+  S.MaybeODRUseExprs.clear();
+  S.ExprCleanupObjects.clear();
+  return E;
+}
+
 void
 Sema::PushExpressionEvaluationContext(ExpressionEvaluationContext NewContext,
                                       Decl *LambdaContextDecl,

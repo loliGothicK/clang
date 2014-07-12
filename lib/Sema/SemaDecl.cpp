@@ -10009,20 +10009,25 @@ Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body,
 
     if (getLangOpts().CPlusPlus1y && !FD->isInvalidDecl() && Body &&
         !FD->isDependentContext() && FD->getReturnType()->isUndeducedType()) {
+      DeduceReturnType(FD, FD->getLocation(), true);
+      /*
       // If the function has a deduced result type but contains no 'return'
       // statements, the result type as written must be exactly 'auto', and
       // the deduced result type is 'void'.
-      if (!FD->getReturnType()->getAs<AutoType>()) {
-        Diag(dcl->getLocation(), diag::err_auto_fn_no_return_but_not_auto)
-            << FD->getReturnType();
-        FD->setInvalidDecl();
-      } else {
-        // Substitute 'void' for the 'auto' in the type.
-        TypeLoc ResultType = FD->getTypeSourceInfo()->getTypeLoc().
-            IgnoreParens().castAs<FunctionProtoTypeLoc>().getReturnLoc();
-        Context.adjustDeducedFunctionResultType(
-            FD, SubstAutoType(ResultType.getType(), Context.VoidTy));
+      if (!FD->isInvalidDecl() && !getCurFunction()->Returns.size()) {
+        if (!FD->getReturnType()->getAs<AutoType>()) {
+          Diag(dcl->getLocation(), diag::err_auto_fn_no_return_but_not_auto)
+              << FD->getReturnType();
+          FD->setInvalidDecl();
+        } else {
+          // Substitute 'void' for the 'auto' in the type.
+          TypeLoc ResultType = FD->getTypeSourceInfo()->getTypeLoc().
+              IgnoreParens().castAs<FunctionProtoTypeLoc>().getReturnLoc();
+          Context.adjustDeducedFunctionResultType(
+              FD, SubstAutoType(ResultType.getType(), Context.VoidTy));
+        }
       }
+      */
     }
 
     // The only way to be included in UndefinedButUsed is if there is an

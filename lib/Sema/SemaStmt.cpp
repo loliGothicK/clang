@@ -2590,7 +2590,10 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
   CapturingScopeInfo *CurCap = cast<CapturingScopeInfo>(getCurFunction());
   QualType FnRetType = CurCap->ReturnType;
   LambdaScopeInfo *CurLambda = dyn_cast<LambdaScopeInfo>(CurCap);
-
+  const bool HasDeducedReturnType =
+      CurLambda
+          ? CurLambda->CallOperator->getReturnType()->getContainedAutoType()
+          : false;
   if (CurLambda && hasDeducedReturnType(CurLambda->CallOperator)) {
     // In C++1y, the return type may involve 'auto'.
     // FIXME: Blocks might have a return type of 'auto' explicitly specified.
@@ -2678,8 +2681,9 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
       }
     }
   } else if (!RetValExp) {
-    return StmtError(Diag(ReturnLoc, diag::err_block_return_missing_expr));
-  } else if (!RetValExp->isTypeDependent()) {
+    if (!HasDeducedReturnType)
+      return StmtError(Diag(ReturnLoc, diag::err_block_return_missing_expr));
+  } else if (!RetValExp->isTypeDependent() && !HasDeducedReturnType) {
     // we have a non-void block with an expression, continue checking
 
     // C99 6.8.6.4p3(136): The return statement is not an assignment. The
@@ -2703,20 +2707,24 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
   } else {
     NRVOCandidate = getCopyElisionCandidate(FnRetType, RetValExp, false);
   }
-
-  if (RetValExp) {
+  //* 
+  // FIXME: If the context is not dependent && we have a deduced return type -
+  // skip this check, since it will get done when deduce return type gets
+  // called.
+  if (RetValExp /*&& !HasDeducedReturnType*/) {
     ExprResult ER = ActOnFinishFullExpr(RetValExp, ReturnLoc);
     if (ER.isInvalid())
       return StmtError();
     RetValExp = ER.get();
   }
+  //*/
   ReturnStmt *Result = new (Context) ReturnStmt(ReturnLoc, RetValExp,
                                                 NRVOCandidate);
 
   // If we need to check for the named return value optimization,
   // or if we need to infer the return type,
   // save the return statement in our scope for later processing.
-  if (CurCap->HasImplicitReturnType || NRVOCandidate)
+  if (CurCap->HasImplicitReturnType || NRVOCandidate || HasDeducedReturnType)
     FunctionScopes.back()->Returns.push_back(Result);
 
   return Result;
@@ -2756,7 +2764,7 @@ bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
       Diag(RetExpr->getExprLoc(), diag::err_auto_fn_return_init_list);
       return true;
     }
-
+    /*
     //  Otherwise, [...] deduce a value for U using the rules of template
     //  argument deduction.
     DeduceAutoResult DAR = DeduceAutoType(OrigResultType, RetExpr, Deduced);
@@ -2767,12 +2775,15 @@ bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
 
     if (DAR != DAR_Succeeded)
       return true;
+    */
   } else {
     //  In the case of a return with no operand, the initializer is considered
     //  to be void().
     //
     // Deduction here can only succeed if the return type is exactly 'cv auto'
     // or 'decltype(auto)', so just check for that case directly.
+    //
+    /*
     if (!OrigResultType.getType()->getAs<AutoType>()) {
       Diag(ReturnLoc, diag::err_auto_fn_return_void_but_not_auto)
         << OrigResultType.getType();
@@ -2782,12 +2793,13 @@ bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
     Deduced = SubstAutoType(OrigResultType.getType(), Context.VoidTy);
     if (Deduced.isNull())
       return true;
+    */
   }
   //  If a function with a declared return type that contains a placeholder type
   //  has multiple return statements, the return type is deduced for each return
   //  statement. [...] if the type deduced is not the same in each deduction,
   //  the program is ill-formed.
-  if (AT->isDeduced() && !FD->isInvalidDecl()) {
+  if (AT->isDeduced() && !FD->isInvalidDecl() && !Deduced.isNull()) {
     AutoType *NewAT = Deduced->getContainedAutoType();
     const FunctionScopeInfo *FSI = getCurFunction();
     //FD->dump();
@@ -2858,7 +2870,7 @@ bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
     }
   } else if (!FD->isInvalidDecl()) {
     // Update all declarations of the function to have the deduced return type.
-    Context.adjustDeducedFunctionResultType(FD, Deduced);
+    // Context.adjustDeducedFunctionResultType(FD, Deduced);
   }
 
   return false;
@@ -3035,8 +3047,8 @@ StmtResult Sema::BuildReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
     // the C version of which boils down to CheckSingleAssignmentConstraints.
     if (RetValExp)
       NRVOCandidate = getCopyElisionCandidate(FnRetType, RetValExp, false);
-    if (!HasDependentReturnType && !RetValExp->isTypeDependent() /*&&
-        !HasDeducedReturnType*/) {
+    if (!HasDependentReturnType && !RetValExp->isTypeDependent() &&
+        !HasDeducedReturnType) {
       // we have a non-void function with an expression, continue checking
       InitializedEntity Entity = InitializedEntity::InitializeResult(ReturnLoc,
                                                                      RetType,
@@ -3067,13 +3079,17 @@ StmtResult Sema::BuildReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
       CheckReturnValExpr(RetValExp, FnRetType, ReturnLoc, isObjCMethod, Attrs,
                          getCurFunctionDecl());
     }
+    // FIXME: If the context is not dependent && we have a deduced return type -
+    // skip this check, since it will get done when deduce return type gets
+    // called.
 
-    if (RetValExp) {
+    if (RetValExp /*&& !HasDeducedReturnType*/) {
       ExprResult ER = ActOnFinishFullExpr(RetValExp, ReturnLoc);
       if (ER.isInvalid())
         return StmtError();
       RetValExp = ER.get();
     }
+
     Result = new (Context) ReturnStmt(ReturnLoc, RetValExp, NRVOCandidate);
   }
 

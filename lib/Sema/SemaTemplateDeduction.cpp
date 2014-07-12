@@ -20,6 +20,7 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/StmtVisitor.h"
 #include "clang/Sema/DeclSpec.h"
+#include "clang/Sema/Initialization.h"
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/Template.h"
 #include "llvm/ADT/SmallBitVector.h"
@@ -4103,40 +4104,154 @@ void Sema::DiagnoseAutoDeductionFailure(VarDecl *VDecl, Expr *Init) {
 bool Sema::DeduceReturnType(FunctionDecl *FD, SourceLocation Loc,
                             bool Diagnose) {
   assert(FD->getReturnType()->isUndeducedType());
+  auto IsFunctionAlreadyBeingInstantiated = [this](FunctionDecl *FD) {
+    for (ActiveTemplateInstantiation &ATI : ActiveTemplateInstantiations)
+      if (ATI.Entity == FD)
+        return true;
+    return false;
+  };
 
-  if (FD->getTemplateInstantiationPattern())
-    InstantiateFunctionDefinition(Loc, FD);
-
-  // Are we deducing the return type of a function that we are defining?
-  bool IsDeducingReturnTypeOfFunctionOnSemaStackBeingDefined = false;
-  FunctionScopeInfo *FunctionInfoOfFunctionBeingDeduced = nullptr;
-  for (auto *FSI : FunctionScopes) {
-    if (FSI->MyFunctionDecl &&
-        FSI->MyFunctionDecl->getCanonicalDecl() == FD->getCanonicalDecl()) {
-      if (!FD->getBody()) {
-        IsDeducingReturnTypeOfFunctionOnSemaStackBeingDefined = true;
-        FunctionInfoOfFunctionBeingDeduced = FSI;
-      }
-      break;
-    }
+  auto IsFunctionOnSemaStackBeingDefined = [this](FunctionDecl *FD) {
+    for (FunctionScopeInfo *FSI : FunctionScopes)
+      if (FSI->MyFunctionDecl == FD)
+        return true;
+    return false;
+  };
+    
+  if (FD->getTemplateInstantiationPattern()) {
+    if (!IsFunctionOnSemaStackBeingDefined(FD) &&
+        !IsFunctionAlreadyBeingInstantiated(FD))
+      InstantiateFunctionDefinition(Loc, FD);
   }
-  if (IsDeducingReturnTypeOfFunctionOnSemaStackBeingDefined) {
-    // Use the Return statements to freeze and adjust the return
-    // type of the function.
-    for (ReturnStmt *RetStmt : FunctionInfoOfFunctionBeingDeduced->Returns) {
-      Expr *RetExpr = RetStmt->getRetValue();
-      // Now find the common type between two - as soon as we find something
-      // that is different, we have to go back and adjust all the other return
-      // expressions.
-
-      // You should be able to convert any of the returns to another return type
-      // and if doing it in a different order gives you a different result
-      // it is an error!
-      //  
-
-    }
-  }  
   bool StillUndeduced = FD->getReturnType()->isUndeducedType();
+  // Are we deducing the return type of a function that we are defining?
+  if (StillUndeduced && !FD->isInvalidDecl()) {
+    bool IsDeducingReturnTypeOfFunctionOnSemaStackBeingDefined = false;
+    FunctionScopeInfo *FunctionInfoOfFunctionBeingDeduced = nullptr;
+    for (auto *FSI : FunctionScopes) {
+      if (FSI->MyFunctionDecl &&
+          FSI->MyFunctionDecl->getCanonicalDecl() == FD->getCanonicalDecl()) {
+        if (!FD->getBody()) {
+          IsDeducingReturnTypeOfFunctionOnSemaStackBeingDefined = true;
+          FunctionInfoOfFunctionBeingDeduced = FSI;
+        }
+        break;
+      }
+    }
+    if (!FunctionInfoOfFunctionBeingDeduced) {
+      auto *FSI = getCurFunction();
+      if (FSI && FSI->MyFunctionDecl == FD)
+        FunctionInfoOfFunctionBeingDeduced = FSI;
+    }
+    if (FunctionInfoOfFunctionBeingDeduced) {
+      // Use the Return statements to freeze and adjust the return type of the
+      // function.
+      const TypeLoc OrigResultTypeLoc = FD->getTypeSourceInfo()
+                                         ->getTypeLoc()
+                                         .IgnoreParens()
+                                         .castAs<FunctionProtoTypeLoc>()
+                                         .getReturnLoc();
+      QualType PrevDeducedType;
+      for (ReturnStmt *RetStmt : FunctionInfoOfFunctionBeingDeduced->Returns) {
+        Expr *RetExpr = RetStmt->getRetValue();
+        if (!RetExpr) continue;
+        // Now find the common type between two - as soon as we find something
+        // that is different, we have to go back and adjust all the other return
+        // expressions.
+
+        // You should be able to convert any of the returns to another return type
+        // and if doing it in a different order gives you a different result
+        // it is an error!
+        //  
+        //  Otherwise, [...] deduce a value for U using the rules of template
+        //  argument deduction.
+        QualType CurDeducedType;
+        DeduceAutoResult DAR = DeduceAutoType(OrigResultTypeLoc, RetExpr, CurDeducedType);
+        if (PrevDeducedType.isNull())
+          PrevDeducedType = CurDeducedType;
+        if (DAR == DAR_Failed && !FD->isInvalidDecl())
+          Diag(RetExpr->getExprLoc(), diag::err_auto_fn_deduction_failure)
+            << OrigResultTypeLoc.getType() << RetExpr->getType();
+
+        if (DAR != DAR_Succeeded)
+          return true;
+        AutoType *CurAT = CurDeducedType->getContainedAutoType();
+        AutoType *PrevAT = PrevDeducedType->getContainedAutoType();
+        if (!Context.hasSameType(CurAT->getDeducedType(),
+                                 PrevAT->getDeducedType())) {
+          const LambdaScopeInfo *LambdaSI = getCurLambda();
+
+          if (LambdaSI && LambdaSI->HasImplicitReturnType) {
+            Diag(RetExpr->getExprLoc(),
+                 diag::err_typecheck_missing_return_type_incompatible)
+                << CurAT->getDeducedType()
+                << PrevAT->getDeducedType()
+                << true /*IsLambda*/;
+          } else {
+            Diag(RetExpr->getExprLoc(), diag::err_auto_fn_different_deductions)
+                << (PrevAT->isDecltypeAuto() ? 1 : 0) << CurAT->getDeducedType()
+                << PrevAT->getDeducedType();
+          }
+          FD->setInvalidDecl();
+          return true;
+        }
+        PrevDeducedType = CurDeducedType;
+      }
+      if (!PrevDeducedType.isNull())
+        Context.adjustDeducedFunctionResultType(FD, PrevDeducedType);
+      else if (!FD->isInvalidDecl() &&
+               !IsDeducingReturnTypeOfFunctionOnSemaStackBeingDefined) {
+        // If the function has a deduced result type but contains no 'return'
+        // statements, the result type as written must be exactly 'auto', and
+        // the deduced result type is 'void'. if (!FD->isInvalidDecl() &&
+        // !FunctionInfoOfFunctionBeingDeduced->Returns.size()) {
+          if (!FD->getReturnType()->getAs<AutoType>()) {
+            Diag(FD->getLocation(), diag::err_auto_fn_no_return_but_not_auto)
+                << FD->getReturnType();
+            FD->setInvalidDecl();
+          } else {
+            // Substitute 'void' for the 'auto' in the type.
+            Context.adjustDeducedFunctionResultType(
+                FD, SubstAutoType(OrigResultTypeLoc.getType(), Context.VoidTy));
+          }
+        //}
+      }
+      // FIXME: Introduce checks for the void type
+      if (!PrevDeducedType.isNull() && !PrevDeducedType->isVoidType()) {
+        const AttrVec *Attrs = FD->hasAttrs() ? &FD->getAttrs() : nullptr;
+        QualType RetType = FD->getReturnType();
+        for (ReturnStmt *RetS : FunctionInfoOfFunctionBeingDeduced->Returns) {
+          Expr *RetValExp = RetS->getRetValue();
+          SourceLocation ReturnLoc = RetS->getReturnLoc();
+          const VarDecl *NRVOCandidate = getCopyElisionCandidate(RetType, RetValExp, false);
+      
+          // we have a non-void function with an expression, continue checking
+          InitializedEntity Entity = InitializedEntity::InitializeResult(ReturnLoc,
+                                                                         RetType,
+                                                          NRVOCandidate != nullptr);
+          ExprResult Res = PerformMoveOrCopyInitialization(Entity, NRVOCandidate,
+                                                           RetType, RetValExp);
+          if (Res.isInvalid()) {
+            // FIXME: Clean up temporaries here anyway?
+            return true;
+          }
+          RetValExp = Res.getAs<Expr>();
+          CheckReturnValExpr(RetValExp, PrevDeducedType,
+                             ReturnLoc,
+                             /*isObjCMethod=*/false, Attrs, FD);
+
+          if (RetValExp) {
+            ExprResult ER = ActOnFinishFullExpr(RetValExp, ReturnLoc);
+            if (ER.isInvalid())
+              return true;
+            RetValExp = ER.get();
+          }
+          RetS->setRetValue(RetValExp);
+        }
+      }
+    }  
+  }
+  StillUndeduced = FD->getReturnType()->isUndeducedType();  
   if (StillUndeduced && Diagnose && !FD->isInvalidDecl()) {
     Diag(Loc, diag::err_auto_fn_used_before_defined) << FD;
     Diag(FD->getLocation(), diag::note_callee_decl) << FD;
