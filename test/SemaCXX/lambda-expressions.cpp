@@ -1,5 +1,5 @@
 // RUN: %clang_cc1 -std=c++11 -Wno-unused-value -fsyntax-only -verify -fblocks %s
-// RUN: %clang_cc1 -std=c++1y -Wno-unused-value -fsyntax-only -verify -fblocks %s
+// RUN: %clang_cc1 -std=c++1y -Wno-unused-value -fsyntax-only -verify -fblocks %s -DCPP1Y
 
 namespace std { class type_info; };
 
@@ -58,7 +58,22 @@ namespace ImplicitCapture {
 
     const int b = 2;
     []() { return b; };
-
+#ifdef CPP1Y
+    {
+      const int b = 2; //expected-note{{declared here}}
+      auto L = []() -> auto&{ //expected-note{{begins here}}
+        static const int x = 0;
+        return x;
+        return b; //expected-error{{cannot be implicitly captured}}  
+      };
+      // OK:
+      auto L2 = []() { 
+        static const int x = 0;
+        return x;
+        return b; 
+      };      
+    }
+#endif
     union { // expected-note {{declared}}
       int c;
       float d;

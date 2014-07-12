@@ -4222,6 +4222,8 @@ bool Sema::DeduceReturnType(FunctionDecl *FD, SourceLocation Loc,
         QualType RetType = FD->getReturnType();
         for (ReturnStmt *RetS : FunctionInfoOfFunctionBeingDeduced->Returns) {
           Expr *RetValExp = RetS->getRetValue();
+          assert(RetValExp && "RetValExp must exist - otherwise it would be a "
+                              "void type, and should not get here!");
           SourceLocation ReturnLoc = RetS->getReturnLoc();
           const VarDecl *NRVOCandidate = getCopyElisionCandidate(RetType, RetValExp, false);
       
@@ -4229,10 +4231,32 @@ bool Sema::DeduceReturnType(FunctionDecl *FD, SourceLocation Loc,
           InitializedEntity Entity = InitializedEntity::InitializeResult(ReturnLoc,
                                                                          RetType,
                                                           NRVOCandidate != nullptr);
+          // Now push this context on to Sema - FIXME: Make this a call to
+          // an overloaded PushEvaluationContext.
+
+          std::shared_ptr<ExpressionEvaluationContextRecord> EECR =
+              FunctionInfoOfFunctionBeingDeduced
+                  ->ReturnStmtToExprEvaluationContextMap[RetS];
+
+          bool OldExprNeedsCleanups = ExprNeedsCleanups;
+          if (EECR) {
+              ExprEvalContexts.push_back(*EECR);
+              //if (!MaybeODRUseExprs.empty())
+              std::swap(MaybeODRUseExprs,
+                          ExprEvalContexts.back().SavedMaybeODRUseExprs);
+              //if (!ExprCleanupObjects.empty())
+              std::swap(ExprCleanupObjects,
+                          ExprEvalContexts.back().SavedExprCleanupObjects);
+              ExprNeedsCleanups = ExprEvalContexts.back().ParentNeedsCleanups;
+          }
           ExprResult Res = PerformMoveOrCopyInitialization(Entity, NRVOCandidate,
                                                            RetType, RetValExp);
           if (Res.isInvalid()) {
             // FIXME: Clean up temporaries here anyway?
+            if (EECR) {
+              PopExpressionEvaluationContext();
+              ExprNeedsCleanups = OldExprNeedsCleanups;
+            }
             return true;
           }
           RetValExp = Res.getAs<Expr>();
@@ -4240,14 +4264,19 @@ bool Sema::DeduceReturnType(FunctionDecl *FD, SourceLocation Loc,
                              ReturnLoc,
                              /*isObjCMethod=*/false, Attrs, FD);
 
-          if (RetValExp) {
-            ExprResult ER = ActOnFinishFullExpr(RetValExp, ReturnLoc);
-            if (ER.isInvalid())
-              return true;
-            RetValExp = ER.get();
+          ExprResult ER = ActOnFinishFullExpr(RetValExp, ReturnLoc);
+          if (EECR) {
+            PopExpressionEvaluationContext();
+            ExprNeedsCleanups = OldExprNeedsCleanups;
           }
+          if (ER.isInvalid())
+            return true;
+          RetValExp = ER.get();
           RetS->setRetValue(RetValExp);
         }
+        // Clear all the corresponding evaluation contexts.
+        FunctionInfoOfFunctionBeingDeduced->ReturnStmtToExprEvaluationContextMap
+            .clear();
       }
     }  
   }

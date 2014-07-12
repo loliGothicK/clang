@@ -39,7 +39,7 @@
 #include "clang/Sema/ObjCMethodList.h"
 #include "clang/Sema/Ownership.h"
 #include "clang/Sema/Scope.h"
-#include "clang/Sema/ScopeInfo.h"
+//#include "clang/Sema/ScopeInfo.h"
 #include "clang/Sema/TypoCorrection.h"
 #include "clang/Sema/Weak.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -739,7 +739,7 @@ public:
 
     /// \brief The number of active cleanup objects when we entered
     /// this expression evaluation context.
-    unsigned NumCleanupObjects;
+    // unsigned NumCleanupObjects;
 
     llvm::SmallPtrSet<Expr*, 2> SavedMaybeODRUseExprs;
 
@@ -775,7 +775,7 @@ public:
                                       Decl *ManglingContextDecl,
                                       bool IsDecltype)
       : Context(Context), ParentNeedsCleanups(ParentNeedsCleanups),
-        IsDecltype(IsDecltype), NumCleanupObjects(NumCleanupObjects),
+        IsDecltype(IsDecltype), //NumCleanupObjects(NumCleanupObjects),
         ManglingContextDecl(ManglingContextDecl), MangleNumbering() { }
 
     /// \brief Retrieve the mangling numbering context, used to consistently
@@ -1062,17 +1062,7 @@ public:
     return FunctionScopes.back();
   }
   
-  sema::FunctionScopeInfo *getEnclosingFunction() const {
-    if (FunctionScopes.empty())
-      return nullptr;
-    
-    for (int e = FunctionScopes.size()-1; e >= 0; --e) {
-      if (isa<sema::BlockScopeInfo>(FunctionScopes[e]))
-        continue;
-      return FunctionScopes[e];
-    }
-    return nullptr;
-  }
+  sema::FunctionScopeInfo *getEnclosingFunction() const; 
   
   template <typename ExprT>
   void recordUseOfEvaluatedWeak(const ExprT *E, bool IsRead=true) {

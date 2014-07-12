@@ -1101,6 +1101,17 @@ void Sema::PopFunctionScopeInfo(const AnalysisBasedWarnings::Policy *WP,
     delete Scope;
 }
 
+sema::FunctionScopeInfo *Sema::getEnclosingFunction() const {
+    if (FunctionScopes.empty())
+      return nullptr;
+    
+    for (int e = FunctionScopes.size()-1; e >= 0; --e) {
+      if (isa<sema::BlockScopeInfo>(FunctionScopes[e]))
+        continue;
+      return FunctionScopes[e];
+    }
+    return nullptr;
+  }
 void Sema::PushCompoundScope() {
   getCurFunction()->CompoundScopes.push_back(CompoundScopeInfo());
 }

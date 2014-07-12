@@ -19,10 +19,13 @@
 #include "clang/Basic/CapturedStmt.h"
 #include "clang/Basic/PartialDiagnostic.h"
 #include "clang/Sema/Ownership.h"
+#include "clang/Sema/Sema.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include <algorithm>
+#include <map>
+#include <memory>
 
 namespace clang {
 
@@ -149,6 +152,10 @@ public:
   /// \brief The FunctionDecl (function or block or lambda-call-op) that this
   /// scope info object represents.
   FunctionDecl *MyFunctionDecl;
+
+  std::map<ReturnStmt *,
+           std::shared_ptr<Sema::ExpressionEvaluationContextRecord>>
+  ReturnStmtToExprEvaluationContextMap;
 
 public:
   /// Represents a simple identification of a weak object.

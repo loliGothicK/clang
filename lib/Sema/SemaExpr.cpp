@@ -11260,15 +11260,24 @@ ExprResult Sema::TransformToPotentiallyEvaluated(Expr *E) {
   return TransformToPE(*this).TransformExpr(E);
 }
 
-Sema::ExpressionEvaluationContextRecord
+std::shared_ptr<Sema::ExpressionEvaluationContextRecord>
 stealCurrentExpressionEvaluationContext(Sema &S) {
-  auto E = S.ExprEvalContexts.back();
-  E.SavedMaybeODRUseExprs = S.MaybeODRUseExprs;
-  E.SavedExprCleanupObjects = S.ExprCleanupObjects;
-  E.ParentNeedsCleanups = S.ExprNeedsCleanups;
+  // FIXME: Optimize - so we don't have to make copies and throw them away -
+  // consider swapping the current record's containers into temps, then making a
+  // copy, then swapping stuff back.
+
+  // decltype(S.MaybeODRUseExprs) TempMaybeODRUseExprs; 
+  // decltype(S.ExprCleanupObjects) TempExprCleanupObjects; 
+  // std::swap(TempExprCleanupObjects, S.ExprCleanupObjects); 
+  // std::swap(TempMaybeODRUseExprs, S.MaybeODRUseExprs);
+  std::shared_ptr<Sema::ExpressionEvaluationContextRecord> EP(
+      new Sema::ExpressionEvaluationContextRecord(S.ExprEvalContexts.back()));
+  EP->SavedMaybeODRUseExprs = S.MaybeODRUseExprs;
+  EP->SavedExprCleanupObjects = S.ExprCleanupObjects;
+  EP->ParentNeedsCleanups = S.ExprNeedsCleanups;
   S.MaybeODRUseExprs.clear();
   S.ExprCleanupObjects.clear();
-  return E;
+  return EP;
 }
 
 void
@@ -11277,13 +11286,15 @@ Sema::PushExpressionEvaluationContext(ExpressionEvaluationContext NewContext,
                                       bool IsDecltype) {
   ExprEvalContexts.push_back(
              ExpressionEvaluationContextRecord(NewContext,
-                                               ExprCleanupObjects.size(),
+                                               /*ExprCleanupObjects.size()*/0,
                                                ExprNeedsCleanups,
                                                LambdaContextDecl,
                                                IsDecltype));
   ExprNeedsCleanups = false;
   if (!MaybeODRUseExprs.empty())
     std::swap(MaybeODRUseExprs, ExprEvalContexts.back().SavedMaybeODRUseExprs);
+  if (!ExprCleanupObjects.empty())
+    std::swap(ExprCleanupObjects, ExprEvalContexts.back().SavedExprCleanupObjects);
 }
 
 void
@@ -11334,16 +11345,20 @@ void Sema::PopExpressionEvaluationContext() {
   // the expression in that context: they aren't relevant because they
   // will never be constructed.
   if (Rec.isUnevaluated() || Rec.Context == ConstantEvaluated) {
-    ExprCleanupObjects.erase(ExprCleanupObjects.begin() + Rec.NumCleanupObjects,
-                             ExprCleanupObjects.end());
+    
+    //ExprCleanupObjects.erase(ExprCleanupObjects.begin() + Rec.NumCleanupObjects,
+    //                         ExprCleanupObjects.end());
+    std::swap(ExprCleanupObjects, Rec.SavedExprCleanupObjects);
     ExprNeedsCleanups = Rec.ParentNeedsCleanups;
     CleanupVarDeclMarking();
     std::swap(MaybeODRUseExprs, Rec.SavedMaybeODRUseExprs);
-  // Otherwise, merge the contexts together.
+    // Otherwise, merge the contexts together.
   } else {
     ExprNeedsCleanups |= Rec.ParentNeedsCleanups;
     MaybeODRUseExprs.insert(Rec.SavedMaybeODRUseExprs.begin(),
                             Rec.SavedMaybeODRUseExprs.end());
+    ExprCleanupObjects.append(Rec.SavedExprCleanupObjects.begin(),
+                             Rec.SavedExprCleanupObjects.end());
   }
 
   // Pop the current expression evaluation context off the stack.
@@ -11351,10 +11366,11 @@ void Sema::PopExpressionEvaluationContext() {
 }
 
 void Sema::DiscardCleanupsInEvaluationContext() {
-  ExprCleanupObjects.erase(
-         ExprCleanupObjects.begin() + ExprEvalContexts.back().NumCleanupObjects,
-         ExprCleanupObjects.end());
+  //ExprCleanupObjects.erase(
+  //       ExprCleanupObjects.begin() + ExprEvalContexts.back().NumCleanupObjects,
+  //       ExprCleanupObjects.end());
   ExprNeedsCleanups = false;
+  ExprCleanupObjects.clear();
   MaybeODRUseExprs.clear();
 }
 

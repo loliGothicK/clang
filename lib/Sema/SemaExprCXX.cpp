@@ -5006,7 +5006,7 @@ Expr *Sema::MaybeCreateExprWithCleanups(Expr *SubExpr) {
 
   CleanupVarDeclMarking();
 
-  unsigned FirstCleanup = ExprEvalContexts.back().NumCleanupObjects;
+  unsigned FirstCleanup = 0; //ExprEvalContexts.back().NumCleanupObjects;
   assert(ExprCleanupObjects.size() >= FirstCleanup);
   assert(ExprNeedsCleanups || ExprCleanupObjects.size() == FirstCleanup);
   if (!ExprNeedsCleanups)

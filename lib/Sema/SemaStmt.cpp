@@ -2711,16 +2711,27 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
   // FIXME: If the context is not dependent && we have a deduced return type -
   // skip this check, since it will get done when deduce return type gets
   // called.
-  if (RetValExp /*&& !HasDeducedReturnType*/) {
-    ExprResult ER = ActOnFinishFullExpr(RetValExp, ReturnLoc);
-    if (ER.isInvalid())
-      return StmtError();
-    RetValExp = ER.get();
+  std::shared_ptr<Sema::ExpressionEvaluationContextRecord> CurEvaluationContextP;
+  if (RetValExp) {
+    if (CurContext->isDependentContext() || !HasDeducedReturnType) {
+      ExprResult ER = ActOnFinishFullExpr(RetValExp, ReturnLoc);
+      if (ER.isInvalid())
+        return StmtError();
+      RetValExp = ER.get();
+    } else if (HasDeducedReturnType) {
+      std::shared_ptr<Sema::ExpressionEvaluationContextRecord>
+        stealCurrentExpressionEvaluationContext(Sema &S);
+      CurEvaluationContextP = stealCurrentExpressionEvaluationContext(*this);
+    }
+
   }
   //*/
   ReturnStmt *Result = new (Context) ReturnStmt(ReturnLoc, RetValExp,
                                                 NRVOCandidate);
-
+  if (CurEvaluationContextP) {
+    FunctionScopes.back()->ReturnStmtToExprEvaluationContextMap[Result] =
+        CurEvaluationContextP;
+  }
   // If we need to check for the named return value optimization,
   // or if we need to infer the return type,
   // save the return statement in our scope for later processing.
@@ -3023,7 +3034,7 @@ StmtResult Sema::BuildReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
     }
 
     Result = new (Context) ReturnStmt(ReturnLoc, RetValExp, nullptr);
-  } else if (!RetValExp && !HasDependentReturnType) {
+  } else if (!RetValExp && !HasDependentReturnType && !HasDeducedReturnType) {
     unsigned DiagID = diag::warn_return_missing_expr;  // C90 6.6.6.4p4
     // C99 6.8.6.4p1 (ext_ since GCC warns)
     if (getLangOpts().C99) DiagID = diag::ext_return_missing_expr;
@@ -3034,7 +3045,7 @@ StmtResult Sema::BuildReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
       Diag(ReturnLoc, DiagID) << getCurMethodDecl()->getDeclName() << 1/*meth*/;
     Result = new (Context) ReturnStmt(ReturnLoc);
   } else {
-    assert(RetValExp || HasDependentReturnType);
+    assert(RetValExp || HasDependentReturnType || HasDeducedReturnType);
     const VarDecl *NRVOCandidate = nullptr;
 
     QualType RetType = RelatedRetType.isNull() ? FnRetType : RelatedRetType;
@@ -3047,7 +3058,7 @@ StmtResult Sema::BuildReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
     // the C version of which boils down to CheckSingleAssignmentConstraints.
     if (RetValExp)
       NRVOCandidate = getCopyElisionCandidate(FnRetType, RetValExp, false);
-    if (!HasDependentReturnType && !RetValExp->isTypeDependent() &&
+    if (!HasDependentReturnType && RetValExp && !RetValExp->isTypeDependent() &&
         !HasDeducedReturnType) {
       // we have a non-void function with an expression, continue checking
       InitializedEntity Entity = InitializedEntity::InitializeResult(ReturnLoc,
@@ -3083,7 +3094,8 @@ StmtResult Sema::BuildReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
     // skip this check, since it will get done when deduce return type gets
     // called.
 
-    if (RetValExp /*&& !HasDeducedReturnType*/) {
+    if (RetValExp &&
+        (CurContext->isDependentContext() || !HasDeducedReturnType)) {
       ExprResult ER = ActOnFinishFullExpr(RetValExp, ReturnLoc);
       if (ER.isInvalid())
         return StmtError();
