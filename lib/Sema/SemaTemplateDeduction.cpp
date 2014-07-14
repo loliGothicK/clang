@@ -4101,6 +4101,110 @@ void Sema::DiagnoseAutoDeductionFailure(VarDecl *VDecl, Expr *Init) {
       << Init->getSourceRange();
 }
 
+QualType getUniqueCommonType(Sema &S, llvm::SmallVectorImpl<ReturnStmt *> &Returns) {
+
+  // This could be optimized - there are some duplicate calculations here.
+  auto GetCommonTypeForReturnStmt = [&S, &Returns](ReturnStmt *const TheRetS) {
+    ExprResult IgnoreCond;
+    // std::vector<std::pair<Expr *, QualType>> ExprCommonTypeVector;
+    llvm::SmallVector<ReturnStmt *, 8> UnmergedReturnStmts;
+    // When a common type is found, if one is converted to the other
+    // the expression is modified to include the conversion...
+    //std::map<ReturnStmt *, Expr *> NewExpressions;
+    QualType PrevCommonType;
+    // If UnmergedReturnStmts is non-null, just record the unmergeables, else
+    // complain.
+    auto CommonTypeChecker = [&S, &PrevCommonType, &IgnoreCond, TheRetS](
+        llvm::SmallVectorImpl<ReturnStmt *> &ReturnsToCheck,
+        llvm::SmallVectorImpl<ReturnStmt *> *UnmergedReturnStmts) {
+  
+      for (auto *const RetS : ReturnsToCheck) {
+        if (RetS != TheRetS) {
+          ExprResult CurrentExpr(RetS->getRetValue());
+          ExprResult TheExpr(TheRetS->getRetValue());
+          ExprValueKind VK = ExprValueKind();
+          ExprObjectKind OK = ExprObjectKind();
+          QualType CurCommonType = S.CXXCheckConditionalOperands(
+              IgnoreCond, TheExpr, CurrentExpr, VK, OK,
+              TheExpr.get()->getExprLoc(), /*Complain=*/false);
+          if (CurCommonType.isNull()) {
+            if (UnmergedReturnStmts)
+              UnmergedReturnStmts->push_back(RetS);
+            else {
+              S.Diag(TheRetS->getRetValue()->getExprLoc(),
+                     diag::err_auto_fn_different_deductions)
+                  << (/*PrevAT->isDecltypeAuto() ? 1 :*/ 0) << TheRetS->getRetValue()->getType()
+                  << RetS->getRetValue()->getType();
+              return QualType();
+            }
+          } else {
+            if (PrevCommonType.isNull())
+              PrevCommonType = CurCommonType;
+            // if
+            if (!S.Context.hasSameType(CurCommonType, PrevCommonType)) {
+              S.Diag(TheExpr.get()->getExprLoc(),
+                     diag::err_auto_fn_different_deductions)
+                  << (/*PrevAT->isDecltypeAuto() ? 1 :*/ 0) << PrevCommonType
+                  << CurCommonType;
+              return QualType();
+            } else {
+              // If we are not harvesting unmergeables - that means we have
+              // already converted the return stmt to the common type - so it
+              // should not be modified - and if it is, then that's an error
+              if (!UnmergedReturnStmts) {
+                if (TheExpr.get() != TheRetS->getRetValue()) {
+                  S.Diag(TheExpr.get()->getExprLoc(),
+                     diag::err_auto_fn_different_deductions)
+                  << (/*PrevAT->isDecltypeAuto() ? 1 :*/ 0) << PrevCommonType
+                  << CurCommonType;
+                }
+              } else {
+                TheRetS->setRetValue(TheExpr.get());
+                //RetS->setRetValue(CurrentExpr.get());
+              }
+            }
+          }
+        }
+      }
+      return PrevCommonType;
+    };
+    QualType CommonType = CommonTypeChecker(Returns, &UnmergedReturnStmts);
+    if (CommonType.isNull()) return QualType();
+    if (UnmergedReturnStmts.size())
+      CommonType = CommonTypeChecker(UnmergedReturnStmts, 0);
+
+    return CommonType;
+  };
+  // FIXME: Here is where we need to check for the common type Remember - we
+  // only want one common-type - if there can be two it shall be ill-formed.
+  // We should first check to see if we can determine a unique common-type.
+  // When checking for common-types, we should iterate through each expression
+  //   - attempt to find a common type with every other return-expression
+  QualType PrevCommonType;
+  for (ReturnStmt *RetS : Returns) {
+    QualType CurCommonType = GetCommonTypeForReturnStmt(RetS);
+    if (PrevCommonType.isNull())
+      PrevCommonType = CurCommonType;
+    if (CurCommonType.isNull())
+      return QualType();
+    if (!S.Context.hasSameType(PrevCommonType, CurCommonType)) {
+      S.Diag(RetS->getRetValue()->getExprLoc(),
+             diag::err_auto_fn_different_deductions)
+          << (/*PrevAT->isDecltypeAuto() ? 1 :*/ 0) << PrevCommonType
+          << CurCommonType;
+    }
+  }
+  //      - if the common-type determination fails, track the expression it
+  //      failed with and continue on, until we do find a common-type with one
+  //      of the expressions 
+  //      - as soon as you find a different common-type
+  //      with another expression - check to see if the common-type between
+  //      that expression and the one you already found a common-type with
+  //      is the same.
+  return PrevCommonType;
+}
+
+
 bool Sema::DeduceReturnType(FunctionDecl *FD, SourceLocation Loc,
                             bool Diagnose) {
   assert(FD->getReturnType()->isUndeducedType());
@@ -4143,6 +4247,12 @@ bool Sema::DeduceReturnType(FunctionDecl *FD, SourceLocation Loc,
       if (FSI && FSI->MyFunctionDecl == FD)
         FunctionInfoOfFunctionBeingDeduced = FSI;
     }
+    
+    QualType CommonType =
+        getUniqueCommonType(*this, FunctionInfoOfFunctionBeingDeduced->Returns);
+    // If so, then the expression has been altered to include
+    // initialization/conversion that makes the expression types equivalent.
+    //
     if (FunctionInfoOfFunctionBeingDeduced) {
       // Use the Return statements to freeze and adjust the return type of the
       // function.
@@ -4177,6 +4287,8 @@ bool Sema::DeduceReturnType(FunctionDecl *FD, SourceLocation Loc,
           return true;
         AutoType *CurAT = CurDeducedType->getContainedAutoType();
         AutoType *PrevAT = PrevDeducedType->getContainedAutoType();
+
+        
         if (!Context.hasSameType(CurAT->getDeducedType(),
                                  PrevAT->getDeducedType())) {
           const LambdaScopeInfo *LambdaSI = getCurLambda();
@@ -4197,6 +4309,8 @@ bool Sema::DeduceReturnType(FunctionDecl *FD, SourceLocation Loc,
         }
         PrevDeducedType = CurDeducedType;
       }
+
+      // Now adjust the return type of all the function declarations.
       if (!PrevDeducedType.isNull())
         Context.adjustDeducedFunctionResultType(FD, PrevDeducedType);
       else if (!FD->isInvalidDecl() &&
