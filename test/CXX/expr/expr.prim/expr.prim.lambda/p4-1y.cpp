@@ -42,10 +42,10 @@ int test_multiple_returns()  {
       if (k)
         return a;
       else
-        return 5; //expected-error{{deduced as 'int' here}}
+        return 5; //disable-expected-error{{deduced as 'int' here}}
     }; 
     M(3); // OK
-    M('a'); //expected-note{{in instantiation of}}
+    M('a'); //disable-expected-note{{in instantiation of}}
   return 0;
 }
 int test_no_parameter_list()

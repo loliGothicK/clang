@@ -4390,29 +4390,34 @@ QualType Sema::CXXCheckConditionalOperands(ExprResult &Cond, ExprResult &LHS,
   OK = OK_Ordinary;
 
   // Either of the arguments dependent?
-  if (LHS.get()->isTypeDependent() || RHS.get()->isTypeDependent())
+  if ((LHS.get() && RHS.get()) &&
+      (LHS.get()->isTypeDependent() || RHS.get()->isTypeDependent()))
     return Context.DependentTy;
 
   // C++11 [expr.cond]p2
   //   If either the second or the third operand has type (cv) void, ...
-  QualType LTy = LHS.get()->getType();
-  QualType RTy = RHS.get()->getType();
-  bool LVoid = LTy->isVoidType();
-  bool RVoid = RTy->isVoidType();
+  QualType LTy = LHS.get() ? LHS.get()->getType() : Context.VoidTy;
+  QualType RTy = RHS.get() ? RHS.get()->getType() : Context.VoidTy;
+  const bool LVoid = LTy->isVoidType();
+  const bool RVoid = RTy->isVoidType();
   if (LVoid || RVoid) {
+    Expr *const LHSExpr = LHS.get();
+    Expr *const RHSExpr = RHS.get();
     //   ... one of the following shall hold:
     //   -- The second or the third operand (but not both) is a (possibly
     //      parenthesized) throw-expression; the result is of the type
     //      and value category of the other.
-    bool LThrow = isa<CXXThrowExpr>(LHS.get()->IgnoreParenImpCasts());
-    bool RThrow = isa<CXXThrowExpr>(RHS.get()->IgnoreParenImpCasts());
+    const bool LThrow =
+        LHSExpr ? isa<CXXThrowExpr>(LHS.get()->IgnoreParenImpCasts()) : false;
+    const bool RThrow =
+        RHSExpr ? isa<CXXThrowExpr>(RHS.get()->IgnoreParenImpCasts()) : false;
     if (LThrow != RThrow) {
       Expr *NonThrow = LThrow ? RHS.get() : LHS.get();
-      VK = NonThrow->getValueKind();
+      VK = NonThrow ? NonThrow->getValueKind() : VK_RValue;
       // DR (no number yet): the result is a bit-field if the
       // non-throw-expression operand is a bit-field.
-      OK = NonThrow->getObjectKind();
-      return NonThrow->getType();
+      OK = NonThrow ? NonThrow->getObjectKind() : OK_Ordinary;
+      return NonThrow ? NonThrow->getType() : Context.VoidTy;
     }
 
     //   -- Both the second and third operands have type void; the result is of
@@ -4422,8 +4427,9 @@ QualType Sema::CXXCheckConditionalOperands(ExprResult &Cond, ExprResult &LHS,
 
     // Neither holds, error.
     Diag(QuestionLoc, diag::err_conditional_void_nonvoid)
-      << (LVoid ? RTy : LTy) << (LVoid ? 0 : 1)
-      << LHS.get()->getSourceRange() << RHS.get()->getSourceRange();
+        << (LVoid ? RTy : LTy) << (LVoid ? 0 : 1)
+        << (LHSExpr ? LHS.get()->getSourceRange() : QuestionLoc)
+        << (RHSExpr ? RHSExpr->getSourceRange() : QuestionLoc);
     return QualType();
   }
 

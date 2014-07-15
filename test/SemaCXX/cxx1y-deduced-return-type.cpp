@@ -93,7 +93,7 @@ const auto void_ret_3() {} // ok, return type 'const void' is adjusted to 'void'
 
 const auto void_ret_4() {
   if (false)
-    return void();
+    return void(); // expected-error {{'auto' in return type deduced}}
   if (false)
     return;
   return 0; // expected-error {{'auto' in return type deduced as 'int' here but deduced as 'void' in earlier return statement}}

@@ -35,9 +35,17 @@ namespace ReturnDeduction {
     [](){ return 1; };
     [](){ return 1; };
     [](){ return ({return 1; 1;}); };
-    [](){ return ({return 'c'; 1;}); }; // expected-error {{must match previous return type}}
+#ifndef CPP1Y
+    [](){ return ({return 'c'; 1;}); }; //expected-error {{must match previous return type}}
+#else
+    [](){ return ({return 'c'; 1;}); };
+#endif
     []()->int{ return 'c'; return 1; };
-    [](){ return 'c'; return 1; };  // expected-error {{must match previous return type}}
+#ifndef CPP1Y
+    [](){ return 'c'; return 1; };  //expected-error {{must match previous return type}}
+#else
+    [](){ return 'c'; return 1; };
+#endif
     []() { return; return (void)0; };
     [](){ return 1; return 1; };
   }
