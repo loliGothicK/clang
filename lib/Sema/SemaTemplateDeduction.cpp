@@ -24,6 +24,7 @@
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/Template.h"
 #include "llvm/ADT/SmallBitVector.h"
+#include "llvm/ADT/SmallSet.h"
 #include <algorithm>
 
 namespace clang {
@@ -4101,7 +4102,7 @@ void Sema::DiagnoseAutoDeductionFailure(VarDecl *VDecl, Expr *Init) {
       << Init->getSourceRange();
 }
 
-QualType getUniqueCommonType(Sema &S, llvm::SmallVectorImpl<ReturnStmt *> &Returns) {
+QualType getUniqueCommonTypeOld(Sema &S, llvm::SmallVectorImpl<ReturnStmt *> &Returns) {
 
   // This could be optimized - there are some duplicate calculations here.
   auto GetCommonTypeForReturnStmt = [&S, &Returns](ReturnStmt *const TheRetS) {
@@ -4220,6 +4221,205 @@ QualType getUniqueCommonType(Sema &S, llvm::SmallVectorImpl<ReturnStmt *> &Retur
 }
 
 
+QualType getUniqueCommonType(Sema &S, llvm::SmallVectorImpl<ReturnStmt *> &Returns) {
+   
+  // This could be optimized - there are some duplicate calculations here.
+  auto GetCommonTypeForReturnStmt = [&S, &Returns](ReturnStmt *const TheRetS) {
+    ExprResult IgnoreCond;
+    // Hold on to this node, since determining the common type can result in the
+    // addition of conversions and thusly a newly created Expr node.
+    Expr *const TheOriginalReturnExpr = TheRetS->getRetValue();
+
+    // Track all the return stmts we can't directly unify with - but once we
+    // have found a common-type we should try and convert each one of these to
+    // that merged return expr.
+    llvm::SmallVector<ReturnStmt *, 8> UnmergedReturnStmts;
+
+    llvm::SmallVector<std::pair<QualType, Expr *>, 8> MyCommonTypes;
+    //llvm::DenseMap<QualType, Expr *> MyCommonTypesMap;
+    llvm::SmallVector<QualType, 8> MyCommonTypesSet;
+    // Try and merge TheRetS with every other expression - and get the common types.
+    auto CollectCommonTypes = [&S, &Returns, TheRetS, TheOriginalReturnExpr,
+                               &IgnoreCond, &MyCommonTypes, &MyCommonTypesSet] {
+      const bool TheOriginalIsNullPtrLiteral =
+          TheOriginalReturnExpr->isNullPointerConstant(
+              S.Context, Expr::NPC_NeverValueDependent) &&
+              TheOriginalReturnExpr->getType()->isNullPtrType() ||
+          TheOriginalReturnExpr->getType()->isIntegerType();
+
+      for (ReturnStmt *RetS : Returns) {
+        if (RetS != TheRetS) {
+          ExprResult CurrentExpr(RetS->getRetValue());
+          ExprResult TheExpr(TheOriginalReturnExpr);
+          ExprValueKind VK = ExprValueKind();
+          ExprObjectKind OK = ExprObjectKind();
+          const bool IsCurNullPtrLiteral = CurrentExpr.get() &&
+              CurrentExpr.get()->isNullPointerConstant(
+                  S.Context, Expr::NPC_NeverValueDependent) &&
+                  CurrentExpr.get()->getType()->isNullPtrType() ||
+              CurrentExpr.get()->getType()->isIntegerType();
+
+          QualType CurCommonType = S.CXXCheckConditionalOperands(
+              IgnoreCond, TheExpr, CurrentExpr, VK, OK, TheRetS->getReturnLoc(),
+              /*Complain=*/false);
+          // If a nullptr is implicitly converted to another type, wrap it in a
+          // cstyle cast so it is not viewed as a nullptr expression - otherwise
+          // its type gets subverted and modified.
+          if (!CurCommonType.isNull()) {
+            if (TheOriginalIsNullPtrLiteral &&
+                TheExpr.get() != TheOriginalReturnExpr &&
+                isa<ImplicitCastExpr>(TheExpr.get())) {
+              ExprResult CStyleCastAddedRes = S.BuildCStyleCastExpr(
+                  TheOriginalReturnExpr->getLocStart(),
+                  S.Context.getTrivialTypeSourceInfo(
+                      CurCommonType, TheOriginalReturnExpr->getExprLoc()),
+                  TheOriginalReturnExpr->getLocEnd(), TheExpr.get());
+              assert(CStyleCastAddedRes.get() && "We must be ablet o add a cstyle-cast to an implicitly cast nullptr!");
+              TheExpr.set(CStyleCastAddedRes.get());
+            }
+          }
+          // FIXME: We can run into issues if a nullptr has been implicitly cast
+          // to a pointer of another type - so convert it to an explicit cast.
+          if (!CurCommonType.isNull() &&
+              std::find(MyCommonTypesSet.begin(), MyCommonTypesSet.end(),
+                        CurCommonType) == MyCommonTypesSet.end()) {
+            MyCommonTypes.push_back(
+                std::make_pair(CurCommonType, TheExpr.get()));
+            MyCommonTypesSet.push_back(CurCommonType);
+          }
+        }
+      }
+    };
+
+    CollectCommonTypes();
+    if (!MyCommonTypes.size())
+      return QualType();
+    Expr *TheConvertedExpr = nullptr;
+    QualType TheConvertedQType;
+    if (MyCommonTypes.size() > 1) {
+      // Ok lets see if we can find a common type from all the conversions that
+      // we can convert TheExpr to.  Remember, all these are only conversions that
+      // TheExpr can undergo.  I believe this detects the common base, and handles
+      // const addition.
+      QualType PrevCommonType = MyCommonTypes[0].first;
+      Expr *PrevExpr = MyCommonTypes[0].second;
+      for (unsigned I = 1, N = MyCommonTypes.size(); I != N; ++I) {
+        Expr *const CurExpr = MyCommonTypes[I].second;
+        QualType CurType = MyCommonTypes[I].first;
+        ExprResult CurrentExprRes(CurExpr);
+        ExprResult PrevExprRes(PrevExpr);
+        ExprValueKind VK = ExprValueKind();
+        ExprObjectKind OK = ExprObjectKind();
+
+        QualType CurCommonType = S.CXXCheckConditionalOperands(
+            IgnoreCond, CurrentExprRes, PrevExprRes, VK, OK,
+            TheRetS->getReturnLoc(),
+            /*Complain=*/false);
+        // One has to be convertible to the other - without additional conversions!
+
+        if (CurCommonType.isNull()) {
+          S.Diag(TheRetS->getReturnLoc(),
+                 diag::err_auto_fn_different_deductions)
+              << (/*PrevAT->isDecltypeAuto() ? 1 :*/ 0) << PrevCommonType
+              << CurCommonType;
+          return QualType();
+        } else {
+          // FIXME: If this was a nullptr - make sure any implicit casts of the
+          // nullptr to a new pts are converted to C-style casts.  This might
+          // not be necessary since if we use the same previous-expression if it
+          // hasn't changed - which if it is a nullptr and was converted it
+          // should have changed - and so ignore it and use the other 
+          // ptr that should not have changed - unless cv qual was added.
+        }
+        PrevCommonType = CurCommonType;
+        // Either the previous expr is unchanged if so use it, or the current expr is - use that.
+        PrevExpr = PrevExprRes.get() == PrevExpr ? PrevExprRes.get() : CurrentExprRes.get();
+        
+      }
+      // Ok so we merged all down to one - use this as your PrevExpr, and see if
+      // we can merge all others to it, if not - then we have an error!
+      TheConvertedExpr = PrevExpr;
+      TheConvertedQType = PrevCommonType;
+    } else {
+      // MyCommonTypes.size() == 1
+      TheConvertedExpr = MyCommonTypes[0].second;
+      TheConvertedQType = MyCommonTypes[0].first;
+    }
+
+    // Now that we have the common type amongst all the common types when
+    // TheType is compared against all other return types - we should come up
+    // with the same type: TheConvertedQType - or else something is wrong.
+
+    auto CommonTypeChecker = [&S, TheConvertedQType, TheConvertedExpr,
+                              &IgnoreCond, TheRetS, TheOriginalReturnExpr](
+        llvm::SmallVectorImpl<ReturnStmt *> &ReturnsToCheck) {
+      auto GetReturnExprType = [&S](ReturnStmt *RetS) {
+        return RetS->getRetValue() ? RetS->getRetValue()->getType() : S.Context.VoidTy;
+      };
+
+      ExprResult TheExpr(TheConvertedExpr);
+          
+      for (auto *const RetS : ReturnsToCheck) {
+        if (RetS != TheRetS) {
+          ExprResult CurrentExpr(RetS->getRetValue());
+          ExprValueKind VK = ExprValueKind();
+          ExprObjectKind OK = ExprObjectKind();
+
+          QualType CurCommonType = S.CXXCheckConditionalOperands(
+              IgnoreCond, TheExpr, CurrentExpr, VK, OK,
+              TheRetS->getReturnLoc(), /*Complain=*/false);
+          
+          if (CurCommonType.isNull() ||
+              !S.Context.hasSameType(CurCommonType, TheConvertedQType)) {
+            S.Diag(TheRetS->getReturnLoc(),
+                   diag::err_auto_fn_different_deductions)
+                << (/*PrevAT->isDecltypeAuto() ? 1 :*/ 0)
+                << GetReturnExprType(TheRetS) << GetReturnExprType(RetS);
+            return QualType();
+          }
+          assert(TheExpr.get() == TheConvertedExpr &&
+                 "Once we have found the common converted return expr for a "
+                 "given return expr, it should not change when finding "
+                 "subsequent common types against the other return stmts.");
+        }
+      }
+      TheRetS->setRetValue(TheConvertedExpr);
+      return TheConvertedQType;
+    };
+    
+    return CommonTypeChecker(Returns);
+  };
+  // FIXME: Here is where we need to check for the common type Remember - we
+  // only want one common-type - if there can be two it shall be ill-formed.
+  // We should first check to see if we can determine a unique common-type.
+  // When checking for common-types, we should iterate through each expression
+  //   - attempt to find a common type with every other return-expression
+  QualType PrevCommonType;
+  for (ReturnStmt *RetS : Returns) {
+    QualType CurCommonType = GetCommonTypeForReturnStmt(RetS);
+    if (PrevCommonType.isNull())
+      PrevCommonType = CurCommonType;
+    if (CurCommonType.isNull())
+      return QualType();
+    if (!S.Context.hasSameType(PrevCommonType, CurCommonType)) {
+      S.Diag(RetS->getRetValue()->getExprLoc(),
+             diag::err_auto_fn_different_deductions)
+          << (/*PrevAT->isDecltypeAuto() ? 1 :*/ 0) << PrevCommonType
+          << CurCommonType;
+    }
+  }
+  //      - if the common-type determination fails, track the expression it
+  //      failed with and continue on, until we do find a common-type with one
+  //      of the expressions 
+  //      - as soon as you find a different common-type
+  //      with another expression - check to see if the common-type between
+  //      that expression and the one you already found a common-type with
+  //      is the same.
+  return PrevCommonType;
+}
+
+
+
 bool Sema::DeduceReturnType(FunctionDecl *FD, SourceLocation Loc,
                             bool Diagnose) {
   assert(FD->getReturnType()->isUndeducedType());
@@ -4267,7 +4467,11 @@ bool Sema::DeduceReturnType(FunctionDecl *FD, SourceLocation Loc,
     // initialization/conversion that makes the expression types equivalent.
     //
     if (FunctionInfoOfFunctionBeingDeduced) {
+      
 
+      // Do this only if not all types and value categories of the
+      // expressions are the same - if they are just go ahead and deduce.
+      // FIXME: check if non-null, if null, this is an error.
       QualType CommonType = getUniqueCommonType(
           *this, FunctionInfoOfFunctionBeingDeduced->Returns);
       // Use the Return statements to freeze and adjust the return type of the
