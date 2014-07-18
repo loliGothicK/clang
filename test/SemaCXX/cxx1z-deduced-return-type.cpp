@@ -1,5 +1,6 @@
 // RUN: %clang_cc1 -std=c++1z -verify -fsyntax-only %s
 // RUN: %clang_cc1 -std=c++1z -verify -fsyntax-only %s -fdelayed-template-parsing -DDELAYED_TEMPLATE_PARSING
+// RUN: %clang_cc1 -std=c++1z -verify -fsyntax-only -fblocks -emit-llvm-only %s
 
 template<class, class> struct is_same { enum { value = 0 }; };
 template<class T> struct is_same<T, T> { enum { value = 1 }; };

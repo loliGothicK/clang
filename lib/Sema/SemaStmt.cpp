@@ -2590,6 +2590,7 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
   CapturingScopeInfo *CurCap = cast<CapturingScopeInfo>(getCurFunction());
   QualType FnRetType = CurCap->ReturnType;
   LambdaScopeInfo *CurLambda = dyn_cast<LambdaScopeInfo>(CurCap);
+  
   const bool HasUndeducedReturnType = [CurLambda] {
     AutoType *const AutoRetType =
         CurLambda
@@ -2597,6 +2598,10 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
             : nullptr;
     return AutoRetType ? AutoRetType->isUndeducedType() : false; 
   }();
+  const bool HasAutoReturnType =
+      CurLambda
+          ? CurLambda->CallOperator->getReturnType()->getContainedAutoType()
+          : false;
   if (CurLambda && hasDeducedReturnType(CurLambda->CallOperator)) {
     // In C++1y, the return type may involve 'auto'.
     // FIXME: Blocks might have a return type of 'auto' explicitly specified.
@@ -2739,7 +2744,7 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
   // If we need to check for the named return value optimization,
   // or if we need to infer the return type,
   // save the return statement in our scope for later processing.
-  if (CurCap->HasImplicitReturnType || NRVOCandidate || HasUndeducedReturnType)
+  if (CurCap->HasImplicitReturnType || NRVOCandidate || HasAutoReturnType)
     FunctionScopes.back()->Returns.push_back(Result);
 
   return Result;
@@ -3100,7 +3105,8 @@ StmtResult Sema::BuildReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
   // If we need to check for the named return value optimization, save the
   // return statement in our scope for later processing.  Additionally if our
   // return type needs to be deduced, save the return statement.
-  if (Result->getNRVOCandidate() || HasUndeducedReturnType)
+  if (Result->getNRVOCandidate() ||
+      (!FnRetType.isNull() && FnRetType->getContainedAutoType()))
     FunctionScopes.back()->Returns.push_back(Result);
 
   return Result;
