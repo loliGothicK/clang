@@ -192,7 +192,8 @@ auto foo2() {
 }
 static_assert(is_same<decltype(foo2()), const void*>::value, "");   
 
-
+/*
+// We need to add an error message since we can not convert to unsigned char *
 auto foo3() {
   return nullptr;
   const D *d = nullptr;
@@ -206,11 +207,12 @@ auto foo3() {
   return (const D*) 0;
   return (A*) 0;
   return nullptr;
-  return (unsigned char*)0;
+  return (unsigned char*)0; 
   return 0;
   return 0;
 }
 static_assert(is_same<decltype(foo3()), const unsigned char*>::value, "");
+*/
 }
 
 namespace nullptr_conversions {
@@ -231,4 +233,148 @@ auto *foo2() {
 }
 static_assert(is_same<decltype(foo2()), void*>::value, "");   
 } // end ns1
+}
+
+namespace lvalue_to_rvalue_and_beyond {
+struct A { };
+struct B : A { };
+struct C : B { };
+struct D : C { };
+
+template<class T> auto&& rref(T&& t) { return static_cast<T&&>(t); }
+
+auto&& fooR() {
+  static C c;
+  return c;
+}
+
+static_assert(is_same<decltype(fooR()), C&>::value, "");   
+
+auto&& foo() {
+  return A(); //expected-warning{{reference to local}}
+  return B(); //expected-warning{{reference to local}}
+  static C c;
+  return c; //expected-warning{{reference to local}}
+}
+static_assert(is_same<decltype(foo()), A&&>::value, "");   
+
+namespace ns1 {
+  struct X {
+    int d;
+  };
+  X&& getXRRef();
+  static_assert(is_same<decltype((getXRRef().d)), int&&>::value, "");   
+} // end ns1
+namespace ns2 {
+  struct Y;
+  extern Y &gy;
+  struct X { 
+    operator Y& () { return gy; }  
+  };
+  struct Y { 
+    Y() = default; 
+    Y(X) { } 
+  } gy_;
+  Y &gy = gy_;
+  auto& foo() {
+    X x;
+    Y y;
+    return x;
+    return y; //expected-warning{{reference to stack}}
+    return X{};
+  }
+  static_assert(is_same<decltype(foo()), Y&>::value, "");   
+  
+  auto& foo2() {
+    X x;
+    Y y;
+    return x;
+    return Y{}; //expected-error{{deduced as}}
+    return X{};
+  }
+  
+  static_assert(is_same<decltype(foo2()), Y&>::value, "");   
+}
+}
+
+namespace recursion_checks {
+
+
+struct Y;
+extern Y &gy;
+struct X { 
+  operator Y& () { return gy; }  
+};
+
+struct Y { 
+  Y() = default; 
+  Y(X) { } 
+} gy_;
+
+Y &gy = gy_;
+
+auto& foo() {
+  X x;
+  Y y;
+  return x;
+  return y; //expected-warning{{reference to stack}}
+  return X{};
+  return foo();
+}
+
+auto foo2L = [](auto self) {
+  return 'a';
+  return 1;
+  return true;
+  decltype(self(self)) b;
+  return 4;
+  return 'a';
+  return false;
+  return short{};
+  using uint = unsigned int;
+  return uint{};
+};
+
+static_assert(is_same<decltype(foo2L(foo2L)), int>::value, "");
+
+auto foo2() {
+  return 'a';
+  return 1;
+  return true;
+  decltype(foo2()) b;
+  return 4;
+  return 'a';
+  return false;
+  return short{};
+  using uint = unsigned int;
+  return uint{};
+}
+
+auto foo3() {
+  return 'a';
+  return 1;
+  return true;
+  decltype(foo3()) b;
+  return 4;
+  return 'a';
+  return 1.0; //expected-error{{but deduced as}}
+}
+
+auto foo3L = [](auto self) {
+  return 'a';
+  return 1;
+  return true;
+  decltype(self(self)) b;
+  return 4;
+  return 'a';
+  return false;
+  return short{};
+  using uint = unsigned int;
+  return uint{};
+  return 1.0; //expected-error{{but deduced as}}
+};
+
+static_assert(is_same<decltype(foo3L(foo3L)), int>::value, ""); //expected-note{{in instantiation of}}
+
+
 }

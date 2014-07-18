@@ -4315,8 +4315,11 @@ QualType getUniqueCommonType(Sema &S,
     };
 
     CollectCommonTypes();
-    if (!MyCommonTypes.size())
+    if (!MyCommonTypes.size()) {
+      // FIXME: if this is 0, then emit an error.
+
       return QualType();
+    }
     Expr *TheConvertedExpr = nullptr;
     QualType TheConvertedQType;
     if (MyCommonTypes.size() > 1) {
@@ -4347,7 +4350,7 @@ QualType getUniqueCommonType(Sema &S,
             S.Diag(TheRetS->getReturnLoc(),
                    diag::err_auto_fn_different_deductions)
                 << (/*PrevAT->isDecltypeAuto() ? 1 :*/ 0) << PrevCommonType
-                << CurCommonType;
+                << CurType;
           }
           return QualType();
         } else {
@@ -4507,7 +4510,8 @@ bool Sema::DeduceReturnType(FunctionDecl *FD, SourceLocation Loc,
       // expressions are the same - if they are just go ahead and deduce.
       // FIXME: check if non-null, if null, this is an error.
       CommonType = getUniqueCommonType(
-          *this, FunctionInfoOfFunctionBeingDeduced->Returns, false/*Diagnose*/);
+          *this, FunctionInfoOfFunctionBeingDeduced->Returns, /*Diagnose*/false);
+      
     }
     if (FunctionInfoOfFunctionBeingDeduced) {      
       // Use the Return statements to freeze and adjust the return type of the
