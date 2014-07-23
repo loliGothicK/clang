@@ -1774,6 +1774,22 @@ StmtResult Parser::ParseReturnStatement() {
   SourceLocation ReturnLoc = ConsumeToken();  // eat the 'return'.
 
   ExprResult R;
+  struct RAIIParsingReturn {
+    Sema &S;
+    bool Completed;
+    RAIIParsingReturn(Sema &S) : S(S), Completed(false) {
+      S.StartParsingOrTransformingReturn();
+    }
+    void completed() {
+      Completed = true;
+      S.EndParsingOrTransformingReturn();
+    }
+    ~RAIIParsingReturn() {
+      if (!Completed) {
+        S.EndParsingOrTransformingReturn();
+      }
+    }
+  } RAIIParsingReturn(Actions);
   if (Tok.isNot(tok::semi)) {
     if (Tok.is(tok::code_completion)) {
       Actions.CodeCompleteReturn(getCurScope());
@@ -1795,6 +1811,7 @@ StmtResult Parser::ParseReturnStatement() {
       return StmtError();
     }
   }
+  RAIIParsingReturn.completed();
   return Actions.ActOnReturnStmt(ReturnLoc, R.get(), getCurScope());
 }
 

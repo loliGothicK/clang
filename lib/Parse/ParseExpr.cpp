@@ -262,7 +262,12 @@ Parser::ParseRHSOfBinaryExpression(ExprResult LHS, prec::Level MinPrec) {
         if (TernaryMiddle.isInvalid()) {
           LHS = ExprError();
           TernaryMiddle = nullptr;
+        } else {
+          // This is used primarily to track that a middle operand is available
+          // should we need to deduce from it.
+          Actions.ActOnTernaryMiddleOperand(TernaryMiddle.get());
         }
+        
       } else {
         // Special case handling of "X ? Y : Z" where Y is empty:
         //   logical-OR-expression '?' ':' conditional-expression   [GNU]
@@ -323,8 +328,10 @@ Parser::ParseRHSOfBinaryExpression(ExprResult LHS, prec::Level MinPrec) {
     if (getLangOpts().CPlusPlus11 && Tok.is(tok::l_brace)) {
       RHS = ParseBraceInitializer();
       RHSIsInitList = true;
-    } else if (getLangOpts().CPlusPlus && NextTokPrec <= prec::Conditional)
+    } else if (getLangOpts().CPlusPlus && NextTokPrec <= prec::Conditional) {
       RHS = ParseAssignmentExpression();
+      Actions.ActOnTernaryEndOperand(TernaryMiddle.get(), RHS.get());
+    }
     else
       RHS = ParseCastExpression(false);
 

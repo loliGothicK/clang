@@ -855,12 +855,75 @@ namespace {
                         /* DeclContext *Owner */ Owner, TemplateArgs);
       return DeclInstantiator.SubstTemplateParams(OrigTPL); 
     }
+
+    StmtResult TransformReturnStmt(ReturnStmt *S);
+    ExprResult TransformConditionalOperator(ConditionalOperator *E);
+
   private:
     ExprResult transformNonTypeTemplateParmRef(NonTypeTemplateParmDecl *parm,
                                                SourceLocation loc,
                                                TemplateArgument arg);
   };
 }
+
+StmtResult
+TemplateInstantiator::TransformReturnStmt(ReturnStmt *S) {
+  struct RAIITransformingReturn {
+    Sema &S;
+    bool Completed;
+    RAIITransformingReturn(Sema &S) : S(S), Completed(false) {
+      S.StartParsingOrTransformingReturn();
+    }
+    void completed() {
+      Completed = true;
+      S.EndParsingOrTransformingReturn();
+    }
+    ~RAIITransformingReturn() {
+      if (!Completed) {
+        S.EndParsingOrTransformingReturn();
+      }
+    }
+  } RAIITransformingReturn(getSema());
+  ExprResult Result = TransformExpr(S->getRetValue());
+  if (Result.isInvalid())
+    return StmtError();
+
+  RAIITransformingReturn.completed();
+  // FIXME: We always rebuild the return statement because there is no way
+  // to tell whether the return type of the function has changed.
+  return RebuildReturnStmt(S->getReturnLoc(), Result.get());
+}
+
+ExprResult
+TemplateInstantiator::TransformConditionalOperator(ConditionalOperator *E) {
+  ExprResult Cond = TransformExpr(E->getCond());
+  if (Cond.isInvalid())
+    return ExprError();
+
+  ExprResult LHS = TransformExpr(E->getLHS());
+  if (LHS.isInvalid())
+    return ExprError();
+  // This is used primarily to track that a middle operand is available
+  // should we need to deduce from it.
+  getSema().ActOnTernaryMiddleOperand(LHS.get());
+  ExprResult RHS = getDerived().TransformExpr(E->getRHS());
+  getSema().ActOnTernaryEndOperand(LHS.get(), RHS.get());
+  if (RHS.isInvalid())
+    return ExprError();
+
+  if (!getDerived().AlwaysRebuild() &&
+      Cond.get() == E->getCond() &&
+      LHS.get() == E->getLHS() &&
+      RHS.get() == E->getRHS())
+    return E;
+
+  return getDerived().RebuildConditionalOperator(Cond.get(),
+                                                 E->getQuestionLoc(),
+                                                 LHS.get(),
+                                                 E->getColonLoc(),
+                                                 RHS.get());
+}
+
 
 bool TemplateInstantiator::AlreadyTransformed(QualType T) {
   if (T.isNull())

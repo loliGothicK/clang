@@ -376,6 +376,40 @@ auto foo3L = [](auto self) {
 };
 
 static_assert(is_same<decltype(foo3L(foo3L)), int>::value, ""); //expected-note{{in instantiation of}}
+namespace recursion_within_first_return_stmt_in_conditional {
 
+auto foo(int n) {
+  return n > 0 ? (double)n : foo(++n);
+}
+
+static_assert(is_same<decltype(foo(2)), double>::value, "");
+
+namespace ns2 {
+auto foo(int n);
+
+template<class T> auto g(T n) { return foo(n); };
+
+auto foo(int n) {
+  return n > 0 ? (float)n : g(++n);
+}
+
+static_assert(is_same<decltype(foo(2)), float>::value, "");
 
 }
+
+namespace ns3 {
+auto foo(int n);
+
+template<class T> auto g(T n) { return foo(n); };
+
+auto foo(int n) {
+  return n > 0 ? (float)n : (n < 3 ? ((float) n + foo(n)) : foo(n++));
+}
+
+static_assert(is_same<decltype(foo(2)), float>::value, "");
+}
+
+}
+
+}
+

@@ -3080,7 +3080,15 @@ public:
                                    bool AllowFunctionParameters);
   bool isCopyElisionCandidate(QualType ReturnType, const VarDecl *VD,
                               bool AllowFunctionParameters);
+  // Let Sema know that a return is being parsed - this is useful when 
+  // parsing conditionals within return statements that include recursive
+  // calls to them selves - and we can use this to inform FunctionScopeInfo
+  // that we are parsing a functions return stmt.
 
+  void StartParsingOrTransformingReturn();
+  void EndParsingOrTransformingReturn();
+  void ActOnTernaryMiddleOperand(Expr *E);
+  void ActOnTernaryEndOperand(Expr *MiddleExpr, Expr *EndExpr);
   StmtResult ActOnReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp,
                              Scope *CurScope);
   StmtResult BuildReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp);

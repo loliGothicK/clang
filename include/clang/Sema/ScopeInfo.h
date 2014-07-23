@@ -157,6 +157,15 @@ public:
            std::shared_ptr<Sema::ExpressionEvaluationContextRecord>>
   ReturnStmtToExprEvaluationContextMap;
 
+  /// \brief Track whether we are parsing a return stmt within a function
+  ///   - since this can be used to deduce return types if the first recursive
+  ///   call is made within a conditional with the first return stmt.
+  ///  FIXME: Should this be IsParsingOrTransformingReturnExpr;
+  bool IsParsingOrTransformingReturnExpr;
+
+  // Gets cleaned out just before ActOnReturnStmt.
+  std::vector<Expr *> OperandsOfConditionalWithinCurrentReturnStmt;
+
 public:
   /// Represents a simple identification of a weak object.
   ///
@@ -336,19 +345,15 @@ public:
         (HasIndirectGoto ||
           (HasBranchProtectedScope && HasBranchIntoScope));
   }
-  
+
   FunctionScopeInfo(DiagnosticsEngine &Diag)
-    : Kind(SK_Function),
-      HasBranchProtectedScope(false),
-      HasBranchIntoScope(false),
-      HasIndirectGoto(false),
-      HasDroppedStmt(false),
-      ObjCShouldCallSuper(false),
-      ObjCIsDesignatedInit(false),
-      ObjCWarnForNoDesignatedInitChain(false),
-      ObjCIsSecondaryInit(false),
-      ObjCWarnForNoInitDelegation(false),
-      ErrorTrap(Diag), MyFunctionDecl(nullptr) { }
+      : Kind(SK_Function), HasBranchProtectedScope(false),
+        HasBranchIntoScope(false), HasIndirectGoto(false),
+        HasDroppedStmt(false), ObjCShouldCallSuper(false),
+        ObjCIsDesignatedInit(false), ObjCWarnForNoDesignatedInitChain(false),
+        ObjCIsSecondaryInit(false), ObjCWarnForNoInitDelegation(false),
+        ErrorTrap(Diag), MyFunctionDecl(nullptr),
+        IsParsingOrTransformingReturnExpr(false) {}
 
   virtual ~FunctionScopeInfo();
 

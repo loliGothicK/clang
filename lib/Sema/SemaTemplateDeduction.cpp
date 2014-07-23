@@ -4460,31 +4460,142 @@ QualType getUniqueCommonType(Sema &S,
 
 bool Sema::DeduceReturnType(FunctionDecl *FD, SourceLocation Loc,
                             bool Diagnose) {
+ 
   assert(FD->getReturnType()->isUndeducedType());
-  auto IsFunctionAlreadyBeingInstantiated = [this](FunctionDecl *FD) {
+
+  auto isFunctionAlreadyBeingInstantiated = [this](FunctionDecl *FD) {
     for (ActiveTemplateInstantiation &ATI : ActiveTemplateInstantiations)
       if (ATI.Entity == FD)
         return true;
     return false;
   };
 
-  auto IsFunctionOnSemaStackBeingDefined = [this](FunctionDecl *FD) {
+  auto isFunctionOnSemaStackBeingDefined = [this](FunctionDecl *FD) {
     for (FunctionScopeInfo *FSI : FunctionScopes)
       if (FSI->MyFunctionDecl == FD)
         return true;
     return false;
   };
+
+  const bool IsFunctionAlreadyBeingInstantiated =
+      isFunctionAlreadyBeingInstantiated(FD);
+  const bool IsFunctionOnSemaStackBeingDefined =
+      isFunctionOnSemaStackBeingDefined(FD);
+  
+
+#ifdef BROKEN_ATTEMPT_TO_RECURSIVELY_DEDUCE_WTIHIN_CONDITIONALS
+
+// template<class T> auto foo(int n);
+// 
+// template<class T>
+// auto g(int n) { return n ? foo<T>(n) : ((double) g<T>(n)); }
+// 
+// template<class T>
+// auto foo(int n) {
+//  bool b = n;
+//  return  b ? (T) n : g<T>(++n);
+// }
+// calling foo works, but calling g(int n) does not.
+
+  static std::vector<FunctionDecl *> FunctionsUndergoingReturnTypeDeduction;
+  auto isFunctionAlreadyUndergoingReturnTypeDeduction = [](FunctionDecl *FD) {
+    for (FunctionDecl *F : FunctionsUndergoingReturnTypeDeduction) {
+      if (F == FD->getCanonicalDecl())
+        return true;
+    }
+    return false;
+  };
+  const bool IsFunctionAlreadyUndergoingReturnTypeDeduction =
+      isFunctionAlreadyUndergoingReturnTypeDeduction(FD);
+  auto ReportError = [this, Loc, Diagnose](FunctionDecl *Fun) {
+    Fun->setInvalidDecl();
+    if (!Diagnose) return;
+    Diag(Loc, diag::err_auto_fn_used_before_defined) << Fun;
+    Diag(Fun->getLocation(), diag::note_callee_decl) << Fun;
+    
+  }; 
+  if (IsFunctionAlreadyUndergoingReturnTypeDeduction) {
+    // Only legitimate cycles could involve templates.
+    if (!IsFunctionAlreadyBeingInstantiated) {
+      ReportError(FD);
+      return true;  
+    }
+    // If we are already undergoing deduction - then we have run into a cycle -
+    // and the only way to break out of it is to force deduction of all the
+    // intermediate functions.
+    std::vector<FunctionDecl *> IntermediateFunctionCalls = [FD] {
+      std::vector<FunctionDecl *> Interims;
+      bool StartCollecting = false;
+      for (FunctionDecl *F : FunctionsUndergoingReturnTypeDeduction) {
+        if (StartCollecting && F != FD->getCanonicalDecl())
+          Interims.push_back(F);
+        if (F == FD->getCanonicalDecl())
+          StartCollecting = true;
+      }
+      return Interims;
+    }();
+    bool UnableToDeduceIntermediaries = false;
+    // If we can deduce all the intermediate functions - calls, we should be
+    // able to break this cycle - see if we can save the state, rewind and then
+    // patch up the expressions type later.
+
+    for (FunctionDecl *Fun : IntermediateFunctionCalls) {
+      // Remove it from our return type deduction function stack
+      auto RemoveFun = [Fun] {
+        for (auto I = FunctionsUndergoingReturnTypeDeduction.begin(),
+                  E = FunctionsUndergoingReturnTypeDeduction.end();
+             I != E; ++I) {
+          if (Fun == *I) {
+            FunctionsUndergoingReturnTypeDeduction.erase(I);
+            break;
+          }
+        }
+      };
+      RemoveFun();
+      if (DeduceReturnType(Fun, Loc, Diagnose)) {
+         UnableToDeduceIntermediaries = true;
+         Fun->setInvalidDecl();
+         Diag(Loc, diag::err_auto_fn_used_before_defined) << Fun;
+         Diag(FD->getLocation(), diag::note_callee_decl) << Fun;
+         return true;
+      }
+    }
+    
+    if (!UnableToDeduceIntermediaries) return false;
+
+  }
+  struct RAIIReturnTypeDeduction {
+    Sema &S;
+    FunctionDecl *const FD;
+    RAIIReturnTypeDeduction(Sema &S, FunctionDecl *FD)
+        : S(S), FD(FD->getCanonicalDecl()) {
+      FunctionsUndergoingReturnTypeDeduction.push_back(FD);
+    }
+    ~RAIIReturnTypeDeduction() {
+      //FunctionsUndergoingReturnTypeDeduction.pop_back();
+      // Start from the back and remove it if we find it.
+      for (unsigned N = FunctionsUndergoingReturnTypeDeduction.size(); N--;) {
+        if (FunctionsUndergoingReturnTypeDeduction[N] == FD) {
+          FunctionsUndergoingReturnTypeDeduction.erase(
+              FunctionsUndergoingReturnTypeDeduction.begin() + N);
+          break;
+        }
+      }
+    }
+  } RAIIReturnTypeDeduction(*this, FD);
+#endif
     
   if (FD->getTemplateInstantiationPattern()) {
-    if (!IsFunctionOnSemaStackBeingDefined(FD) &&
-        !IsFunctionAlreadyBeingInstantiated(FD))
+    if (!IsFunctionOnSemaStackBeingDefined &&
+        !IsFunctionAlreadyBeingInstantiated)
       InstantiateFunctionDefinition(Loc, FD);
   }
+  bool IsDeducingReturnTypeOfFunctionOnSemaStackBeingDefined = false;
+  FunctionScopeInfo *FunctionInfoOfFunctionBeingDeduced = nullptr;
+    
   bool StillUndeduced = FD->getReturnType()->isUndeducedType();
   // Are we deducing the return type of a function that we are defining?
   if (StillUndeduced && !FD->isInvalidDecl()) {
-    bool IsDeducingReturnTypeOfFunctionOnSemaStackBeingDefined = false;
-    FunctionScopeInfo *FunctionInfoOfFunctionBeingDeduced = nullptr;
     for (auto *FSI : FunctionScopes) {
       if (FSI->MyFunctionDecl &&
           FSI->MyFunctionDecl->getCanonicalDecl() == FD->getCanonicalDecl()) {
@@ -4654,7 +4765,33 @@ bool Sema::DeduceReturnType(FunctionDecl *FD, SourceLocation Loc,
       }
     }   
   }
+  //*
+  // If we still have been unable to deduce the return type, check to see if we
+  // are either parsing this functions return expression and have any middle
+  // ternary operands to use, and if so make sure they are all the same type -
+  // and if so, use that as the return type.  This has to be the first return
+  // statement.
+  if (!FD->isInvalidDecl() && FD->getReturnType()->isUndeducedType() &&
+      FunctionInfoOfFunctionBeingDeduced &&
+      !FunctionInfoOfFunctionBeingDeduced->Returns.size() &&
+      FunctionInfoOfFunctionBeingDeduced->IsParsingOrTransformingReturnExpr) {
+    QualType PrevType;
+    bool InconsistentTypes = false;
+    for (Expr *E : FunctionInfoOfFunctionBeingDeduced
+                       ->OperandsOfConditionalWithinCurrentReturnStmt) {
+      if (PrevType.isNull())
+        PrevType = E->getType();
+      QualType CurType = E->getType();
+      if (!Context.hasSameType(PrevType, CurType))
+        InconsistentTypes = true;
+      
+    }
+    if (!InconsistentTypes && !PrevType.isNull())
+      Context.adjustDeducedFunctionResultType(FD, PrevType);
+  }
+  //*/
   StillUndeduced = FD->getReturnType()->isUndeducedType();  
+  
   if (StillUndeduced && Diagnose && !FD->isInvalidDecl()) {
     Diag(Loc, diag::err_auto_fn_used_before_defined) << FD;
     Diag(FD->getLocation(), diag::note_callee_decl) << FD;

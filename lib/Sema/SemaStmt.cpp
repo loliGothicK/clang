@@ -2579,6 +2579,52 @@ static bool hasDeducedReturnType(FunctionDecl *FD) {
       FD->getTypeSourceInfo()->getType()->castAs<FunctionProtoType>();
   return FPT->getReturnType()->isUndeducedType();
 }
+void Sema::StartParsingOrTransformingReturn() { 
+  if (auto *FSI = getCurFunction()) {
+    FSI->IsParsingOrTransformingReturnExpr = true;
+  }
+}
+
+void Sema::EndParsingOrTransformingReturn() {
+  if (auto *FSI = getCurFunction()) {
+    FSI->IsParsingOrTransformingReturnExpr = false;
+    FSI->OperandsOfConditionalWithinCurrentReturnStmt.clear();
+  }
+}
+
+// std::map<FunctionScopeInfo *, QualType> OriginalReturnTypeMap;
+void Sema::ActOnTernaryMiddleOperand(Expr *E) {
+  if (auto *FSI = getCurFunction()) {
+    if (FSI->IsParsingOrTransformingReturnExpr && FSI->MyFunctionDecl && E) {
+      FSI->OperandsOfConditionalWithinCurrentReturnStmt.push_back(E);
+      /*
+      // FIXME: This should only be done if it does not already exist.
+      if (OriginalReturnTypeMap.find(FSI) == OriginalReturnTypeMap.end()) {
+        OriginalReturnTypeMap[FSI] = FSI->MyFunctionDecl->getReturnType();  
+      }
+      // FIXME: Do this only if all the types are the same.
+      Context.adjustDeducedFunctionResultType(FSI->MyFunctionDecl, E->getType());
+      */
+    }
+  }
+}
+void Sema::ActOnTernaryEndOperand(Expr *MiddleExpr, Expr *EndExpr) {
+  if (auto *FSI = getCurFunction()) {
+    if (FSI->IsParsingOrTransformingReturnExpr && FSI->MyFunctionDecl && MiddleExpr) {
+      auto &V = FSI->OperandsOfConditionalWithinCurrentReturnStmt;
+      auto It = std::find(V.begin(), V.end(), MiddleExpr);
+      if (It != V.end())
+        V.erase(It);
+      /*
+      QualType OrigReturnType = OriginalReturnTypeMap[FSI];
+      if (!OrigReturnType.isNull() && !FSI->MyFunctionDecl->isReferenced()) {
+        OriginalReturnTypeMap.erase(FSI);
+        Context.adjustDeducedFunctionResultType(FSI->MyFunctionDecl, OrigReturnType);
+      }
+      */
+    }  
+  }
+}
 
 /// ActOnCapScopeReturnStmt - Utility routine to type-check return statements
 /// for capturing scopes.
