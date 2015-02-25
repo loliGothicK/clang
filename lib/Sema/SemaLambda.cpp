@@ -21,6 +21,7 @@
 #include "clang/Sema/ScopeInfo.h"
 #include "clang/Sema/SemaInternal.h"
 #include "clang/Sema/SemaLambda.h"
+#include "clang/Sema/Template.h"
 using namespace clang;
 using namespace sema;
 
@@ -222,32 +223,20 @@ Optional<unsigned> clang::getStackIndexOfNearestEnclosingCaptureCapableLambda(
 }
 
 static inline TemplateParameterList *
-getGenericLambdaTemplateParameterList(LambdaScopeInfo *LSI, Sema &SemaRef) {
-  if (LSI->GLTemplateParameterList)
-    return LSI->GLTemplateParameterList;
-
-  if (LSI->AutoTemplateParams.size()) {
-    SourceRange IntroRange = LSI->IntroducerRange;
-    SourceLocation LAngleLoc = IntroRange.getBegin();
-    SourceLocation RAngleLoc = IntroRange.getEnd();
-    LSI->GLTemplateParameterList = TemplateParameterList::Create(
-        SemaRef.Context,
-        /*Template kw loc*/ SourceLocation(), LAngleLoc,
-        (NamedDecl **)LSI->AutoTemplateParams.data(),
-        LSI->AutoTemplateParams.size(), RAngleLoc);
-  }
-  return LSI->GLTemplateParameterList;
+getCurGenericLambdaTemplateParameterList(Sema &SemaRef) {
+  auto *AFTI = SemaRef.getAbbreviatedFunctionTemplateInfo();
+  assert(AFTI);
+  return AFTI->AbbreviatedTemplateParameterList;
 }
 
 CXXRecordDecl *Sema::createLambdaClosureType(SourceRange IntroducerRange,
                                              TypeSourceInfo *Info,
                                              bool KnownDependent, 
-                                             LambdaCaptureDefault CaptureDefault) {
+                                           LambdaCaptureDefault CaptureDefault,
+                                           const bool IsGenericLambda) {
   DeclContext *DC = CurContext;
   while (!(DC->isFunctionOrMethod() || DC->isRecord() || DC->isFileContext()))
     DC = DC->getParent();
-  bool IsGenericLambda = getGenericLambdaTemplateParameterList(getCurLambda(),
-                                                               *this);  
   // Start constructing the lambda class.
   CXXRecordDecl *Class = CXXRecordDecl::CreateLambda(Context, DC, Info,
                                                      IntroducerRange.getBegin(),
@@ -354,10 +343,12 @@ CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
                                            SourceRange IntroducerRange,
                                            TypeSourceInfo *MethodTypeInfo,
                                            SourceLocation EndLoc,
-                                           ArrayRef<ParmVarDecl *> Params) {
+                                           ArrayRef<ParmVarDecl *> Params,
+                                     TemplateParameterList *GenericLambdaTPL) {
+
   QualType MethodType = MethodTypeInfo->getType();
-  TemplateParameterList *TemplateParams = 
-            getGenericLambdaTemplateParameterList(getCurLambda(), *this);
+  TemplateParameterList *TemplateParams = GenericLambdaTPL;
+            
   // If a lambda appears in a dependent context or is a generic lambda (has
   // template parameters) and has an 'auto' return type, deduce it to a 
   // dependent type.
@@ -843,19 +834,7 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
   bool KnownDependent = false;
   LambdaScopeInfo *const LSI = getCurLambda();
   assert(LSI && "LambdaScopeInfo should be on stack!");
-  TemplateParameterList *TemplateParams = 
-            getGenericLambdaTemplateParameterList(LSI, *this);
-
-  if (Scope *TmplScope = CurScope->getTemplateParamParent()) {
-    // Since we have our own TemplateParams, so check if an outer scope
-    // has template params, only then are we in a dependent scope.
-    if (TemplateParams)  {
-      TmplScope = TmplScope->getParent();
-      TmplScope = TmplScope ? TmplScope->getTemplateParamParent() : nullptr;
-    }
-    if (TmplScope && !TmplScope->decl_empty())
-      KnownDependent = true;
-  }
+  
   // Determine the signature of the call operator.
   TypeSourceInfo *MethodTyInfo;
   bool ExplicitParams = true;
@@ -863,6 +842,8 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
   bool ContainsUnexpandedParameterPack = false;
   SourceLocation EndLoc;
   SmallVector<ParmVarDecl *, 8> Params;
+  
+
   if (ParamInfo.getNumTypeObjects() == 0) {
     // C++11 [expr.prim.lambda]p4:
     //   If a lambda-expression does not include a lambda-declarator, it is as 
@@ -900,6 +881,29 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
 
     MethodTyInfo = GetTypeForDeclarator(ParamInfo, CurScope);
     assert(MethodTyInfo && "no type from lambda-declarator");
+    QualType MethodTyQ = MethodTyInfo->getType();
+    if (MethodTyQ->containsAutoType()) {
+      assert(getAbbreviatedFunctionTemplateInfo());
+      MethodTyInfo = normalizeAbbreviatedTemplateType(
+          MethodTyInfo, 
+          MultiTemplateParamsArg(), // Generic lamdas dont't ever have an
+                                    // additional template parameter list
+          ParamInfo 
+          );
+      MethodTyQ = MethodTyInfo->getType();
+    }
+    //FVQUESTION: Is this the best way to determine known dependency?
+    if (Scope *TmplScope = CurScope->getTemplateParamParent()) {
+      // Since we have our own TemplateParams, so check if an outer scope has
+      // template params, only then are we in a dependent scope.
+      if (getCurGenericLambdaTemplateParameterList(*this)) {
+        TmplScope = TmplScope->getParent();
+        TmplScope = TmplScope ? TmplScope->getTemplateParamParent() : nullptr;
+      }
+      if (TmplScope && !TmplScope->decl_empty())
+        KnownDependent = true;
+    }
+
     EndLoc = ParamInfo.getSourceRange().getEnd();
 
     ExplicitResultType = FTI.hasTrailingReturnType();
@@ -914,12 +918,16 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
     if (MethodTyInfo->getType()->containsUnexpandedParameterPack())
       ContainsUnexpandedParameterPack = true;
   }
-
+  TemplateParameterList *const GenericLambdaTPL =
+      getCurGenericLambdaTemplateParameterList(*this);
   CXXRecordDecl *Class = createLambdaClosureType(Intro.Range, MethodTyInfo,
-                                                 KnownDependent, Intro.Default);
+                                                 KnownDependent, Intro.Default,
+                                           static_cast<bool>(GenericLambdaTPL));
 
   CXXMethodDecl *Method = startLambdaDefinition(Class, Intro.Range,
-                                                MethodTyInfo, EndLoc, Params);
+                                                MethodTyInfo, EndLoc, Params,
+                                                GenericLambdaTPL);
+
   if (ExplicitParams)
     CheckCXXDefaultArguments(Method);
   

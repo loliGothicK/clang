@@ -104,7 +104,9 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
     CurrentInstantiationScope(nullptr), DisableTypoCorrection(false),
     TyposCorrected(0), AnalysisWarnings(*this), ThreadSafetyDeclCache(nullptr),
     VarDataSharingAttributesStack(nullptr), CurScope(nullptr),
-    Ident_super(nullptr), Ident___float128(nullptr)
+    ParsingTemplateParameterDepthPtr(nullptr),
+    Ident_super(nullptr), Ident___float128(nullptr), 
+    CurAbbreviatedFunctionTemplateInfo(nullptr)
 {
   TUScope = nullptr;
 
@@ -1097,15 +1099,6 @@ LambdaScopeInfo *Sema::PushLambdaScope() {
   return LSI;
 }
 
-void Sema::RecordParsingTemplateParameterDepth(unsigned Depth) {
-  if (LambdaScopeInfo *const LSI = getCurLambda()) {
-    LSI->AutoTemplateParameterDepth = Depth;
-    return;
-  } 
-  llvm_unreachable( 
-      "Remove assertion if intentionally called in a non-lambda context.");
-}
-
 void Sema::PopFunctionScopeInfo(const AnalysisBasedWarnings::Policy *WP,
                                 const Decl *D, const BlockExpr *blkExpr) {
   FunctionScopeInfo *Scope = FunctionScopes.pop_back_val();
@@ -1172,8 +1165,8 @@ LambdaScopeInfo *Sema::getCurLambda() {
 // an associated template parameter list.
 LambdaScopeInfo *Sema::getCurGenericLambda() {
   if (LambdaScopeInfo *LSI =  getCurLambda()) {
-    return (LSI->AutoTemplateParams.size() ||
-                    LSI->GLTemplateParameterList) ? LSI : nullptr;
+    if (LSI->CallOperator->getDescribedFunctionTemplate())
+      return LSI;
   }
   return nullptr;
 }

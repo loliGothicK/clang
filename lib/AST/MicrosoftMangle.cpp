@@ -1592,8 +1592,12 @@ void MicrosoftCXXNameMangler::mangleFunctionType(const FunctionType *T,
     Out << '@';
   } else {
     QualType ResultType = Proto->getReturnType();
-    if (const auto *AT =
-            dyn_cast_or_null<AutoType>(ResultType->getContainedAutoType())) {
+    // FVFIXME: We need to teach the mangler how to mangle multi-auto containing
+    // return types (pair<auto, auto>).
+    const auto ContainedAutos = ResultType->getContainedAutoTypes();
+    const AutoType *AT =
+        ContainedAutos.size() ? ContainedAutos.front() : nullptr;
+    if (AT) {
       Out << '?';
       mangleQualifiers(ResultType.getLocalQualifiers(), /*IsMember=*/false);
       Out << '?';

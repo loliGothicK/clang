@@ -358,7 +358,32 @@ public:
   bool isFunctionPrototypeScope() const {
     return getFlags() & Scope::FunctionPrototypeScope;
   }
+  bool isFunctionDeclarationScope() const {
+    return getFlags() & Scope::FunctionDeclarationScope;
+  }
 
+  /// Returns true if this scope is a function prototype scope nested within a
+  /// function declaration scope.  This is helpful when we need to determine
+  /// whether an 'auto' should be marked as an auto for deduction vs abbreviated
+  /// template syntax.  If this is true, then the 'auto' signifies a template
+  /// type parameter.
+  bool isFunctionPrototypeScopeNestedWithinFunctionDeclarationScope() const {
+    const Scope *S = this;
+
+    while (S && S->isFunctionPrototypeScope()) {
+      if (S->isFunctionDeclarationScope())
+        return true;
+
+      if (S = S->getParent()) {
+        // If we have crawled up into the TU, a classcope or a
+        // templateparamscope, we can not be within a function declaration if we
+        // haven't found one already.
+        if (!S->getParent() || S->isClassScope() || S->isTemplateParamScope())
+          return false;
+      }
+    }
+    return false;
+  }
   /// isAtCatchScope - Return true if this scope is \@catch.
   bool isAtCatchScope() const {
     return getFlags() & Scope::AtCatchScope;

@@ -3062,7 +3062,7 @@ TemplateDeclInstantiator::SubstFunctionType(FunctionDecl *D,
 /// Introduce the instantiated function parameters into the local
 /// instantiation scope, and set the parameter names to those used
 /// in the template.
-static bool addInstantiatedParametersToScope(Sema &S, FunctionDecl *Function,
+bool Sema::addInstantiatedParametersToScope(FunctionDecl *Function,
                                              const FunctionDecl *PatternDecl,
                                              LocalInstantiationScope &Scope,
                            const MultiLevelTemplateArgumentList &TemplateArgs) {
@@ -3081,7 +3081,7 @@ static bool addInstantiatedParametersToScope(Sema &S, FunctionDecl *Function,
       // it's instantiation-dependent.
       // FIXME: Updating the type to work around this is at best fragile.
       if (!PatternDecl->getType()->isDependentType()) {
-        QualType T = S.SubstType(PatternParam->getType(), TemplateArgs,
+        QualType T = SubstType(PatternParam->getType(), TemplateArgs,
                                  FunctionParam->getLocation(),
                                  FunctionParam->getDeclName());
         if (T.isNull())
@@ -3097,7 +3097,7 @@ static bool addInstantiatedParametersToScope(Sema &S, FunctionDecl *Function,
     // Expand the parameter pack.
     Scope.MakeInstantiatedLocalArgPack(PatternParam);
     Optional<unsigned> NumArgumentsInExpansion
-      = S.getNumArgumentsInExpansion(PatternParam->getType(), TemplateArgs);
+      = getNumArgumentsInExpansion(PatternParam->getType(), TemplateArgs);
     assert(NumArgumentsInExpansion &&
            "should only be called when all template arguments are known");
     QualType PatternType =
@@ -3106,8 +3106,8 @@ static bool addInstantiatedParametersToScope(Sema &S, FunctionDecl *Function,
       ParmVarDecl *FunctionParam = Function->getParamDecl(FParamIdx);
       FunctionParam->setDeclName(PatternParam->getDeclName());
       if (!PatternDecl->getType()->isDependentType()) {
-        Sema::ArgumentPackSubstitutionIndexRAII SubstIndex(S, Arg);
-        QualType T = S.SubstType(PatternType, TemplateArgs,
+        Sema::ArgumentPackSubstitutionIndexRAII SubstIndex(*this, Arg);
+        QualType T = SubstType(PatternType, TemplateArgs,
                                  FunctionParam->getLocation(),
                                  FunctionParam->getDeclName());
         if (T.isNull())
@@ -3147,7 +3147,7 @@ void Sema::InstantiateExceptionSpec(SourceLocation PointOfInstantiation,
     getTemplateInstantiationArgs(Decl, nullptr, /*RelativeToPrimary*/true);
 
   FunctionDecl *Template = Proto->getExceptionSpecTemplate();
-  if (addInstantiatedParametersToScope(*this, Decl, Template, Scope,
+  if (addInstantiatedParametersToScope(Decl, Template, Scope,
                                        TemplateArgs)) {
     UpdateExceptionSpec(Decl, EST_None);
     return;
@@ -3363,7 +3363,7 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
   if (Function->getTemplateSpecializationKind() ==
           TSK_ExplicitInstantiationDeclaration &&
       !PatternDecl->isInlined() &&
-      !PatternDecl->getReturnType()->getContainedAutoType())
+      !PatternDecl->getReturnType()->containsAutoType())
     return;
 
   if (PatternDecl->isInlined()) {
@@ -3415,7 +3415,7 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
     // PushDeclContext because we don't have a scope.
     Sema::ContextRAII savedContext(*this, Function);
 
-    if (addInstantiatedParametersToScope(*this, Function, PatternDecl, Scope,
+    if (addInstantiatedParametersToScope(Function, PatternDecl, Scope,
                                          TemplateArgs))
       return;
 

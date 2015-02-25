@@ -201,7 +201,9 @@ bool NestedNameSpecifier::isDependent() const {
 
   case TypeSpec:
   case TypeSpecWithTemplate:
-    return getAsType()->isDependentType();
+    // Undeduced 'auto' within NNS should behave as if dependent, until the
+    // initializer is used to deduce it.
+    return getAsType()->isDependentType() || getAsType()->isUndeducedType();
   }
 
   llvm_unreachable("Invalid NNS Kind!");

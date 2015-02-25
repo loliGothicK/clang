@@ -2741,17 +2741,24 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD,
     QualType NewReturnType = cast<FunctionType>(NewQType)->getReturnType();
     if (OldReturnType != NewReturnType) {
       // If this function has a deduced return type and has already been
-      // defined, copy the deduced value from the old declaration.
-      AutoType *OldAT = Old->getReturnType()->getContainedAutoType();
-      if (OldAT && OldAT->isDeduced()) {
-        New->setType(
-            SubstAutoType(New->getType(),
-                          OldAT->isDependentType() ? Context.DependentTy
-                                                   : OldAT->getDeducedType()));
-        NewQType = Context.getCanonicalType(
-            SubstAutoType(NewQType,
-                          OldAT->isDependentType() ? Context.DependentTy
-                                                   : OldAT->getDeducedType()));
+      // defined, copy the deduced return type from the old declaration.
+      const bool IsDeducedAutoContainingOldReturnType = [&] {
+        auto ContainedAutos = Old->getReturnType()->getContainedAutoTypes();
+        if (!ContainedAutos.size()) return false;
+        const bool IsFirstAutoDeduced = ContainedAutos.front()->isDeduced();
+        assert([&] {
+          for (auto *AT : ContainedAutos)
+            if (AT->isDeduced() != IsFirstAutoDeduced)
+              return false;
+          return true;
+        }() && "All autos must either be deduced or non-deduced");
+        return IsFirstAutoDeduced;
+      }();
+      if (IsDeducedAutoContainingOldReturnType) {
+        assert(
+            Context.hasSameType(OldDeclaredReturnType, NewDeclaredReturnType));
+        Context.adjustDeducedFunctionResultType(New, OldReturnType);
+        NewQType = Context.getCanonicalType(New->getType());
       }
     }
 
@@ -4607,6 +4614,15 @@ NamedDecl *Sema::HandleDeclarator(Scope *S, Declarator &D,
   TypeSourceInfo *TInfo = GetTypeForDeclarator(D, S);
   QualType R = TInfo->getType();
 
+  if (D.isFunctionDeclarator() && R->containsAutoType() &&
+      D.isFunctionDeclarationContext()) {
+    assert(getAbbreviatedFunctionTemplateInfo() &&
+           "Must have abbreviated function template info");
+    TInfo = normalizeAbbreviatedTemplateType(
+      TInfo, TemplateParamLists, D);
+    R = TInfo->getType();
+  }
+
   if (DiagnoseUnexpandedParameterPack(D.getIdentifierLoc(), TInfo,
                                       UPPC_DeclarationType))
     D.setInvalidType();
@@ -4922,6 +4938,16 @@ Sema::ActOnTypedefDeclarator(Scope* S, Declarator& D, DeclContext* DC,
     Previous.clear();
   }
 
+  // 'auto' should not be contained within a typedef declaration - while naked
+  // 'auto' invalid uses are intercepted earlier when we determine the full-type
+  // of a declarator, here we can check for any embedded auto uses that sneak
+  // past that check.
+  if (TInfo->getType()->containsAutoType() && !D.isInvalidType()) {
+      Diag(TInfo->getTypeLoc().getBeginLoc(), diag::err_auto_not_allowed)
+        << /*IsDeclTypeAuto*/false << 9 << TInfo->getTypeLoc().getSourceRange();
+      D.setInvalidType(true);
+    return nullptr;
+  }
   DiagnoseFunctionSpecifiers(D.getDeclSpec());
 
   if (D.getDeclSpec().isConstexprSpecified())
@@ -5649,7 +5675,7 @@ Sema::ActOnVariableDeclarator(Scope *S, Declarator &D, DeclContext *DC,
 
     // If this decl has an auto type in need of deduction, make a note of the
     // Decl so we can diagnose uses of it in its own initializer.
-    if (D.getDeclSpec().containsPlaceholderType() && R->getContainedAutoType())
+    if (D.getDeclSpec().containsPlaceholderType() && R->containsAutoType())
       ParsingInitForAutoVars.insert(NewVD);
 
     if (D.isInvalidType() || Invalid) {
@@ -6973,12 +6999,28 @@ static void checkIsValidOpenCLKernelParameter(
 NamedDecl*
 Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
                               TypeSourceInfo *TInfo, LookupResult &Previous,
-                              MultiTemplateParamsArg TemplateParamLists,
+                              MultiTemplateParamsArg TemplateParamListsRef,
                               bool &AddToScope) {
   QualType R = TInfo->getType();
 
+  // Create a modifiable copy of the template parameter lists so that we can
+  // augment it if needed with a TPL created for an abbreviated function
+  // template.
+  SmallVector<TemplateParameterList *, 4> TemplateParamLists;
+  for (auto *TPL : TemplateParamListsRef)
+    TemplateParamLists.push_back(TPL);
   assert(R.getTypePtr()->isFunctionType());
-
+  auto *const AFTI = getAbbreviatedFunctionTemplateInfo();
+  const bool IsAbbreviatedFunctionTemplate =
+      AFTI && AFTI->AbbreviatedTemplateParameterList;
+  if (getLangOpts().CPlusPlus && IsAbbreviatedFunctionTemplate) {
+    // If a TPL was explicitly provided in addition to using abbreviated syntax,
+    // replace the TPL with the abbreviated augemented one.
+    if (AFTI->ExplicitlyProvidedTemplateParameterList)
+      TemplateParamLists.back() = AFTI->AbbreviatedTemplateParameterList;
+    else
+      TemplateParamLists.push_back(AFTI->AbbreviatedTemplateParameterList);
+  }
   // TODO: consider using NameInfo for diagnostic.
   DeclarationNameInfo NameInfo = GetNameForDeclarator(D);
   DeclarationName Name = NameInfo.getName();
@@ -8675,7 +8717,8 @@ void Sema::AddInitializerToDecl(Decl *RealDecl, Expr *Init,
   ParenListExpr *CXXDirectInit = dyn_cast<ParenListExpr>(Init);
 
   // C++11 [decl.spec.auto]p6. Deduce the type which 'auto' stands in for.
-  if (TypeMayContainAuto && VDecl->getType()->isUndeducedType()) {
+  if ((TypeMayContainAuto || VDecl->getType()->containsAutoType()) &&
+      VDecl->getType()->isUndeducedType()) {
     Expr *DeduceInit = Init;
     // Initializer could be a C++ direct-initializer. Deduction only works if it
     // contains exactly one expression.
@@ -9172,7 +9215,7 @@ void Sema::ActOnUninitializedDecl(Decl *RealDecl,
     QualType Type = Var->getType();
 
     // C++11 [dcl.spec.auto]p3
-    if (TypeMayContainAuto && Type->getContainedAutoType()) {
+    if (TypeMayContainAuto && Type->containsAutoType()) {
       Diag(Var->getLocation(), diag::err_auto_var_requires_init)
         << Var->getDeclName() << Type;
       Var->setInvalidDecl();
@@ -9773,7 +9816,11 @@ Sema::BuildDeclaratorGroup(MutableArrayRef<Decl *> Group,
     VarDecl *DeducedDecl = nullptr;
     for (unsigned i = 0, e = Group.size(); i != e; ++i) {
       if (VarDecl *D = dyn_cast<VarDecl>(Group[i])) {
-        AutoType *AT = D->getType()->getContainedAutoType();
+        auto ContainedAutos = D->getType()->getContainedAutoTypes();
+        // FVTODO: Currently this only checks if the first contained auto is
+        // deduced to be the same, we need to check for each deduced auto.
+        const AutoType *AT =
+            ContainedAutos.size() ? ContainedAutos.front() : nullptr;
         // Don't reissue diagnostics when instantiating a template.
         if (AT && D->isInvalidDecl())
           break;

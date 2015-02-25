@@ -96,7 +96,7 @@ const auto void_ret_4() {
     return void();
   if (false)
     return;
-  return 0; // expected-error {{'auto' in return type deduced as 'int' here but deduced as 'void' in earlier return statement}}
+  return 0; // expected-error {{'auto' containing return type deduced as 'const int' here but deduced as 'const void' in earlier return statement}}
 }
 
 namespace Templates {

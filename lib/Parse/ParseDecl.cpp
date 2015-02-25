@@ -24,6 +24,7 @@
 #include "clang/Sema/ParsedTemplate.h"
 #include "clang/Sema/PrettyDeclStackTrace.h"
 #include "clang/Sema/Scope.h"
+#include "clang/Sema/Template.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -1383,7 +1384,6 @@ Parser::DeclGroupPtrTy Parser::ParseDeclaration(unsigned Context,
   // Must temporarily exit the objective-c container scope for
   // parsing c none objective-c decls.
   ObjCDeclContextSwitch ObjCDC(*this);
-
   Decl *SingleDecl = nullptr;
   Decl *OwnedType = nullptr;
   switch (Tok.getKind()) {
@@ -1446,6 +1446,7 @@ Parser::ParseSimpleDeclaration(unsigned Context,
                                SourceLocation &DeclEnd,
                                ParsedAttributesWithRange &Attrs,
                                bool RequireSemi, ForRangeInit *FRI) {
+  ParsingFunctionDeclarationAbbreviatedTemplateInfo AFTI(Actions);
   // Parse the common declaration-specifiers piece.
   ParsingDeclSpec DS(*this);
 
@@ -1628,6 +1629,7 @@ Parser::DeclGroupPtrTy Parser::ParseDeclGroup(ParsingDeclSpec &DS,
                                               unsigned Context,
                                               SourceLocation *DeclEnd,
                                               ForRangeInit *FRI) {
+  
   // Parse the first declarator.
   ParsingDeclarator D(*this, DS, static_cast<Declarator::TheContext>(Context));
   ParseDeclarator(D);
@@ -1775,11 +1777,10 @@ Parser::DeclGroupPtrTy Parser::ParseDeclGroup(ParsingDeclSpec &DS,
     //    short var __attribute__((common));    -> declarator
     //    short x, __attribute__((common)) var;    -> declarator
     MaybeParseGNUAttributes(D);
-
+    ParsingFunctionDeclarationAbbreviatedTemplateInfo AFTI(Actions);
     // MSVC parses but ignores qualifiers after the comma as an extension.
     if (getLangOpts().MicrosoftExt)
       DiagnoseAndSkipExtendedMicrosoftTypeAttributes();
-
     ParseDeclarator(D);
     if (!D.isInvalidType()) {
       Decl *ThisDecl = ParseDeclarationAfterDeclarator(D);
@@ -1918,6 +1919,10 @@ Decl *Parser::ParseDeclarationAfterDeclaratorAndAttributes(
     break;
     }
   }
+  if (Actions.getAbbreviatedFunctionTemplateInfo() &&
+      Actions.getAbbreviatedFunctionTemplateInfo()
+          ->AbbreviatedTemplateParameterList)
+    ParseAbbreviatedFunctionTemplateDefaultArgs(D);
 
   bool TypeContainsAuto = D.getDeclSpec().containsPlaceholderType();
 
@@ -3025,9 +3030,16 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
           if (!isInvalid)
             Diag(Tok, diag::ext_auto_storage_class)
               << FixItHint::CreateRemoval(DS.getStorageClassSpecLoc());
-        } else
-          isInvalid = DS.SetTypeSpecType(DeclSpec::TST_auto, Loc, PrevSpec,
+        } else if (getLangOpts().CPlusPlus1z &&
+                   (DS.getTypeSpecType() != DS.TST_unspecified) &&
+                   (GetLookAheadToken(1).getKind() == tok::coloncolon)) {
+          // allow int auto::* mp = &X::i;
+          DS.SetRangeEnd(Tok.getLocation());
+          return;
+        } else {
+            isInvalid = DS.SetTypeSpecType(DeclSpec::TST_auto, Loc, PrevSpec,
                                          DiagID, Policy);
+        }
       } else
         isInvalid = DS.SetStorageClassSpec(Actions, DeclSpec::SCS_auto, Loc,
                                            PrevSpec, DiagID, Policy);
@@ -4703,6 +4715,12 @@ void Parser::ParseDeclaratorInternal(Declarator &D,
   if (Diags.hasAllExtensionsSilenced())
     D.setExtension();
 
+  // Allo auto as a nested name specifier for a member pointer in C++1z
+  //   i.e. void (auto::*mpf)() = &X::f;
+  const bool IsAutoTokAllowedAsNestedNameSpecifierForMemberPointer =
+      Tok.is(tok::kw_auto) && getLangOpts().CPlusPlus1z &&
+      NextToken().is(tok::coloncolon);
+  
   // C++ member pointers start with a '::' or a nested-name.
   // Member pointers get special handling, since there's no place for the
   // scope spec in the generic path below.
@@ -4710,6 +4728,7 @@ void Parser::ParseDeclaratorInternal(Declarator &D,
       (Tok.is(tok::coloncolon) ||
        (Tok.is(tok::identifier) &&
         (NextToken().is(tok::coloncolon) || NextToken().is(tok::less))) ||
+       IsAutoTokAllowedAsNestedNameSpecifierForMemberPointer ||
        Tok.is(tok::annot_cxxscope))) {
     bool EnteringContext = D.getContext() == Declarator::FileContext ||
                            D.getContext() == Declarator::MemberContext;
@@ -4862,6 +4881,16 @@ static SourceLocation getMissingDeclaratorIdLoc(Declarator &D,
   return Loc;
 }
 
+static bool declSpecTypeContainsAuto(const DeclSpec &DS, Sema &S) {
+  if (DS.getTypeSpecType() == TST_auto) return true;
+  if (DS.isTypeRep(DS.getTypeSpecType())) {
+    ParsedType ParsedTy = DS.getRepAsType();
+    QualType QTy = S.GetTypeFromParser(ParsedTy);
+    return QTy->containsAutoType();
+  }
+  return false;
+}
+
 /// ParseDirectDeclarator
 ///       direct-declarator: [C99 6.7.5]
 /// [C99]   identifier
@@ -4945,7 +4974,7 @@ void Parser::ParseDirectDeclarator(Declarator &D) {
           NextToken().is(tok::r_paren) &&
           !D.hasGroupingParens() &&
           !Actions.containsUnexpandedParameterPacks(D) &&
-          D.getDeclSpec().getTypeSpecType() != TST_auto)) {
+          !declSpecTypeContainsAuto(D.getDeclSpec(), Actions))) {
       SourceLocation EllipsisLoc = ConsumeToken();
       if (isPtrOperatorToken(Tok.getKind(), getLangOpts(), D.getContext())) {
         // The ellipsis was put in the wrong place. Recover, and explain to
@@ -5526,6 +5555,24 @@ void Parser::ParseFunctionDeclaratorIdentifierList(
   } while (TryConsumeToken(tok::comma));
 }
 
+static bool parameterContainsAbbreviatedTemplateSyntax(Decl *Param) {
+  if (auto *PVD = dyn_cast<ParmVarDecl>(Param)) {
+    auto ContainedAutos = PVD->getType()->getContainedAutoTypes();
+    // If the 'auto' is dependent post-initial-parsing (as opposed to an auto
+    // containing variable having a dependent initializer, rendering the auto
+    // dependent), then we know that it signifies an abbreviated template
+    // syntax.
+    const bool IsDependentAuto =
+        !ContainedAutos.size() ? false : [&] {
+                                           for (const auto *AT : ContainedAutos)
+                                             if (AT->isDependentType())
+                                               return true;
+                                           return false;
+                                         }();
+    return IsDependentAuto;
+  }
+  return false;
+}
 /// ParseParameterDeclarationClause - Parse a (possibly empty) parameter-list
 /// after the opening parenthesis. This function will not parse a K&R-style
 /// identifier list.
@@ -5562,6 +5609,10 @@ void Parser::ParseParameterDeclarationClause(
        ParsedAttributes &FirstArgAttrs,
        SmallVectorImpl<DeclaratorChunk::ParamInfo> &ParamInfo,
        SourceLocation &EllipsisLoc) {
+
+  // Track whether this parameter clause contains any abbreviated template
+  // syntax.
+  bool ContainsAbbreviatedTemplateSyntax = false;
   do {
     // FIXME: Issue a diagnostic if we parsed an attribute-specifier-seq
     // before deciding this was a parameter-declaration-clause.
@@ -5631,19 +5682,34 @@ void Parser::ParseParameterDeclarationClause(
       // Inform the actions module about the parameter declarator, so it gets
       // added to the current scope.
       Decl *Param = Actions.ActOnParamDeclarator(getCurScope(), ParmDeclarator);
+      
+      ContainsAbbreviatedTemplateSyntax =
+          ContainsAbbreviatedTemplateSyntax ||
+          parameterContainsAbbreviatedTemplateSyntax(Param);
+
       // Parse the default argument, if any. We parse the default
       // arguments in all dialects; the semantic analysis in
       // ActOnParamDefaultArgument will reject the default argument in
       // C.
       if (Tok.is(tok::equal)) {
         SourceLocation EqualLoc = Tok.getLocation();
-
+        const bool MightBeParsingAnAbbreviatedFunctionTemplate =
+            /*getLangOpts().CPlusPlus14 &&*/ ContainsAbbreviatedTemplateSyntax ||
+            ParmDeclarator.getContext() == Declarator::PrototypeContext ||
+            ParmDeclarator.getContext() ==
+                Declarator::LambdaExprParameterContext;
         // Parse the default argument
-        if (D.getContext() == Declarator::MemberContext) {
-          // If we're inside a class definition, cache the tokens
-          // corresponding to the default argument. We'll actually parse
-          // them when we see the end of the class definition.
+        if (D.getContext() == Declarator::MemberContext ||
+            MightBeParsingAnAbbreviatedFunctionTemplate) {
+          // If we're inside a class definition, or potentially parsing an
+          // abbreviated template, cache the tokens corresponding to the default
+          // argument. We'll actually parse them when we see the end of the
+          // class definition, or if no abbreviated template syntax: then at the
+          // end of this parameter-clause, or if contains an abbreviated
+          // template parameter: then once the declarator has been semantically
+          // processed.
           // FIXME: Can we use a smart pointer for Toks?
+
           DefArgToks = new CachedTokens;
 
           SourceLocation ArgStartLoc = NextToken().getLocation();
@@ -5721,6 +5787,38 @@ void Parser::ParseParameterDeclarationClause(
 
     // If the next token is a comma, consume it and keep reading arguments.
   } while (TryConsumeToken(tok::comma));
+
+  // Now parse all default arguments if we are not in a member context and we
+  // determined that we indeed had no abbreviated template syntax within
+  // parameters.  Abbreviated function template default args must only be parsed
+  // once we have determined whether we have an explicit TPL or an implicitly
+  // generated one.  This information is crucial when determining the depth of
+  // any generic lambdas within the default args.  For e.g.
+  //  void f(int (*)(int) = [](auto a) { return a; }, auto b = 42);
+  //  f<int>();
+
+  if (D.getContext() != Declarator::MemberContext &&
+      !ContainsAbbreviatedTemplateSyntax) {
+    using LateParsedDefaultArgument = Parser::LateParsedDefaultArgument;
+    SmallVector<LateParsedDefaultArgument, 8> DefaultArgs;
+    bool HasUnparsedTokens = false;
+    for (auto &&PInfo : ParamInfo) {
+      HasUnparsedTokens = HasUnparsedTokens || PInfo.DefaultArgTokens;
+      DefaultArgs.emplace_back(PInfo.Param, PInfo.DefaultArgTokens);
+    }
+    // Temporarily forget this scope with all the parameters declared within it,
+    // and use a new scope that has the parameters added in sequentially. Ugh!!
+    if (HasUnparsedTokens) {
+      Scope *SavedCurScopeWithParameters = getCurScope();
+      const auto CurScopeFlags = getCurScope()->getFlags();
+      Actions.CurScope = SavedCurScopeWithParameters->getParent();
+      {
+        ParseScope DefaultArgParsingScope(this, CurScopeFlags);
+        ParseLexedDefaultArguments(DefaultArgs);
+      }
+      Actions.CurScope = SavedCurScopeWithParameters;
+    }
+  }
 }
 
 /// [C90]   direct-declarator '[' constant-expression[opt] ']'

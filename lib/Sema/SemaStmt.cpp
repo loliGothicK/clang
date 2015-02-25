@@ -1781,7 +1781,7 @@ Sema::ActOnObjCForCollectionStmt(SourceLocation ForLoc,
                               diag::err_non_local_variable_decl_in_for));
 
       // If the type contained 'auto', deduce the 'auto' to 'id'.
-      if (FirstType->getContainedAutoType()) {
+      if (FirstType->containsAutoType()) {
         OpaqueValueExpr OpaqueId(D->getLocation(), Context.getObjCIdType(),
                                  VK_RValue);
         Expr *DeducedInit = &OpaqueId;
@@ -2630,9 +2630,9 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
     if (CurCap->ReturnType.isNull())
       CurCap->ReturnType = FD->getReturnType();
 
-    AutoType *AT = CurCap->ReturnType->getContainedAutoType();
-    assert(AT && "lost auto type from lambda return type");
-    if (DeduceFunctionTypeFromReturnExpr(FD, ReturnLoc, RetValExp, AT)) {
+    assert(CurCap->ReturnType->containsAutoType() &&
+           "lost auto type from lambda return type");
+    if (DeduceFunctionTypeFromReturnExpr(FD, ReturnLoc, RetValExp)) {
       FD->setInvalidDecl();
       return StmtError();
     }
@@ -2803,10 +2803,29 @@ TypeLoc Sema::getReturnTypeLoc(FunctionDecl *FD) const {
 /// C++1y [dcl.spec.auto]p6.
 bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
                                             SourceLocation ReturnLoc,
-                                            Expr *&RetExpr,
-                                            AutoType *AT) {
+                                            Expr *&RetExpr) {
   TypeLoc OrigResultType = getReturnTypeLoc(FD);
   QualType Deduced;
+  QualType CurReturnType = FD->getReturnType();
+  assert(CurReturnType->containsAutoType());
+  auto CurReturnContainedAutos = CurReturnType->getContainedAutoTypes();
+  const bool IsCurReturnTypeDecltypeAuto =
+      CurReturnContainedAutos.size() == 1 &&
+      CurReturnContainedAutos.front()->isDecltypeAuto();
+  
+  const bool IsDeducedCurReturnType = [&] {
+    assert(CurReturnContainedAutos.size());
+    const bool IsFirstAutoDeduced =
+        CurReturnContainedAutos.front()->isDeduced();
+    assert([&] {
+             for (auto *AT : CurReturnContainedAutos)
+               if (AT->isDeduced() != IsFirstAutoDeduced)
+                 return false;
+             return true;
+           }() &&
+           "All autos must be either deduced or undeduced!");
+    return IsFirstAutoDeduced;
+  }();
 
   if (RetExpr && isa<InitListExpr>(RetExpr)) {
     //  If the deduction is for a return statement and the initializer is
@@ -2823,7 +2842,7 @@ bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
     //   Return type deduction [...] occurs when the definition is
     //   instantiated even if the function body contains a return
     //   statement with a non-type-dependent operand.
-    assert(AT->isDeduced() && "should have deduced to dependent type");
+    assert(IsDeducedCurReturnType && "should have deduced to dependent type");
     return false;
   } else if (RetExpr) {
     //  If the deduction is for a return statement and the initializer is
@@ -2869,19 +2888,18 @@ bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
   //  has multiple return statements, the return type is deduced for each return
   //  statement. [...] if the type deduced is not the same in each deduction,
   //  the program is ill-formed.
-  if (AT->isDeduced() && !FD->isInvalidDecl()) {
-    AutoType *NewAT = Deduced->getContainedAutoType();
+  if (IsDeducedCurReturnType && !FD->isInvalidDecl()) {
     if (!FD->isDependentContext() &&
-        !Context.hasSameType(AT->getDeducedType(), NewAT->getDeducedType())) {
+        !Context.hasSameType(FD->getReturnType(), Deduced)) {
       const LambdaScopeInfo *LambdaSI = getCurLambda();
       if (LambdaSI && LambdaSI->HasImplicitReturnType) {
         Diag(ReturnLoc, diag::err_typecheck_missing_return_type_incompatible)
-          << NewAT->getDeducedType() << AT->getDeducedType()
+          << Deduced << CurReturnType
           << true /*IsLambda*/;
       } else {
         Diag(ReturnLoc, diag::err_auto_fn_different_deductions)
-          << (AT->isDecltypeAuto() ? 1 : 0)
-          << NewAT->getDeducedType() << AT->getDeducedType();
+          << (IsCurReturnTypeDecltypeAuto ? 1 : 0)
+          << Deduced << CurReturnType;
       }
       return true;
     }
@@ -2949,9 +2967,9 @@ StmtResult Sema::BuildReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
   // FIXME: Add a flag to the ScopeInfo to indicate whether we're performing
   // deduction.
   if (getLangOpts().CPlusPlus14) {
-    if (AutoType *AT = FnRetType->getContainedAutoType()) {
+    if (FnRetType->containsAutoType()) {
       FunctionDecl *FD = cast<FunctionDecl>(CurContext);
-      if (DeduceFunctionTypeFromReturnExpr(FD, ReturnLoc, RetValExp, AT)) {
+      if (DeduceFunctionTypeFromReturnExpr(FD, ReturnLoc, RetValExp)) {
         FD->setInvalidDecl();
         return StmtError();
       } else {

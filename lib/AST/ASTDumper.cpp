@@ -375,8 +375,11 @@ namespace  {
     }
     void VisitAutoType(const AutoType *T) {
       if (T->isDecltypeAuto()) OS << " decltype(auto)";
+      if (T->containsUnexpandedParameterPack())
+        OS << "...";
       if (!T->isDeduced())
         OS << " undeduced";
+      
     }
     void VisitTemplateSpecializationType(const TemplateSpecializationType *T) {
       if (T->isTypeAlias()) OS << " alias";
@@ -1121,6 +1124,9 @@ void ASTDumper::VisitFunctionDecl(const FunctionDecl *D) {
 void ASTDumper::VisitFieldDecl(const FieldDecl *D) {
   dumpName(D);
   dumpType(D->getType());
+  // Also dump the canonical type
+  OS << "#";
+  dumpType(D->getASTContext().getCanonicalType(D->getType()));
   if (D->isMutable())
     OS << " mutable";
   if (D->isModulePrivate())
@@ -1135,6 +1141,10 @@ void ASTDumper::VisitFieldDecl(const FieldDecl *D) {
 void ASTDumper::VisitVarDecl(const VarDecl *D) {
   dumpName(D);
   dumpType(D->getType());
+  // Also dump the canonical type
+  OS << "#";
+  dumpType(D->getASTContext().getCanonicalType(D->getType()));
+
   StorageClass SC = D->getStorageClass();
   if (SC != SC_None)
     OS << ' ' << VarDecl::getStorageClassSpecifierString(SC);
@@ -1331,15 +1341,25 @@ void ASTDumper::VisitTemplateTypeParmDecl(const TemplateTypeParmDecl *D) {
   dumpName(D);
   if (D->hasDefaultArgument())
     dumpTemplateArgument(D->getDefaultArgument());
+  // Also dump the canonical type
+  OS << "#";
+  dumpType(D->getASTContext()
+               .getCanonicalType(D->getASTContext().getTypeDeclType(D)));
 }
 
 void ASTDumper::VisitNonTypeTemplateParmDecl(const NonTypeTemplateParmDecl *D) {
   dumpType(D->getType());
   if (D->isParameterPack())
     OS << " ...";
+  // Also dump the canonical type
+  OS << "#";
+  dumpType(D->getASTContext().getCanonicalType(D->getType()));
+
   dumpName(D);
   if (D->hasDefaultArgument())
     dumpTemplateArgument(D->getDefaultArgument());
+  
+
 }
 
 void ASTDumper::VisitTemplateTemplateParmDecl(

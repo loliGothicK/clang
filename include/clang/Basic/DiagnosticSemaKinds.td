@@ -1694,7 +1694,7 @@ def err_decltype_auto_initializer_list : Error<
 def err_auto_fn_deduction_failure : Error<
   "cannot deduce return type %0 from returned value of type %1">;
 def err_auto_fn_different_deductions : Error<
-  "'%select{auto|decltype(auto)}0' in return type deduced as %1 here but "
+  "'%select{auto|decltype(auto)}0' containing return type deduced as %1 here but "
   "deduced as %2 in earlier return statement">;
 def err_auto_fn_used_before_defined : Error<
   "function %0 with deduced return type cannot be used before it is defined">;

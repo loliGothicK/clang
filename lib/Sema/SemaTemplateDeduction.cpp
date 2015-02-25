@@ -540,7 +540,8 @@ getDepthAndIndex(UnexpandedParameterPack UPP) {
   if (const TemplateTypeParmType *TTP
                           = UPP.first.dyn_cast<const TemplateTypeParmType *>())
     return std::make_pair(TTP->getDepth(), TTP->getIndex());
-
+  assert(!UPP.first.dyn_cast<const AutoType *>() &&
+         "We should not be asking for depth and index on variadic auto packs");
   return getDepthAndIndex(UPP.first.get<NamedDecl *>());
 }
 
@@ -3538,7 +3539,7 @@ Sema::DeduceTemplateArguments(FunctionTemplateDecl *FunctionTemplate,
   // type so that we treat it as a non-deduced context in what follows.
   bool HasDeducedReturnType = false;
   if (getLangOpts().CPlusPlus14 && InOverloadResolution &&
-      Function->getReturnType()->getContainedAutoType()) {
+      Function->getReturnType()->containsAutoType()) {
     FunctionType = SubstAutoType(FunctionType, Context.DependentTy);
     HasDeducedReturnType = true;
   }
@@ -3583,21 +3584,6 @@ Sema::DeduceTemplateArguments(FunctionTemplateDecl *FunctionTemplate,
   return TDK_Success;
 }
 
-/// \brief Given a function declaration (e.g. a generic lambda conversion 
-///  function) that contains an 'auto' in its result type, substitute it 
-///  with TypeToReplaceAutoWith.  Be careful to pass in the type you want
-///  to replace 'auto' with and not the actual result type you want
-///  to set the function to.
-static inline void 
-SubstAutoWithinFunctionReturnType(FunctionDecl *F, 
-                                    QualType TypeToReplaceAutoWith, Sema &S) {
-  assert(!TypeToReplaceAutoWith->getContainedAutoType());
-  QualType AutoResultType = F->getReturnType();
-  assert(AutoResultType->getContainedAutoType()); 
-  QualType DeducedResultType = S.SubstAutoType(AutoResultType, 
-                                               TypeToReplaceAutoWith);
-  S.Context.adjustDeducedFunctionResultType(F, DeducedResultType);
-}
 
 /// \brief Given a specialized conversion operator of a generic lambda 
 /// create the corresponding specializations of the call operator and 
@@ -3619,7 +3605,7 @@ SpecializeCorrespondingLambdaCallOperatorAndInvoker(
   CXXMethodDecl *CallOpGeneric = LambdaClass->getLambdaCallOperator();
   QualType CallOpResultType = CallOpGeneric->getReturnType();
   const bool GenericLambdaCallOperatorHasDeducedReturnType = 
-      CallOpResultType->getContainedAutoType();
+      CallOpResultType->containsAutoType();
   
   FunctionTemplateDecl *CallOpTemplate = 
       CallOpGeneric->getDescribedFunctionTemplate();
@@ -3663,23 +3649,25 @@ SpecializeCorrespondingLambdaCallOperatorAndInvoker(
   // specialization's result type.
   if (GenericLambdaCallOperatorHasDeducedReturnType &&
       InvokerSpecialized->getReturnType()->isUndeducedType()) {
-    // Be sure to get the type to replace 'auto' with and not
-    // the full result type of the call op specialization 
-    // to substitute into the 'auto' of the invoker and conversion
-    // function.
-    // For e.g.
-    //  int* (*fp)(int*) = [](auto* a) -> auto* { return a; };
-    // We don't want to subst 'int*' into 'auto' to get int**.
-
-    QualType TypeToReplaceAutoWith = CallOpSpecialized->getReturnType()
-                                         ->getContainedAutoType()
-                                         ->getDeducedType();
-    SubstAutoWithinFunctionReturnType(InvokerSpecialized,
-        TypeToReplaceAutoWith, S);
-    SubstAutoWithinFunctionReturnType(ConversionSpecialized, 
-        TypeToReplaceAutoWith, S);
+    // Adjust the return type of the static-invoker and the conversion function.
+    S.Context.adjustDeducedFunctionResultType(
+        InvokerSpecialized, CallOpSpecialized->getReturnType());
+    // The static invoker needs to remove the const-qualifier that it inherits
+    // from the member function call operator.
+    const FunctionProtoType *InvokerFPT =
+        InvokerSpecialized->getType().getTypePtr()->castAs<FunctionProtoType>();
+    FunctionProtoType::ExtProtoInfo EPI = InvokerFPT->getExtProtoInfo();
+    EPI.TypeQuals = 0;
+    InvokerSpecialized->setType(S.Context.getFunctionType(
+        InvokerFPT->getReturnType(), InvokerFPT->getParamTypes(), EPI));
+    // The conversion function's return type has to be the same as a pointer to
+    // the invoker function's type.
+    QualType InvokerTy = InvokerSpecialized->getType();
+    QualType ConversionTy = S.Context.getPointerType(InvokerTy);
+    S.Context.adjustDeducedFunctionResultType(
+        ConversionSpecialized, ConversionTy);
   }
-    
+
   // Ensure that static invoker doesn't have a const qualifier.
   // FIXME: When creating the InvokerTemplate in SemaLambda.cpp 
   // do not use the CallOperator's TypeSourceInfo which allows
@@ -3687,9 +3675,11 @@ SpecializeCorrespondingLambdaCallOperatorAndInvoker(
   const FunctionProtoType *InvokerFPT = InvokerSpecialized->
                   getType().getTypePtr()->castAs<FunctionProtoType>();
   FunctionProtoType::ExtProtoInfo EPI = InvokerFPT->getExtProtoInfo();
-  EPI.TypeQuals = 0;
-  InvokerSpecialized->setType(S.Context.getFunctionType(
-      InvokerFPT->getReturnType(), InvokerFPT->getParamTypes(), EPI));
+  if (EPI.TypeQuals) {
+    EPI.TypeQuals = 0;
+    InvokerSpecialized->setType(S.Context.getFunctionType(
+        InvokerFPT->getReturnType(), InvokerFPT->getParamTypes(), EPI));
+  }
   return Sema::TDK_Success;
 }
 /// \brief Deduce template arguments for a templated conversion
@@ -3858,62 +3848,381 @@ Sema::DeduceTemplateArguments(FunctionTemplateDecl *FunctionTemplate,
                                  InOverloadResolution);
 }
 
-namespace {
-  /// Substitute the 'auto' type specifier within a type for a given replacement
-  /// type.
-  class SubstituteAutoTransform :
-    public TreeTransform<SubstituteAutoTransform> {
-    QualType Replacement;
-  public:
-    SubstituteAutoTransform(Sema &SemaRef, QualType Replacement)
-        : TreeTransform<SubstituteAutoTransform>(SemaRef),
-          Replacement(Replacement) {}
-
-    QualType TransformAutoType(TypeLocBuilder &TLB, AutoTypeLoc TL) {
-      // If we're building the type pattern to deduce against, don't wrap the
-      // substituted type in an AutoType. Certain template deduction rules
-      // apply only when a template type parameter appears directly (and not if
-      // the parameter is found through desugaring). For instance:
-      //   auto &&lref = lvalue;
-      // must transform into "rvalue reference to T" not "rvalue reference to
-      // auto type deduced as T" in order for [temp.deduct.call]p3 to apply.
-      if (!Replacement.isNull() && isa<TemplateTypeParmType>(Replacement)) {
-        QualType Result = Replacement;
-        TemplateTypeParmTypeLoc NewTL =
-          TLB.push<TemplateTypeParmTypeLoc>(Result);
-        NewTL.setNameLoc(TL.getNameLoc());
-        return Result;
-      } else {
-        bool Dependent =
-          !Replacement.isNull() && Replacement->isDependentType();
-        QualType Result =
-          SemaRef.Context.getAutoType(Dependent ? QualType() : Replacement,
-                                      TL.getTypePtr()->isDecltypeAuto(),
-                                      Dependent);
-        AutoTypeLoc NewTL = TLB.push<AutoTypeLoc>(Result);
-        NewTL.setNameLoc(TL.getNameLoc());
-        return Result;
-      }
-    }
-
-    ExprResult TransformLambdaExpr(LambdaExpr *E) {
-      // Lambdas never need to be transformed.
-      return E;
-    }
-
-    QualType Apply(TypeLoc TL) {
-      // Create some scratch storage for the transformed type locations.
-      // FIXME: We're just going to throw this information away. Don't build it.
-      TypeLocBuilder TLB;
-      TLB.reserve(TL.getFullDataSize());
-      return TransformType(TLB, TL);
-    }
-  };
-}
-
 Sema::DeduceAutoResult
 Sema::DeduceAutoType(TypeSourceInfo *Type, Expr *&Init, QualType &Result) {
   return DeduceAutoType(Type->getTypeLoc(), Init, Result);
+}
+
+namespace {
+/// The Auto Transformer can operate in 5 distinct modes (see the
+/// AutoTransformMode enum below), while performing the following functions:
+
+/// 1) Making all autos within a type, dependent, when deducing against a
+/// dependent type - for e.g: pair<auto, auto> p = pair<T, U>{};
+
+/// 2) Making all autos within a type, variadic, when the declarator encounters
+/// an ellipsis - for e.g. void (*fp)(pair<auto, auto>...)
+
+/// 3) Converting all autos into template parameters when normalizing
+/// abbreviated function template syntax - but when doing so, only an 'auto'
+/// type that started its life as dependent should be normalized, all other
+/// 'autos' (such as within the deduced return type of the function) must not be
+/// normalized into template parameters, during this transformation.
+  
+/// 4) Converting all autos into template parameters when inventing a function
+/// template to deduce the corresponding types of each auto from its
+/// initialier-expression - during this transformation, all contained autos must
+/// be non-dependent.
+
+/// 5) Replacing each contained auto with ts deduced type, or a contained
+/// variadic auto with a sequence of deduced types. This is the only mode of
+/// transformation that does require expansion of packs.
+
+class SubstituteAutosTransformer
+    : public TreeTransform<SubstituteAutosTransformer> {
+  using inherited =
+      TreeTransform<SubstituteAutosTransformer>;
+  
+  
+  ArrayRef<QualType> CorrespondingTemplateTypes;
+  const TemplateArgumentList *TemplateArgsPtr;
+  std::map<unsigned, Optional<int>>
+      //MapAutoSourceLocationToAutoIndex;
+      MapAutoIndexToReplacementTypeIndex;
+
+  Optional<int> getMappedAutoIndex(const AutoType *AT) {
+    auto it = MapAutoIndexToReplacementTypeIndex.find(AT->getIndex());
+    if (it != MapAutoIndexToReplacementTypeIndex.end())
+      return it->second;
+    
+    llvm_unreachable("We should always be able to map an autolocation to an "
+                     "index when transforming it");
+    return Optional<int>();
+  }
+
+  enum class AutoTransformMode {
+    MakeDependent,
+    MakeVariadic,
+    MakeTemplateParametersForAbbreviatedSyntax,
+    MakeTemplateParametersForDeduction,
+    MakeDeduced
+  };
+  AutoTransformMode TransformMode;
+  
+public:
+  struct MakeVariadicTag {};
+  struct MakeDependentTag {};
+  struct MakeTemplateParametersForDeductionTag {};
+  struct MakeTemplateParametersForAbbreviatedSyntaxTag {};
+  struct MakeDeducedTag {};
+
+  SubstituteAutosTransformer(MakeDependentTag, Sema &SemaRef)
+      : inherited(SemaRef), 
+        TemplateArgsPtr(nullptr),
+        TransformMode(AutoTransformMode::MakeDependent) {}
+
+  SubstituteAutosTransformer(MakeVariadicTag, Sema &SemaRef)
+      : inherited(SemaRef), 
+        TemplateArgsPtr(nullptr),
+        TransformMode(AutoTransformMode::MakeVariadic) {}
+
+  SubstituteAutosTransformer(MakeTemplateParametersForDeductionTag,
+                             Sema &SemaRef,
+                             ArrayRef<QualType> TemplateParameters)
+      : inherited(SemaRef), 
+        CorrespondingTemplateTypes(TemplateParameters),
+        TemplateArgsPtr(nullptr),
+        TransformMode(AutoTransformMode::MakeTemplateParametersForDeduction) {}
+
+  SubstituteAutosTransformer(MakeTemplateParametersForAbbreviatedSyntaxTag,
+                             Sema &SemaRef,
+                             ArrayRef<QualType> TemplateParameters)
+      : inherited(SemaRef), 
+        CorrespondingTemplateTypes(TemplateParameters),
+        TemplateArgsPtr(nullptr),
+        TransformMode(
+            AutoTransformMode::MakeTemplateParametersForAbbreviatedSyntax) {}
+
+  SubstituteAutosTransformer(Sema &SemaRef,
+                             const TemplateArgumentList &DeducedTemplateArgs)
+      : inherited(SemaRef), 
+        TemplateArgsPtr(&DeducedTemplateArgs),
+        TransformMode(AutoTransformMode::MakeDeduced) {}
+
+  bool TryExpandParameterPacks(SourceLocation EllipsisLoc,
+                               SourceRange PatternRange,
+                               ArrayRef<UnexpandedParameterPack> Unexpanded,
+                               bool &ShouldExpand, bool &RetainExpansion,
+                               Optional<unsigned> &NumExpansions) {
+    if (TemplateArgsPtr) {
+      // If we get here - that means we are replacing each auto pack with a
+      // sequence of types - so lets just check our assumptions and then return
+      // success, and ensure the out parameters: ShouldExpand, RetainExpansion
+      // and NumExpansions are set appropriately.
+      const auto &TemplArgs = *TemplateArgsPtr;
+      
+      assert(Unexpanded.size() &&
+             "Must have unexpanded packs if trying to expand them!");
+      assert(TransformMode == AutoTransformMode::MakeDeduced &&
+             "Must be replacing autos with deduced types if about to expand a "
+             "parameter pack during auto substitution");
+      assert(!NumExpansions && "Explicitly substituted packs can not be "
+                               "syntaxctically provided while substituting "
+                               "deduced types back into contained autos");
+
+      assert([&] {
+               for (auto &&UPP : Unexpanded) {
+                 if (const AutoType *VAuto =
+                         UPP.first.dyn_cast<const AutoType *>()) {
+                   if (VAuto->isDependentType())
+                     return false;
+                   continue;
+                 }
+                 return false;
+               }
+               return true;
+             }() &&
+             "All unexpanded packs must be non-dependent variadic autos, else "
+             "we would have a dependent unexpanded pack type - and dependent "
+             "types can not be deduced from their initializer - thus never "
+             "getting here");
+
+      const AutoType *FirstAutoTyPack =
+          Unexpanded.front().first.dyn_cast<const AutoType *>();
+      const int AutoBeingSubstitutedIndex =
+          *getMappedAutoIndex(FirstAutoTyPack);
+      assert(AutoBeingSubstitutedIndex < (int)TemplateArgsPtr->size());
+      
+      assert(((AutoBeingSubstitutedIndex - 1 + Unexpanded.size()) <=
+              (int)TemplateArgsPtr->size()) &&
+             "Each unexpanded pack MUST have its own deduced pack supplied");
+
+      // All our packs must be in sequence, but they don't all have to be the
+      // same size, consider: auto (*vp)(V<P1<auto>, P2<auto, auto>...> ... x)
+      assert([&] {
+               for (int I = AutoBeingSubstitutedIndex,
+                        E = AutoBeingSubstitutedIndex + Unexpanded.size();
+                    I != E; ++I) {
+                 if (TemplArgs[I].getKind() != TemplateArgument::Pack)
+                   return false;
+               }
+               return true;
+             }() &&
+             "All our auto variadic packs must be in sequence, since an "
+             "ellipsis converts all 'autos' in its declarator into variadics");
+
+      ShouldExpand = true;
+      NumExpansions =
+          TemplArgs[AutoBeingSubstitutedIndex].pack_size();
+      RetainExpansion = false;
+      return false; 
+    }
+    return ShouldExpand = false;
+  }
+
+  QualType makeAutoDependent(TypeLocBuilder &TLB, AutoTypeLoc TL) {
+    assert(TransformMode == AutoTransformMode::MakeDependent);
+    if (TL.getTypePtr()->isDependentType()) {
+      TLB.pushFullCopy(TL);
+      return TL.getType();
+    }
+    // If not already dependent, make the dependent variant of auto
+    assert(TL.getType()->isUndeducedType());
+    QualType Result = SemaRef.Context.getAutoType(
+        QualType(), TL.getTypePtr()->isDecltypeAuto(), /*Dependent*/ true,
+        TL.getTypePtr()->containsUnexpandedParameterPack(),
+        TL.getTypePtr()->getIndex());
+    AutoTypeLoc NewTL = TLB.push<AutoTypeLoc>(Result);
+    NewTL.setNameLoc(TL.getNameLoc());
+    return Result;
+  }
+
+  QualType makeAutoVariadic(TypeLocBuilder &TLB, AutoTypeLoc TL) {
+    if (TL.getTypePtr()->containsUnexpandedParameterPack()) {
+      // Don't substitute for an already variadic 'auto'.
+      TLB.pushFullCopy(TL);
+      return TL.getType();
+    }
+    const AutoType *ATy = TL.getTypePtr();
+    assert(ATy->getDeducedType().isNull());
+    QualType AQTyVariadic = SemaRef.Context.getAutoType(
+        QualType(), false, ATy->isDependentType(), /*IsParameterPack*/ true,
+        ATy->getIndex());
+
+    AutoTypeLoc NewTL = TLB.push<AutoTypeLoc>(AQTyVariadic);
+    NewTL.setNameLoc(TL.getNameLoc());
+    return AQTyVariadic;
+  }
+
+  QualType replaceAutoWithTemplateParam(TypeLocBuilder &TLB, AutoTypeLoc TL) {
+    if (TransformMode ==
+            AutoTransformMode::MakeTemplateParametersForAbbreviatedSyntax &&
+        !TL.getTypePtr()->isDependentType()) {
+      // Don't substitute for any non-dependent 'auto' when substituting for
+      // abbreviated syntax within function, since an 'auto' when substituting
+      // during abbreviated syntax normalization can only be within the
+      // functions return type and does not denote an abbreviated template
+      // parameter - but rather return type deduction.
+      TLB.pushFullCopy(TL);
+      return TL.getType();
+    }
+
+    // If we're building the type pattern to deduce against, don't wrap the
+    // substituted type in an AutoType. Certain template deduction rules apply
+    // only when a template type parameter appears directly (and not if the
+    // parameter is found through desugaring). For instance: auto &&lref =
+    //   lvalue; must transform into "rvalue reference to T" not "rvalue
+    // reference to auto type deduced as T" in order for [temp.deduct.call]p3 to
+    // apply.
+    const int AutoBeingSubstitutedIndex = *getMappedAutoIndex(TL.getTypePtr());
+    assert(AutoBeingSubstitutedIndex < (int)CorrespondingTemplateTypes.size());
+
+    QualType Replacement(
+        CorrespondingTemplateTypes[AutoBeingSubstitutedIndex]);
+
+    assert(isa<TemplateTypeParmType>(Replacement));
+    QualType Result = Replacement;
+    TemplateTypeParmTypeLoc NewTL = TLB.push<TemplateTypeParmTypeLoc>(Result);
+    NewTL.setNameLoc(TL.getNameLoc());
+    return Result;
+  }
+  QualType TransformAutoType(TypeLocBuilder &TLB, AutoTypeLoc TL) {
+    
+    switch(TransformMode) {
+    
+    case AutoTransformMode::MakeDependent:
+      return makeAutoDependent(TLB, TL);
+
+    case AutoTransformMode::MakeVariadic:
+      return makeAutoVariadic(TLB, TL);
+    
+    case AutoTransformMode::MakeTemplateParametersForDeduction:
+      assert(!TL.getType()->isDependentType() &&
+             "When inventing a function template to deduce against, the auto's "
+             "can not be dependent");
+    case AutoTransformMode::MakeTemplateParametersForAbbreviatedSyntax:
+      return replaceAutoWithTemplateParam(TLB, TL);
+
+    case AutoTransformMode::MakeDeduced:
+      break;
+    }
+    // We are replacing each 'auto' within this type, with a corresponding
+    // deduced type - we also handle variadic autos - each variadic auto gets
+    // replaced with a sequence of deduced types.
+    assert(TransformMode == AutoTransformMode::MakeDeduced);
+    assert(TemplateArgsPtr);
+    assert(!TL.getTypePtr()->isDependentType());
+    
+    const auto& TemplateArgList = *TemplateArgsPtr;
+    const AutoType *ATy = TL.getTypePtr();
+    const int AutoBeingSubstitutedIndex = *getMappedAutoIndex(TL.getTypePtr());
+    assert(AutoBeingSubstitutedIndex < (int)TemplateArgList.size());
+
+    QualType DeducedType;
+    const TemplateArgument &TA = TemplateArgList[AutoBeingSubstitutedIndex];
+    
+    if (ATy->containsUnexpandedParameterPack()) {
+      assert(!ATy->isDecltypeAuto());
+      assert(TA.getKind() == TA.Pack);
+      assert(SemaRef.ArgumentPackSubstitutionIndex > -1 &&
+             SemaRef.ArgumentPackSubstitutionIndex < (int)TA.pack_size());
+      const TemplateArgument *PackElement =
+          TA.pack_begin() + SemaRef.ArgumentPackSubstitutionIndex;
+      assert(PackElement->getKind() == PackElement->Type);
+      DeducedType = PackElement->getAsType();
+    } else {
+      assert(TA.getKind() == TA.Type);
+      DeducedType = TA.getAsType();
+    }
+    assert(!DeducedType->isDependentType());
+    assert(!DeducedType->containsUnexpandedParameterPack());
+    // Now that we've substituted a deduced type into the 'auto' we will not
+    // need 'Index' again, so set it to 0.
+    QualType NewAutoType = SemaRef.Context.getAutoType(
+          DeducedType, ATy->isDecltypeAuto(), /*IsDependent*/ false,
+          /*ContainsUnexpandedPack*/ false, /*Index*/0);
+
+    AutoTypeLoc NewTL = TLB.push<AutoTypeLoc>(NewAutoType);
+    NewTL.setNameLoc(TL.getNameLoc());
+    return NewAutoType;
+  }
+
+  ExprResult TransformLambdaExpr(LambdaExpr *E) {
+    // Don't go digging into lambdas
+    return E;
+  }
+
+  TypeLoc Apply(TypeLoc TL, TypeLocBuilder *TLBPtr = nullptr) {
+    // Create some scratch storage for the transformed type locations.
+    TypeLocBuilder TLBStack;
+    TypeLocBuilder &TLB = TLBPtr ? *TLBPtr : TLBStack;
+    TLB.reserve(TL.getFullDataSize());
+    
+    MapAutoIndexToReplacementTypeIndex.clear();
+    if (TransformMode != AutoTransformMode::MakeVariadic &&
+        TransformMode != AutoTransformMode::MakeDependent) {
+      // Map each auto's unique index to a sequential index that identifies its
+      // replacement.
+      int Idx = 0;
+      for (auto &&ATL : Type::getContainedAutoTypeLocs(TL)) {       
+        if (TransformMode !=
+                AutoTransformMode::MakeTemplateParametersForAbbreviatedSyntax ||
+            ATL.getType()->isDependentType()) {
+          const unsigned AIdx = ATL.getTypePtr()->getIndex();
+          assert(MapAutoIndexToReplacementTypeIndex.find(AIdx) ==
+                     MapAutoIndexToReplacementTypeIndex.end() &&
+                 "Each Auto must be unique!");
+          MapAutoIndexToReplacementTypeIndex[AIdx] = Idx++;
+        }
+      }
+      assert(Idx != 0);
+    }
+    QualType Ty = TransformType(TLB, TL);
+    if (Ty.isNull())
+      return TypeLoc();
+ 
+    return TLB.getTypeSourceInfo(SemaRef.Context, Ty)->getTypeLoc();
+  }
+
+  TypeSourceInfo *Apply(TypeSourceInfo *TSI) {
+    TypeLoc OldTL = TSI->getTypeLoc();
+    // Create some scratch storage for the transformed type locations.
+    TypeLocBuilder TLB;
+    TypeLoc NewTL = Apply(OldTL, &TLB);
+    if (NewTL.getType().isNull())
+      return nullptr;
+    return TLB.getTypeSourceInfo(SemaRef.Context, NewTL.getType());
+  }
+};
+}
+
+TypeSourceInfo *Sema::replaceEachDependentAutoWithCorrespondingTemplateTypes(
+    TypeSourceInfo *TSIWithAuto,
+    ArrayRef<QualType> CorrespondingTemplateParamTypes) {
+  return SubstituteAutosTransformer(
+             SubstituteAutosTransformer::
+                 MakeTemplateParametersForAbbreviatedSyntaxTag(),
+             *this, CorrespondingTemplateParamTypes).Apply(TSIWithAuto);
+}
+
+TypeSourceInfo *
+Sema::makeAllContainedAutosVariadic(TypeSourceInfo *TSIWithAuto) {
+  return SubstituteAutosTransformer(
+             SubstituteAutosTransformer::MakeVariadicTag(),
+             *this).Apply(TSIWithAuto);
+}
+
+TypeSourceInfo *
+Sema::makeAllContainedAutosDependent(TypeSourceInfo *TSIWithAuto) {
+  return SubstituteAutosTransformer(
+             SubstituteAutosTransformer::
+                 MakeDependentTag(),
+             *this).Apply(TSIWithAuto);
+}
+
+QualType Sema::makeAllContainedAutosDependent(QualType AutoContainingType) {
+  auto *TSI = Context.getTrivialTypeSourceInfo(AutoContainingType);
+  return makeAllContainedAutosDependent(TSI)->getType();
 }
 
 /// \brief Deduce the type for an auto type-specifier (C++11 [dcl.spec.auto]p6)
@@ -3924,15 +4233,19 @@ Sema::DeduceAutoType(TypeSourceInfo *Type, Expr *&Init, QualType &Result) {
 ///        deduced type.
 Sema::DeduceAutoResult
 Sema::DeduceAutoType(TypeLoc Type, Expr *&Init, QualType &Result) {
+  
   if (Init->getType()->isNonOverloadPlaceholderType()) {
     ExprResult NonPlaceholder = CheckPlaceholderExpr(Init);
     if (NonPlaceholder.isInvalid())
       return DAR_FailedAlreadyDiagnosed;
     Init = NonPlaceholder.get();
   }
-
+  
   if (Init->isTypeDependent() || Type.getType()->isDependentType()) {
-    Result = SubstituteAutoTransform(*this, Context.DependentTy).Apply(Type);
+    using MakeDependentTag = SubstituteAutosTransformer::MakeDependentTag;
+    Result = SubstituteAutosTransformer(MakeDependentTag(), *this)
+                 .Apply(Type)
+                 .getType();
     assert(!Result.isNull() && "substituting DependentTy can't fail");
     return DAR_Succeeded;
   }
@@ -3950,70 +4263,136 @@ Sema::DeduceAutoType(TypeLoc Type, Expr *&Init, QualType &Result) {
       QualType Deduced = BuildDecltypeType(Init, Init->getLocStart(), false);
       // FIXME: Support a non-canonical deduced type for 'auto'.
       Deduced = Context.getCanonicalType(Deduced);
-      Result = SubstituteAutoTransform(*this, Deduced).Apply(Type);
+      // FVQUESTION: Why do a transform here? is it to hold on to attributes?
+      TemplateArgument TArg[] = {TemplateArgument(Deduced)};
+      TemplateArgumentList TemplArgList(TemplateArgumentList::OnStack, TArg, 1);
+      Result =
+          SubstituteAutosTransformer(*this, TemplArgList)
+              .Apply(Type)
+              .getType();
       if (Result.isNull())
         return DAR_FailedAlreadyDiagnosed;
       return DAR_Succeeded;
     }
   }
 
-  SourceLocation Loc = Init->getExprLoc();
-
   LocalInstantiationScope InstScope(*this);
+  SourceLocation InitLoc = Init->getExprLoc();
 
-  // Build template<class TemplParam> void Func(FuncParam);
-  TemplateTypeParmDecl *TemplParam =
-    TemplateTypeParmDecl::Create(Context, nullptr, SourceLocation(), Loc, 0, 0,
-                                 nullptr, false, false);
-  QualType TemplArg = QualType(TemplParam->getTypeForDecl(), 0);
-  NamedDecl *TemplParamPtr = TemplParam;
-  FixedSizeTemplateParameterList<1> TemplateParams(Loc, Loc, &TemplParamPtr,
-                                                   Loc);
+  auto ContainedAutoTypeLocs = Type::getContainedAutoTypeLocs(Type);
+  
+  if (!ContainedAutoTypeLocs.size()) {
+    assert(getDiagnostics().hasErrorOccurred());
+    return DAR_Failed;
+  }
 
-  QualType FuncParam = SubstituteAutoTransform(*this, TemplArg).Apply(Type);
-  assert(!FuncParam.isNull() &&
-         "substituting template parameter for 'auto' failed");
+  // Invent a function template to deduce against the initializer...  
+  SourceLocation LAngleLoc = Type.getBeginLoc();
+  SourceLocation RAngleLoc = Type.getEndLoc();
+  std::vector<TemplateTypeParmDecl *> CorrespondingTemplateTypeParmDecls =
+      getCorrespondingTemplateTypeParmDeclsForAutoTypes(0, 0,
+                                                        ContainedAutoTypeLocs);
 
-  // Deduce type of TemplParam in Func(Init)
-  SmallVector<DeducedTemplateArgument, 1> Deduced;
-  Deduced.resize(1);
+  TemplateParameterList *InventedFuncTPL = TemplateParameterList::Create(
+      Context,
+      /*Template kw loc*/ SourceLocation(), LAngleLoc,
+      (NamedDecl **)CorrespondingTemplateTypeParmDecls.data(),
+      CorrespondingTemplateTypeParmDecls.size(), RAngleLoc);
+
+  std::vector<QualType> CorrespondingTemplateParamTypes =
+      getTypesFromTemplateTypeParamDecls(CorrespondingTemplateTypeParmDecls);
+
+  QualType FuncParam =
+      SubstituteAutosTransformer(
+          SubstituteAutosTransformer::MakeTemplateParametersForDeductionTag(),
+          *this, CorrespondingTemplateParamTypes)
+          .Apply(Type)
+          .getType();
+
+  SmallVector<DeducedTemplateArgument, 4> DeducedTemplateArguments;
+  DeducedTemplateArguments.resize(CorrespondingTemplateTypeParmDecls.size());
   QualType InitType = Init->getType();
   unsigned TDF = 0;
 
-  TemplateDeductionInfo Info(Loc);
+  TemplateDeductionInfo Info(InitLoc);
 
   InitListExpr *InitList = dyn_cast<InitListExpr>(Init);
+  // Check if we have an auto, auto&, auto&&
+  const AutoType *SimpleAutoTy =
+      Type.getType().getNonReferenceType()->getAs<AutoType>();
   if (InitList) {
-    for (unsigned i = 0, e = InitList->getNumInits(); i < e; ++i) {
-      if (DeduceTemplateArgumentByListElement(*this, &TemplateParams,
-                                              TemplArg,
-                                              InitList->getInit(i),
-                                              Info, Deduced, TDF))
+    // If the initializer is a brace-enclosed initializer list, the only way
+    // this deduction works is if we have either a simple auto or auto-ref
+    // construct or a std::initializer_list<> template-id containing auto.
+
+    // If we have a simple auto, then deduced the type of each element against
+    // the substituted corresponding template type...
+    QualType TemplateArgForInitializerList;
+    if (SimpleAutoTy)
+      TemplateArgForInitializerList = FuncParam.getNonReferenceType();
+    else {
+      // ... else if it is a std::initializer_list template-id, then obtain its
+      // template arguments as the type to deduce against each element of our
+      // initializer list.
+      if (!isStdInitializerList(FuncParam.getNonReferenceType(),
+                                &TemplateArgForInitializerList))
         return DAR_Failed;
     }
+    for (unsigned i = 0, e = InitList->getNumInits(); i < e; ++i) {
+      if (DeduceTemplateArgumentByListElement(
+              *this, InventedFuncTPL, TemplateArgForInitializerList,
+              InitList->getInit(i), Info, DeducedTemplateArguments, TDF))
+        return DAR_Failed;
+    }
+
   } else {
-    if (AdjustFunctionParmAndArgTypesForDeduction(*this, &TemplateParams,
-                                                  FuncParam, InitType, Init,
-                                                  TDF))
+    QualType AdjFuncParam = FuncParam;
+    if (AdjustFunctionParmAndArgTypesForDeduction(
+            *this, InventedFuncTPL, AdjFuncParam, InitType, Init, TDF))
       return DAR_Failed;
 
-    if (DeduceTemplateArgumentsByTypeMatch(*this, &TemplateParams, FuncParam,
-                                           InitType, Info, Deduced, TDF))
+    if (DeduceTemplateArgumentsByTypeMatch(*this, InventedFuncTPL, AdjFuncParam,
+                                           InitType, Info,
+                                           DeducedTemplateArguments, TDF))
       return DAR_Failed;
   }
+  for (DeducedTemplateArgument &DTA : DeducedTemplateArguments) {
+    if (DTA.getKind() != TemplateArgument::Type &&
+        DTA.getKind() != TemplateArgument::Pack)
+      return DAR_Failed;
+    if (DTA.getKind() == TemplateArgument::Pack) {
+      // for (auto && TA : )
+      // FVTODO: Check whether all arguments are types..
+    }
+  }
+  // If we have an initializer list and are deducing against a naked auto, then
+  // create a std-initializer-list from the deduced type from each element of
+  // the initializer-list.
+  if (InitList && SimpleAutoTy) {
+    assert(DeducedTemplateArguments.size() == 1);
+    QualType DeducedType = DeducedTemplateArguments.front().getAsType();
 
-  if (Deduced[0].getKind() != TemplateArgument::Type)
-    return DAR_Failed;
-
-  QualType DeducedType = Deduced[0].getAsType();
-
-  if (InitList) {
-    DeducedType = BuildStdInitializerList(DeducedType, Loc);
-    if (DeducedType.isNull())
+    QualType InitListDeducedType =
+        BuildStdInitializerList(DeducedType, InitLoc);
+    if (InitListDeducedType.isNull())
       return DAR_FailedAlreadyDiagnosed;
+    DeducedTemplateArguments[0] =
+        DeducedTemplateArgument(TemplateArgument(InitListDeducedType));
   }
+  // Convert this to a vector of template arguments, so that array arithmetic
+  // works when creating the Template arugment list below.
+  SmallVector<TemplateArgument, 8> TemplateArguments;
+  for (DeducedTemplateArgument &DTA : DeducedTemplateArguments)
+    TemplateArguments.push_back(DTA);
+  
+  TemplateArgumentList TemplArgList(TemplateArgumentList::OnStack,
+                                    TemplateArguments.data(),
+                                    TemplateArguments.size());
 
-  Result = SubstituteAutoTransform(*this, DeducedType).Apply(Type);
+  Result = SubstituteAutosTransformer(*this, TemplArgList)
+               .Apply(Type)
+               .getType();
+
   if (Result.isNull())
    return DAR_FailedAlreadyDiagnosed;
 
@@ -4030,18 +4409,33 @@ Sema::DeduceAutoType(TypeLoc Type, Expr *&Init, QualType &Result) {
   return DAR_Succeeded;
 }
 
-QualType Sema::SubstAutoType(QualType TypeWithAuto, 
-                             QualType TypeToReplaceAuto) {
-  return SubstituteAutoTransform(*this, TypeToReplaceAuto).
-               TransformType(TypeWithAuto);
-}
+QualType Sema::SubstAutoType(QualType AutoContainingType,
+                             QualType Replacement) {
+  if (Replacement->isDependentType())
+    return makeAllContainedAutosDependent(AutoContainingType);
+  auto ContainedAutos = AutoContainingType->getContainedAutoTypes();
 
+  assert(
+      ContainedAutos.size() == 1 &&
+      "For now SubstAutoType only works when there is 1 contained auto type");
+  assert(!ContainedAutos.front()->containsUnexpandedParameterPack() &&
+         "For now SubstAutoType only works when there is 1 contained auto type "
+         "that does not contain a variadic auto");
+  auto *AutoContainingTSI =
+      Context.getTrivialTypeSourceInfo(AutoContainingType);
+  TemplateArgument TArg[] = {TemplateArgument(Replacement)};
+  TemplateArgumentList TemplArgList(TemplateArgumentList::OnStack, TArg, 1);
+  return  SubstituteAutosTransformer(*this, TemplArgList)
+              .Apply(AutoContainingTSI->getTypeLoc())
+              .getType();
+}
+/*
 TypeSourceInfo* Sema::SubstAutoTypeSourceInfo(TypeSourceInfo *TypeWithAuto, 
                              QualType TypeToReplaceAuto) {
-    return SubstituteAutoTransform(*this, TypeToReplaceAuto).
+    return SubstituteAutosTransformer(*this, TypeToReplaceAuto).
                TransformType(TypeWithAuto);
 }
-
+*/
 void Sema::DiagnoseAutoDeductionFailure(VarDecl *VDecl, Expr *Init) {
   if (isa<InitListExpr>(Init))
     Diag(VDecl->getLocation(),

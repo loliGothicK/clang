@@ -16,6 +16,7 @@
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/ExprObjC.h"
+#include "clang/AST/StmtVisitor.h"
 #include "clang/AST/TypeLoc.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Sema/Designator.h"
@@ -4628,6 +4629,35 @@ InitializationSequence::InitializationSequence(Sema &S,
   InitializeFrom(S, Entity, Kind, Args, TopLevelOfInitList);
 }
 
+bool hasAnyDependentGenericLambdas(ArrayRef<Expr*> Exprs) {
+  // A generic lambda is dependent if its parameters are not at depth 0 - which
+  // means the surrounding context needs to be instantiated before it can.
+  struct GenericLambdaDependencyChecker
+      : StmtVisitor<GenericLambdaDependencyChecker, bool> {
+    bool IsDependent;
+    GenericLambdaDependencyChecker() : IsDependent(false) { }
+    bool VisitLambdaExpr(LambdaExpr *E) {
+      if (auto *TPL = E->getTemplateParameterList())
+        if (TPL->getDepth() != 0)
+          return IsDependent = true;
+      return false;
+    }
+    bool VisitExpr(Expr *Node) {
+      /// VisitExpr - Visit all of the children of this expression.
+      bool IsDependent = false;
+      for (Stmt::child_range I = Node->children(); I; ++I)
+        IsDependent |= (*I ? Visit(*I) : IsDependent);
+      return IsDependent;
+    }
+  } GenericLambdaDependencyChecker;
+  for (auto &&E : Exprs) {
+    GenericLambdaDependencyChecker.IsDependent = false;
+    GenericLambdaDependencyChecker.Visit(E);
+    if (GenericLambdaDependencyChecker.IsDependent)
+      return true;
+  }
+  return false;
+}
 void InitializationSequence::InitializeFrom(Sema &S,
                                             const InitializedEntity &Entity,
                                             const InitializationKind &Kind,
@@ -4658,8 +4688,8 @@ void InitializationSequence::InitializeFrom(Sema &S,
   //   parenthesized list of expressions.
   QualType DestType = Entity.getType();
 
-  if (DestType->isDependentType() ||
-      Expr::hasAnyTypeDependentArguments(Args)) {
+  if (DestType->isDependentType() || Expr::hasAnyTypeDependentArguments(Args) ||
+      hasAnyDependentGenericLambdas(Args)) {
     SequenceKind = DependentSequence;
     return;
   }

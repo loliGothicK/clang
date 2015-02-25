@@ -25,6 +25,7 @@
 #include "clang/Sema/PrettyDeclStackTrace.h"
 #include "clang/Sema/Scope.h"
 #include "clang/Sema/SemaDiagnostic.h"
+#include "clang/Sema/Template.h"
 #include "llvm/ADT/SmallString.h"
 using namespace clang;
 
@@ -2121,6 +2122,9 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
                                             AttributeList *AccessAttrs,
                                        const ParsedTemplateInfo &TemplateInfo,
                                        ParsingDeclRAIIObject *TemplateDiags) {
+
+  ParsingFunctionDeclarationAbbreviatedTemplateInfo AFTI(Actions);
+
   if (Tok.is(tok::at)) {
     if (getLangOpts().ObjC1 && NextToken().isObjCAtKeyword(tok::objc_defs))
       Diag(Tok, diag::err_at_defs_cxx);

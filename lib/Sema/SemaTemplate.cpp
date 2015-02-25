@@ -470,6 +470,273 @@ TemplateDecl *Sema::AdjustDeclIfTemplate(Decl *&D) {
   return nullptr;
 }
 
+TemplateTypeParmDecl *Sema::makeTemplateTypeParameter(
+    ASTContext &Context, const unsigned Depth, const unsigned Position,
+    const SourceLocation AutoLocStart, const bool IsParameterPack,
+    const std::string InventedTemplateParamPrefix) {
+  const unsigned TemplateParameterDepth = Depth;
+  const unsigned AutoParameterPosition = Position;
+
+  // Create a name for the invented template parameter type.
+  std::string InventedTemplateParamName = InventedTemplateParamPrefix;
+  llvm::raw_string_ostream ss(InventedTemplateParamName);
+  ss << TemplateParameterDepth;
+  ss << "-" << AutoParameterPosition;
+  ss.flush();
+
+  IdentifierInfo &TemplateParamII =
+      Context.Idents.get(InventedTemplateParamName.c_str());
+
+  return TemplateTypeParmDecl::Create(Context, 
+        // Temporarily add to the TranslationUnit DeclContext.  When the 
+        // associated TemplateParameterList is attached to a template
+        // declaration (such as FunctionTemplateDecl), the DeclContext 
+        // for each template parameter gets updated appropriately via
+        // a call to AdoptTemplateParameterList. 
+        Context.getTranslationUnitDecl(), 
+        /*KeyLoc*/ SourceLocation(), 
+        /*NameLoc*/ AutoLocStart,  
+        TemplateParameterDepth, 
+        AutoParameterPosition,  // our template param index 
+        /* Identifier*/ &TemplateParamII, false, IsParameterPack);
+}
+
+static inline TemplateParameterList *
+makeAbbreviatedFunctionTemplateParameterList(
+  const TemplateParameterList *ExistingTPL,
+  ArrayRef<TemplateTypeParmDecl *> AutoTemplateParams,
+  ASTContext &Context) {
+  
+  TemplateParameterList *AbbreviatedTPL = nullptr;
+  
+  if (AutoTemplateParams.size()) {
+    SourceLocation LAngleLoc = AutoTemplateParams.front()->getLocation();
+    SourceLocation RAngleLoc = AutoTemplateParams.back()->getLocation();
+    
+    // If no TPL has been explicitly provided - create one.
+    if (!ExistingTPL) {
+      AbbreviatedTPL = TemplateParameterList::Create(
+        Context,
+        /*Template kw loc*/ SourceLocation(), LAngleLoc,
+        (NamedDecl **) AutoTemplateParams.data(),
+        AutoTemplateParams.size(), RAngleLoc);
+    }
+    else {
+      // Add the auto-params to the end of the existing TPL.
+      SmallVector<NamedDecl *, 8> AppendedTemplateParams(
+        ExistingTPL->begin(), ExistingTPL->end());
+      AppendedTemplateParams.append(AutoTemplateParams.begin(),
+        AutoTemplateParams.end());
+
+      AbbreviatedTPL = TemplateParameterList::Create(
+        Context,
+        /*Template kw loc*/ ExistingTPL->getTemplateLoc(),
+        ExistingTPL->getLAngleLoc(),
+        (NamedDecl **)AppendedTemplateParams.data(),
+        AppendedTemplateParams.size(), ExistingTPL->getRAngleLoc());
+    }
+  }
+  return AbbreviatedTPL;
+}
+
+// Determine whether this function declarator has a corresponding template
+// parameter list, but be careful not to use the template parameter list of a
+// parent class.
+
+TemplateParameterList *Sema::getMatchingTemplateParameterListForDeclarator(
+    MultiTemplateParamsArg CurTemplateParamLists,
+    const Declarator &FunDeclarator) {
+
+  // Match up the template parameter lists with the scope specifier, to
+  // determine whether we have a template parameter list associated with this
+  // declarator.
+  bool Invalid = false;
+  const bool IsFriend = FunDeclarator.getDeclSpec().isFriendSpecified();
+  bool IsExplicitSpecialization = false;
+
+  return MatchTemplateParametersToScopeSpecifier(
+          FunDeclarator.getDeclSpec().getLocStart(),
+          FunDeclarator.getIdentifierLoc(), FunDeclarator.getCXXScopeSpec(),
+          const_cast<Declarator &>(FunDeclarator).getName().getKind() ==
+                  UnqualifiedId::IK_TemplateId
+              ? const_cast<Declarator &>(FunDeclarator).getName().TemplateId
+              : nullptr,
+          CurTemplateParamLists, IsFriend, IsExplicitSpecialization, Invalid);
+}
+
+// Determine the depth and index of the first abbreviated auto parameter and
+// return the values as a (depth, index) pair.
+std::pair<unsigned, unsigned>
+determineDepthAndIndexForFirstAbbreviatedTemplateAuto(
+    const unsigned CurrentParsingTemplateParameterDepth,
+    TemplateParameterList *ExplicitlyProvidedTPL) {
+  
+  std::pair<unsigned, unsigned> Result(CurrentParsingTemplateParameterDepth, 0);
+  if (ExplicitlyProvidedTPL) {
+  // Since we do have a matching corresponding TPL the depth is the same as its
+  // depth, and the index shall be its size (i.e. one past the previous index). 
+    Result.first = ExplicitlyProvidedTPL->getDepth();
+    Result.second = ExplicitlyProvidedTPL->size();
+  }
+  return Result;
+}
+
+// When an abbreviated template's auto's have been replaced by template type
+// parameters, its function parameters were rebuilt and stored within the type
+// (and typeloc), therefore re-wire the declarator's function parameters to
+// refer to the new parameters and ensure default argument information is
+// preserved.
+void
+syncFunctionDeclaratorParametersWithTypeSourceInfo(Declarator &FunDeclarator,
+                                                   TypeSourceInfo *FunTSI, Sema &S) {
+
+  TypeLoc MethodTL = FunTSI->getTypeLoc().IgnoreParens();
+
+  // Move past all the attributes...
+  while (MethodTL.getTypeLocClass() == MethodTL.Attributed)
+    MethodTL = MethodTL.getAs<AttributedTypeLoc>().getModifiedLoc();
+
+  assert([&] {
+           if (MethodTL.getTypeLocClass() == MethodTL.FunctionProto)
+             return true;
+           MethodTL.getTypePtr()->dump();
+           llvm::errs() << "TypeLocClass = " << MethodTL.getTypeLocClass()
+                        << "\n";
+           return false;
+         }() &&
+         "We should have a function proto type loc!");
+
+  FunctionProtoTypeLoc FPTL = MethodTL.getAs<FunctionProtoTypeLoc>();
+  const unsigned NumParams = FPTL.getNumParams();
+  DeclaratorChunk::FunctionTypeInfo &FTI = FunDeclarator.getFunctionTypeInfo();
+  assert(NumParams == FTI.NumParams);
+  for (unsigned I = 0; I != NumParams; ++I) {
+    ParmVarDecl *OldParm = cast<ParmVarDecl>(FTI.Params[I].Param);
+    ParmVarDecl *NewParm = FPTL.getParam(I);
+    if (NewParm && OldParm != NewParm) {
+      assert(!OldParm->hasUninstantiatedDefaultArg() &&
+             "We can't have an uninstantiated default arg around the time we "
+             "are normalizing 'auto' syntax");
+      assert(!OldParm->getInit() && "Abbreviated templates have their "
+                                          "default args parsed after all "
+                                          "parameters have been normalized");
+      if (OldParm->hasUnparsedDefaultArg())
+        NewParm->setUnparsedDefaultArg();
+      if (OldParm->hasInheritedDefaultArg())
+        NewParm->setHasInheritedDefaultArg();
+      FTI.Params[I].Param = NewParm;
+    }
+  }
+}
+
+std::vector<TemplateTypeParmDecl *>
+Sema::getCorrespondingTemplateTypeParmDeclsForAutoTypes(
+    const unsigned TemplateParamDepthForAllAutos,
+    const unsigned TemplateParamIndexForFirstAuto,
+    ArrayRef<AutoTypeLoc> ContainedAutoTypeLocs) {
+  std::vector<TemplateTypeParmDecl *> TemplateTypeParmDecls;
+  unsigned AutoTemplateTypeParamIndex = TemplateParamIndexForFirstAuto;
+  for (auto ATL : ContainedAutoTypeLocs) {
+    const AutoType *AT = ATL.getTypePtr()->getAs<AutoType>();
+
+    TemplateTypeParmDecl *TyTemplParam = makeTemplateTypeParameter(
+        Context, TemplateParamDepthForAllAutos, AutoTemplateTypeParamIndex++,
+        ATL.getLocStart(), AT->containsUnexpandedParameterPack());
+
+    TemplateTypeParmDecls.push_back(TyTemplParam);
+  }
+  return TemplateTypeParmDecls;
+}
+
+std::vector<QualType> Sema::getTypesFromTemplateTypeParamDecls(
+    ArrayRef<TemplateTypeParmDecl *> TemplateTypeParmDecls) {
+  std::vector<QualType> Types;
+  for (auto *TTyD : TemplateTypeParmDecls)
+    Types.push_back(QualType(TTyD->getTypeForDecl(), 0));
+  return Types;
+}
+
+TypeSourceInfo *
+Sema::normalizeAbbreviatedTemplateType(
+    TypeSourceInfo *AutoContainingTSI,
+    MultiTemplateParamsArg CurTemplateParamLists, Declarator &FunDeclarator) {
+
+  auto AllContainedAutoTypeLocs =
+      Type::getContainedAutoTypeLocs(AutoContainingTSI->getTypeLoc());
+
+  // Only dependent types need to be converted - non-dependent 'autos' signify
+  // return type deduction at this stage in their processing.  Keep in mind,
+  // that once the declarator has been completely processed, the return type can
+  // be deduced to a dependent type - be mindful of this. Don't include the
+  // 'auto' in the return type of the function being  declared since it does not
+  // get replaced with a template-type-param and is not an abbreviated template
+  // context. e.g auto fun(auto (*fp)(auto) -> auto*); <-- the first 'auto'
+  //  should not get replaced by a template-type-param
+
+  SmallVector<AutoTypeLoc, 8> ContainedAutoTypeLocs;
+  for (AutoTypeLoc TL : AllContainedAutoTypeLocs)
+    if (TL.getTypePtr()->isDependentType())
+      ContainedAutoTypeLocs.push_back(TL);
+
+  auto *AFTI = getAbbreviatedFunctionTemplateInfo();
+  assert(AFTI);
+  if (!ContainedAutoTypeLocs.size() || FunDeclarator.isInvalidType())
+    return AutoContainingTSI;
+
+  // When trying to determine the depth and index of the first abbreviated auto
+  // parameter, we must consider any existing template parameter lists and the
+  // parser's current TemplateParameterDepth (which is the Depth of the next
+  // TemplateParameterList that the parser might encounter, not the previously
+  // encountered one).
+
+  // Consider: template<class T> void A<T>::mem_fun(T, auto a);  <-- (D=1, I=1)
+  //   template<class T> void foo(auto a, T t);          <-- (D=0, I=1)
+  //
+
+  // FVTODO: What to do if this is an explicit specialization, i.e. template<>
+  // void foo(auto);
+
+  // Check to see if the user provided an explicit TPL along with using
+  // abbreviated template syntax.
+  AFTI->ExplicitlyProvidedTemplateParameterList =
+      getMatchingTemplateParameterListForDeclarator(CurTemplateParamLists,
+                                                    FunDeclarator);
+
+  unsigned AutoTemplateParameterDepth = 0;
+  unsigned AutoTemplateTypeParamIndex = 0;
+
+  // Calculate the template parameter depth and index of the first auto within a
+  // parameter.
+  std::tie(AutoTemplateParameterDepth, AutoTemplateTypeParamIndex) =
+      determineDepthAndIndexForFirstAbbreviatedTemplateAuto(
+          getParsingTemplateParameterDepth(),
+          AFTI->ExplicitlyProvidedTemplateParameterList);
+
+  std::vector<TemplateTypeParmDecl *> CorrespondingTemplateTypeParmDecls =
+      getCorrespondingTemplateTypeParmDeclsForAutoTypes(
+          AutoTemplateParameterDepth, AutoTemplateTypeParamIndex,
+          ContainedAutoTypeLocs);
+
+  std::vector<QualType> CorrespondingTemplateParamTypes =
+      getTypesFromTemplateTypeParamDecls(CorrespondingTemplateTypeParmDecls);
+
+  TypeSourceInfo *AutoReplacedTSI =
+      replaceEachDependentAutoWithCorrespondingTemplateTypes(
+          AutoContainingTSI, CorrespondingTemplateParamTypes);
+  assert(AutoReplacedTSI && "Must be able to transform the auto laced types");
+
+  // Adjust the DeclaratorChunk::FunctionTypeInfo's parameters to point to the
+  // new ones that contain template-type parameters instead of auto's
+  syncFunctionDeclaratorParametersWithTypeSourceInfo(FunDeclarator,
+                                                     AutoReplacedTSI, *this);
+
+  AFTI->AbbreviatedTemplateParameterList =
+      makeAbbreviatedFunctionTemplateParameterList(
+          AFTI->ExplicitlyProvidedTemplateParameterList,
+          CorrespondingTemplateTypeParmDecls, Context);
+  return AutoReplacedTSI;
+}
+
 ParsedTemplateArgument ParsedTemplateArgument::getTemplatePackExpansion(
                                              SourceLocation EllipsisLoc) const {
   assert(Kind == Template &&

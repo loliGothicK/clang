@@ -41,6 +41,8 @@ namespace clang {
   class Type;
   class ExtQuals;
   class QualType;
+  class TypeLoc;
+  class AutoTypeLoc;
 }
 
 namespace llvm {
@@ -1356,6 +1358,9 @@ protected:
 
     /// Was this placeholder type spelled as 'decltype(auto)'?
     unsigned IsDecltypeAuto : 1;
+
+    unsigned Index : 16;
+
   };
 
   union {
@@ -1719,10 +1724,16 @@ public:
   /// not refer to a CXXRecordDecl, returns NULL.
   const CXXRecordDecl *getPointeeCXXRecordDecl() const;
 
-  /// \brief Get the AutoType whose type will be deduced for a variable with
-  /// an initializer of this type. This looks through declarators like pointer
-  /// types, but not through decltype or typedefs.
-  AutoType *getContainedAutoType() const;
+  bool containsAutoType() const;
+
+  /// \brief Get all the AutoTypes whose types will be deduced for a variable
+  /// with an initializer of this type. This looks through declarators like
+  /// pointer types, but not through decltype or typedefs.
+  SmallVector<const AutoType *, 4> getContainedAutoTypes() const;
+
+  /// \brief Get all the AutoTypeLocs within a typelocation
+  static SmallVector<AutoTypeLoc, 4>
+  getContainedAutoTypeLocs(TypeLoc TL);
 
   /// Member-template getAs<specific type>'.  Look through sugar for
   /// an instance of \<specific type>.   This scheme will eventually
@@ -3703,52 +3714,109 @@ public:
   }
 };
 
-/// \brief Represents a C++11 auto or C++1y decltype(auto) type.
+/// \brief Represents a C++11 auto or C++14 decltype(auto) type or in C++1z
+/// signifies abbreviated template syntax or multi-auto deduction.
 ///
-/// These types are usually a placeholder for a deduced type. However, before
-/// the initializer is attached, or if the initializer is type-dependent, there
-/// is no deduced type and an auto type is canonical. In the latter case, it is
-/// also a dependent type.
+/// There are 4 essentially different notions that are modeled by this type:
+///   1) decltype(auto)
+///   2) 'auto' signifying a trailing-return-type :
+///       - auto f() -> int;         <-- no return type deduction.
+///       - auto (*fp)()->int = &f;  <-- no type inference.
+///   3) 'auto' contained within a return type of a function or variable type 
+///       requiring deduction (return type or initializer)
+///       - auto f(int);             <-- return type deduction, 
+///                                      not abbreviated template syntax.
+///       - auto (*fp)(auto) = f;    <-- variable type inference,
+///                                      not abbreviated tempalte syntax.
+///   4) 'auto' contained within a parameter-type of a function declaration.
+///       - void f(auto);            <-- template<class T> void f(T);
+///       - auto f(auto fp());       <-- template<class T> auto f(T fp());
+///       - auto f(auto fp()->int);  <-- not an abbreviated template
+/// 
+///  As a more involved example, consider the following transformation:
+///  pair<auto, auto> f(auto fp(auto, auto) -> auto*) :=>
+///      template<class T0, class T1, class T2>
+///        pair<auto, auto> f(auto fp(T0, T1) -> T2*);
+
+/// In order to differentiate an 'auto' that signifies an abbreviated template
+/// parameter vs type-inference from an initializer, an AutoType can start its
+/// life as either dependent or non-dependent. An auto that represents
+/// abbreviated template syntax must start its life as dependent, whereas one
+/// for type-inference from a return type or variable initializer must start its
+/// life as non-dependent.  An AutoType that denotes abbreviated template syntax
+/// (i.e. dependent), is replaced with a corresponding template type parameter
+/// during initial construction of the FunctionDecl AST node, and thus does not
+/// survive in the AST. On the other hand an AutoType that denotes return-type
+/// deduction or type-inference initiates life as non-dependent, but can be
+/// deduced to a dependent type if the initializer is dependent (these
+/// constructs do survive in the AST - and get instantiated/transformed with
+/// non-dependent types when required).  See the SubstituteAutosTransformer
+/// for additional insight into this.
+
+/// These types are usually a placeholder for a deduced type.
+/// However, before the initializer is attached, or if the initializer is
+/// type-dependent, there is no deduced type and an auto type is canonical - but
+/// any AutoType with a non-zero index is canonicalized by the corresponding
+/// zero indexed auto type - this allows all AutoTypes with the same 'bits'
+/// asides from the Index, to compare the same (agnostic of their index which is
+/// mainly used during substitution). canonical type. In the case that Auto has
+/// a dependent initializer, it gets 'deduced' (or marked) as a dependent type.
 class AutoType : public Type, public llvm::FoldingSetNode {
-  AutoType(QualType DeducedType, bool IsDecltypeAuto, 
-           bool IsDependent)
-    : Type(Auto, DeducedType.isNull() ? QualType(this, 0) : DeducedType,
-           /*Dependent=*/IsDependent, /*InstantiationDependent=*/IsDependent,
-           /*VariablyModified=*/false, 
-           /*ContainsParameterPack=*/DeducedType.isNull() 
-               ? false : DeducedType->containsUnexpandedParameterPack()) {
+  AutoType(QualType DeducedType, bool IsDecltypeAuto, bool IsDependent,
+           bool IsParameterPack, unsigned Index,
+           const AutoType *UndeducedCanonType)
+      : Type(Auto,
+             /*Canonical Type*/
+             DeducedType.isNull()
+                 ? QualType(UndeducedCanonType ? UndeducedCanonType : this, 0)
+                 : DeducedType,
+             /*Dependent=*/IsDependent, /*InstantiationDependent=*/IsDependent,
+             /*VariablyModified=*/false,
+             /*ContainsParameterPack=*/DeducedType.isNull()
+                 ? IsParameterPack
+                 : DeducedType->containsUnexpandedParameterPack()) {
     assert((DeducedType.isNull() || !IsDependent) &&
            "auto deduced to dependent type");
+    assert((!Index || !DeducedType.isNull() ||
+            (UndeducedCanonType && UndeducedCanonType->getIndex() == 0)) &&
+           "An AutoType with a non-zero index must have a zero indexed "
+           "canonical type");
     AutoTypeBits.IsDecltypeAuto = IsDecltypeAuto;
+    AutoTypeBits.Index = Index;
   }
 
   friend class ASTContext;  // ASTContext creates these
 
 public:
   bool isDecltypeAuto() const { return AutoTypeBits.IsDecltypeAuto; }
-
+  unsigned getIndex() const { return AutoTypeBits.Index; }
   bool isSugared() const { return !isCanonicalUnqualified(); }
   QualType desugar() const { return getCanonicalTypeInternal(); }
 
   /// \brief Get the type deduced for this auto type, or null if it's either
   /// not been deduced or was deduced to a dependent type.
   QualType getDeducedType() const {
-    return !isCanonicalUnqualified() ? getCanonicalTypeInternal() : QualType();
+    return isa<AutoType>(getCanonicalTypeInternal())
+               ? QualType()
+               : getCanonicalTypeInternal();
   }
   bool isDeduced() const {
-    return !isCanonicalUnqualified() || isDependentType();
+    return !getDeducedType().isNull() || isDependentType();
   }
 
   void Profile(llvm::FoldingSetNodeID &ID) {
     Profile(ID, getDeducedType(), isDecltypeAuto(), 
-		    isDependentType());
+		    isDependentType(), containsUnexpandedParameterPack(), getIndex());
   }
 
   static void Profile(llvm::FoldingSetNodeID &ID, QualType Deduced,
-                      bool IsDecltypeAuto, bool IsDependent) {
+                      bool IsDecltypeAuto, bool IsDependent,
+                      bool IsParameterPack, unsigned Index) {
     ID.AddPointer(Deduced.getAsOpaquePtr());
+    ID.AddBoolean(IsParameterPack);
     ID.AddBoolean(IsDecltypeAuto);
     ID.AddBoolean(IsDependent);
+    ID.AddInteger(Index);
   }
 
   static bool classof(const Type *T) {
@@ -5192,8 +5260,16 @@ inline bool Type::isBooleanType() const {
 }
 
 inline bool Type::isUndeducedType() const {
-  const AutoType *AT = getContainedAutoType();
-  return AT && !AT->isDeduced();
+  auto ATs = getContainedAutoTypes();
+  const bool IsUndeduced = ATs.size() && !ATs.front()->isDeduced();
+  assert([&] {
+    for (auto&& AT : ATs) {
+      if (AT->isDeduced() == IsUndeduced)
+        return false;
+    }
+    return true;
+  }() && "All autos should either be deduced or undeduced within a type");
+  return IsUndeduced;
 }
 
 /// \brief Determines whether this is a type for which one can define

@@ -20,6 +20,34 @@
 #include <utility>
 
 namespace clang {
+   
+  class ParsingFunctionDeclarationAbbreviatedTemplateInfo {
+    ParsingFunctionDeclarationAbbreviatedTemplateInfo *Prev;
+  public:
+    Sema &S;
+
+    /// If this is an abbreviated template, and the template parameter list has
+    /// been created then store a reference to it.
+    TemplateParameterList *AbbreviatedTemplateParameterList;
+
+    /// Did the user provide an explicit tpl in addition to using abbreviated
+    /// template syntax? If so, track it.
+    TemplateParameterList *ExplicitlyProvidedTemplateParameterList;
+    unsigned CurAutoIndex;
+    ParsingFunctionDeclarationAbbreviatedTemplateInfo(
+        Sema &S)
+        : S(S),
+          Prev(S.CurAbbreviatedFunctionTemplateInfo),
+          AbbreviatedTemplateParameterList(nullptr),
+          ExplicitlyProvidedTemplateParameterList(nullptr), CurAutoIndex(0) {
+      S.CurAbbreviatedFunctionTemplateInfo = this;
+    }
+
+    ~ParsingFunctionDeclarationAbbreviatedTemplateInfo() {
+      S.CurAbbreviatedFunctionTemplateInfo = Prev;
+    }
+  };
+
   /// \brief Data structure that captures multiple levels of template argument
   /// lists for use in template instantiation.
   ///

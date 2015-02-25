@@ -20,6 +20,7 @@
 #include "clang/Sema/DeclSpec.h"
 #include "clang/Sema/ParsedTemplate.h"
 #include "clang/Sema/Scope.h"
+#include "clang/Sema/Template.h"
 #include "llvm/Support/ErrorHandling.h"
 
 
@@ -191,6 +192,19 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
                                             IdentifierInfo **LastII) {
   assert(getLangOpts().CPlusPlus &&
          "Call sites of this function should be guarded by checking for C++");
+
+  if (Tok.is(tok::kw_auto) && getLangOpts().CPlusPlus1z &&
+      NextToken().is(tok::coloncolon)) {
+    SourceLocation AutoLoc = ConsumeToken();
+    SourceLocation ColonColonLoc = ConsumeToken();
+    TypeSourceInfo *AutoTSI = Actions.Context.getTrivialTypeSourceInfo(
+        Actions.getAppropriatelyDependentAutoType(/*HasEllipsis*/ false,
+                                                  /*Declarator*/ nullptr),
+        AutoLoc);
+    SS.Extend(Actions.Context, SourceLocation(), AutoTSI->getTypeLoc(),
+              ColonColonLoc);
+    return false;
+  }
 
   if (Tok.is(tok::annot_cxxscope)) {
     assert(!LastII && "want last identifier but have already annotated scope");
@@ -1057,9 +1071,8 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
   // Parse lambda-declarator[opt].
   DeclSpec DS(AttrFactory);
   Declarator D(DS, Declarator::LambdaExprContext);
-  TemplateParameterDepthRAII CurTemplateDepthTracker(TemplateParameterDepth);
   Actions.PushLambdaScope();    
-
+  ParsingFunctionDeclarationAbbreviatedTemplateInfo AFTI(Actions);
   TypeResult TrailingReturnType;
   if (Tok.is(tok::l_paren)) {
     ParseScope PrototypeScope(this,
@@ -1077,14 +1090,9 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     SmallVector<DeclaratorChunk::ParamInfo, 16> ParamInfo;
     SourceLocation EllipsisLoc;
     
-    if (Tok.isNot(tok::r_paren)) {
-      Actions.RecordParsingTemplateParameterDepth(TemplateParameterDepth);
+    if (Tok.isNot(tok::r_paren)) 
       ParseParameterDeclarationClause(D, Attr, ParamInfo, EllipsisLoc);
-      // For a generic lambda, each 'auto' within the parameter declaration 
-      // clause creates a template type parameter, so increment the depth.
-      if (Actions.getCurGenericLambda()) 
-        ++CurTemplateDepthTracker;
-    }
+ 
     T.consumeClose();
     SourceLocation RParenLoc = T.getCloseLocation();
     DeclEndLoc = RParenLoc;
@@ -1234,9 +1242,16 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
   // it.
   unsigned ScopeFlags = Scope::BlockScope | Scope::FnScope | Scope::DeclScope;
   ParseScope BodyScope(this, ScopeFlags);
-
+  
+  TemplateParameterDepthRAII CurTemplateDepthTracker(TemplateParameterDepth);
   Actions.ActOnStartOfLambdaDefinition(Intro, D, getCurScope());
-
+  // For a generic lambda, each 'auto' within the parameter declaration clause
+  // creates a template type parameter, so increment the depth.
+  if (Actions.getAbbreviatedFunctionTemplateInfo()
+          ->AbbreviatedTemplateParameterList) {
+    ParseAbbreviatedFunctionTemplateDefaultArgs(D);
+    ++CurTemplateDepthTracker;
+  }
   // Parse compound-statement.
   if (!Tok.is(tok::l_brace)) {
     Diag(Tok, diag::err_expected_lambda_body);

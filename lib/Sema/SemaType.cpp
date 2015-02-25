@@ -688,6 +688,55 @@ static void maybeSynthesizeBlockSignature(TypeProcessingState &state,
   state.setCurrentChunkIndex(declarator.getNumTypeObjects());
 }
 
+// AutoTypes within parameters using abbreviated function template syntax should
+// be dependent, whereas those within variable declarations/return-type for
+// deduction should be non-dependent.
+//   void foo(auto);        <-- dependent/abbreviated
+//   auto foo();            <-- non-dependent (deduced from return-expressions)
+//   void foo(auto (*)());  <-- dependent/abbreviated
+//   auto (*foo)() = ... ;  <-- non-dependent
+//   void (*foo)(auto) = ..;<-- non-dependent
+QualType Sema::getAppropriatelyDependentAutoType(const bool HasEllipsis,
+                                                 Declarator *D) {
+  // Are we declaring a function or a function ptr?  Since, in a function
+  // declaration, auto denotes a template parameter type/abbreviated template,
+  // but in a function pointer, it denotes a deducible auto as it does within a
+  // variable template.
+  
+  const bool IsDependent = [&] {
+    // If we are within a function prototype scope, and if the top level
+    // declarator can not be declaring a function, then auto is intended for
+    // deduction from an initializer, not signifying an abbreviated template.
+    if (CurScope
+            ->isFunctionPrototypeScopeNestedWithinFunctionDeclarationScope()) {
+      if (D && D->getContext() == D->TrailingReturnContext) {
+        // These are dependent except if directly within the function
+        // declaration. 
+        // auto foo(auto ()->auto&) ->auto*; 
+        //    <-- the 'auto&' above is dependent, 'auto*' not.
+        return !CurScope->isFunctionDeclarationScope();
+      }
+      return true;
+    }
+    return false;
+  }();
+  // The Index is used to distinguish 'auto's during substitution - but it does
+  // not necessarily denote the sequence in which template parameter types are
+  // generated, given that we can't know that the 'auto' below denotes a
+  // template type parameter, or a marker for a trailing return type until the
+  // declarator has been completely been parsed.
+  // void f(auto (int)->pair<auto, auto>);
+
+  const int CurAutoIndex =
+      getAbbreviatedFunctionTemplateInfo()
+          ? getAbbreviatedFunctionTemplateInfo()->CurAutoIndex++
+          : 0;
+  return Context.getAutoType(QualType(), /*decltype(auto)*/ false,
+                               /*dependent*/ IsDependent,
+                               /*IsParameterPack*/ HasEllipsis,
+                               /*Index*/CurAutoIndex);
+}
+
 /// \brief Convert the specified declspec to the appropriate type
 /// object.
 /// \param state Specifies the declarator containing the declaration specifier
@@ -915,7 +964,29 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
     assert(DS.getTypeSpecWidth() == 0 && DS.getTypeSpecComplex() == 0 &&
            DS.getTypeSpecSign() == 0 &&
            "Can't handle qualifiers on typedef names yet!");
-    Result = S.GetTypeFromParser(DS.getRepAsType());
+    TypeSourceInfo *TSInfo = nullptr;
+    Result = S.GetTypeFromParser(DS.getRepAsType(), &TSInfo);
+
+    // If the declarator has an ellipsis, check if there are any nonvariadic
+    // 'auto's in this type - and if so make them variadic.
+    if (declarator.hasEllipsis()) {
+      auto AutoVecs = Result->getContainedAutoTypes();
+      const bool ContainsNonVariadicAuto = [&] {
+            for (const AutoType *AT : AutoVecs)
+              if (!AT->containsUnexpandedParameterPack())
+                return true;
+            return false;
+          }();
+      if (ContainsNonVariadicAuto) {
+        TSInfo = S.makeAllContainedAutosVariadic(TSInfo);
+        Result = TSInfo->getType();
+        ParsedType ParsedAutoPackTy = S.CreateParsedType(Result, TSInfo);
+        // FVQUESTION: Is this the best way to do this given the warning in the
+        // comment of the function UpdateTypeRep?
+        declarator.getMutableDeclSpec().UpdateTypeRep(ParsedAutoPackTy);
+      }
+    }
+    
     if (Result.isNull())
       declarator.setInvalidType(true);
     else if (DeclSpec::ProtocolQualifierListTy PQ
@@ -996,47 +1067,16 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
     }
     break;
 
-  case DeclSpec::TST_auto:
-    // TypeQuals handled by caller.
-    // If auto is mentioned in a lambda parameter context, convert it to a 
-    // template parameter type immediately, with the appropriate depth and 
-    // index, and update sema's state (LambdaScopeInfo) for the current lambda 
-    // being analyzed (which tracks the invented type template parameter).
-    if (declarator.getContext() == Declarator::LambdaExprParameterContext) {
-      sema::LambdaScopeInfo *LSI = S.getCurLambda();
-      assert(LSI && "No LambdaScopeInfo on the stack!");
-      const unsigned TemplateParameterDepth = LSI->AutoTemplateParameterDepth;
-      const unsigned AutoParameterPosition = LSI->AutoTemplateParams.size();
-      const bool IsParameterPack = declarator.hasEllipsis();
-
-      // Turns out we must create the TemplateTypeParmDecl here to 
-      // retrieve the corresponding template parameter type. 
-      TemplateTypeParmDecl *CorrespondingTemplateParam =
-        TemplateTypeParmDecl::Create(Context, 
-        // Temporarily add to the TranslationUnit DeclContext.  When the 
-        // associated TemplateParameterList is attached to a template
-        // declaration (such as FunctionTemplateDecl), the DeclContext 
-        // for each template parameter gets updated appropriately via
-        // a call to AdoptTemplateParameterList. 
-        Context.getTranslationUnitDecl(), 
-        /*KeyLoc*/ SourceLocation(), 
-        /*NameLoc*/ declarator.getLocStart(),  
-        TemplateParameterDepth, 
-        AutoParameterPosition,  // our template param index 
-        /* Identifier*/ nullptr, false, IsParameterPack);
-      LSI->AutoTemplateParams.push_back(CorrespondingTemplateParam);
-      // Replace the 'auto' in the function parameter with this invented 
-      // template type parameter.
-      Result = QualType(CorrespondingTemplateParam->getTypeForDecl(), 0);
-    } else {
-      Result = Context.getAutoType(QualType(), /*decltype(auto)*/false, false);
-    }
+  case DeclSpec::TST_auto: 
+    Result = S.getAppropriatelyDependentAutoType(declarator.hasEllipsis(),
+                                               &declarator);
     break;
 
   case DeclSpec::TST_decltype_auto:
-    Result = Context.getAutoType(QualType(), 
-                                 /*decltype(auto)*/true, 
-                                 /*IsDependent*/   false);
+    Result = Context.getAutoType(QualType(),
+                                 /*decltype(auto)*/ true,
+                                 /*IsDependent*/ false,
+                                 /*IsParameterPack*/ false, /*Index*/0);
     break;
 
   case DeclSpec::TST_unknown_anytype:
@@ -1827,7 +1867,8 @@ QualType Sema::BuildMemberPointerType(QualType T, QualType Class,
     return QualType();
   }
 
-  if (!Class->isDependentType() && !Class->isRecordType()) {
+  if (!Class->isDependentType() && !Class->isRecordType() &&
+      !Class->isUndeducedType()) {
     Diag(Loc, diag::err_mempointer_in_nonclass_type) << Class;
     return QualType();
   }
@@ -2144,7 +2185,7 @@ static QualType GetDeclSpecTypeForDeclarator(TypeProcessingState &state,
     // converts to.
     T = SemaRef.GetTypeFromParser(D.getName().ConversionFunctionId,
                                   &ReturnTypeInfo);
-    ContainsPlaceholderType = T->getContainedAutoType();
+    ContainsPlaceholderType = T->containsAutoType();
     break;
   }
 
@@ -2167,8 +2208,12 @@ static QualType GetDeclSpecTypeForDeclarator(TypeProcessingState &state,
       llvm_unreachable("Can't specify a type specifier in lambda grammar");
     case Declarator::ObjCParameterContext:
     case Declarator::ObjCResultContext:
-    case Declarator::PrototypeContext:
       Error = 0;  
+      break;
+    case Declarator::PrototypeContext:
+      if (!(SemaRef.getLangOpts().CPlusPlus1z &&
+            D.getDeclSpec().getTypeSpecType() == DeclSpec::TST_auto))
+        Error = 0;
       break;
     case Declarator::LambdaExprParameterContext:
       if (!(SemaRef.getLangOpts().CPlusPlus14 
@@ -2197,7 +2242,9 @@ static QualType GetDeclSpecTypeForDeclarator(TypeProcessingState &state,
       Error = 7; // Block literal
       break;
     case Declarator::TemplateTypeArgContext:
-      Error = 8; // Template type argument
+      if (!(SemaRef.getLangOpts().CPlusPlus1z
+          && D.getDeclSpec().getTypeSpecType() == DeclSpec::TST_auto))
+        Error = 8; // Template type argument
       break;
     case Declarator::AliasDeclContext:
     case Declarator::AliasTemplateContext:
@@ -2681,12 +2728,19 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
           }
         }
       }
-      const AutoType *AT = T->getContainedAutoType();
-      // Allow arrays of auto if we are a generic lambda parameter.
+      // Allow arrays of auto if we are in a function prototype as part of
+      // abbreviated template syntax in C++1z.
       // i.e. [](auto (&array)[5]) { return array[0]; }; OK
-      if (AT && D.getContext() != Declarator::LambdaExprParameterContext) {
+      if (T->containsAutoType() && !D.isPrototypeContext() &&
+          !S.getLangOpts().CPlusPlus1z) {
+        const bool IsDecltypeAuto = [&] {
+          auto ContainedAutos = T->getContainedAutoTypes();
+          if (ContainedAutos.size() == 1)
+            return ContainedAutos.front()->isDecltypeAuto();
+          return false;
+        }();
         // We've already diagnosed this for decltype(auto).
-        if (!AT->isDecltypeAuto())
+        if (!IsDecltypeAuto)
           S.Diag(DeclType.Loc, diag::err_illegal_decl_array_of_auto)
             << getPrintableNameForEntity(Name) << T;
         T = QualType();
@@ -3033,6 +3087,7 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
         D.setInvalidType(true);
       } else if (S.isDependentScopeSpecifier(SS) ||
                  dyn_cast_or_null<CXXRecordDecl>(S.computeDeclContext(SS))) {
+
         NestedNameSpecifier *NNS = SS.getScopeRep();
         NestedNameSpecifier *NNSPrefix = NNS->getPrefix();
         switch (NNS->getKind()) {
@@ -3191,7 +3246,56 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
   if (D.getDeclSpec().isConstexprSpecified() && T->isObjectType()) {
     T.addConst();
   }
+  
+  // Check whether we have any nsdmi's that require deduction.
+  if (!D.isInvalidType() && D.getContext() == D.MemberContext &&
+      !D.isFunctionDeclarator()) {
+    // Static data members can have 'auto' in certain limited circumstances...
+    if (D.getDeclSpec().getStorageClassSpec() != DeclSpec::SCS_static &&
+        T->containsAutoType()) {
+      int Error = 1;
+      switch (cast<TagDecl>(S.CurContext)->getTagKind()) {
+      case TTK_Enum:
+        llvm_unreachable("unhandled tag kind");
+      case TTK_Struct:
+        Error = 1; /* Struct member */
+        break;
+      case TTK_Union:
+        Error = 2; /* Union member */
+        break;
+      case TTK_Class:
+        Error = 3; /* Class member */
+        break;
+      case TTK_Interface:
+        Error = 4; /* Interface member */
+        break;
+      }
+      S.Diag(D.getDeclSpec().getLocStart(), diag::err_auto_not_allowed)
+          << /*IsDeclTypeAuto*/ false << Error
+          << D.getDeclSpec().getSourceRange();
+      D.setInvalidType(true);
+    }
+  }
+  // Make sure that an abbreviated function template is not being declared at
+  // block scope
+  if (!D.isInvalidType() && D.isFunctionDeclarator() &&
+      D.getContext() == D.BlockContext) {
+    auto VQTy = T->getContainedAutoTypes();
+    // If we have a dependent auto-type we know we have an auto that signifies
+    // an abbreviated template.
+    if (VQTy.size()) {
+      for (const AutoType *ATy : VQTy) {
+        if (ATy->isDependentType()) {
+          S.Diag(D.getLocStart(),
+                 diag::err_template_outside_namespace_or_class_scope);
+          D.setInvalidType(true);
+          break;
+        }
+      }
+    }
+  }
 
+  TypeSourceInfo *VariadicAutoContainingTSInfo = nullptr;
   // If there was an ellipsis in the declarator, the declaration declares a
   // parameter pack whose type may be a pack expansion type.
   if (D.hasEllipsis()) {
@@ -3201,7 +3305,7 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
     //   is a parameter pack (14.5.3). [...]
     switch (D.getContext()) {
     case Declarator::PrototypeContext:
-    case Declarator::LambdaExprParameterContext:
+    case Declarator::LambdaExprParameterContext: {
       // C++0x [dcl.fct]p13:
       //   [...] When it is part of a parameter-declaration-clause, the
       //   parameter pack is a function parameter pack (14.5.3). The type T
@@ -3211,15 +3315,42 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
       //
       // We represent function parameter packs as function parameters whose
       // type is a pack expansion.
-      if (!T->containsUnexpandedParameterPack()) {
-        S.Diag(D.getEllipsisLoc(),
-             diag::err_function_parameter_pack_without_parameter_packs)
-          << T <<  D.getSourceRange();
-        D.setEllipsisLoc(SourceLocation());
+      bool ContainsNonPackAuto = ([T] {
+        auto AutoVecs = T->getContainedAutoTypes();
+        for (const AutoType *AT : AutoVecs)
+          if (!AT->containsUnexpandedParameterPack())
+            return true;
+        return false;
+      })();
+
+      if (!T->containsUnexpandedParameterPack() || ContainsNonPackAuto) {
+        if (ContainsNonPackAuto) {
+          TypeSourceInfo *AutoContainingTSInfo =
+              S.GetTypeSourceInfoForDeclarator(D, T,
+                                               /*ReturnTypeInfo?? */ nullptr);
+          assert(AutoContainingTSInfo);
+          AutoContainingTSInfo =
+              S.makeAllContainedAutosVariadic(AutoContainingTSInfo);
+          T = AutoContainingTSInfo->getType();
+          assert(T->containsUnexpandedParameterPack());
+          T = Context.getPackExpansionType(T, None);
+          TypeLocBuilder TLB;
+          TLB.pushFullCopy(AutoContainingTSInfo->getTypeLoc());
+          auto PTL = TLB.push<PackExpansionTypeLoc>(T);
+          PTL.setEllipsisLoc(D.getEllipsisLoc());
+          VariadicAutoContainingTSInfo = TLB.getTypeSourceInfo(Context, T);
+
+        } else {
+          S.Diag(D.getEllipsisLoc(),
+                 diag::err_function_parameter_pack_without_parameter_packs)
+              << T << D.getSourceRange();
+          D.setEllipsisLoc(SourceLocation());
+        }
       } else {
         T = Context.getPackExpansionType(T, None);
       }
       break;
+    }
     case Declarator::TemplateParamContext:
       // C++0x [temp.param]p15:
       //   If a template-parameter is a [...] is a parameter-declaration that
@@ -3270,7 +3401,9 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
   if (D.isInvalidType())
     return Context.getTrivialTypeSourceInfo(T);
 
-  return S.GetTypeSourceInfoForDeclarator(D, T, TInfo);
+  return VariadicAutoContainingTSInfo
+             ? VariadicAutoContainingTSInfo
+             : S.GetTypeSourceInfoForDeclarator(D, T, TInfo);
 }
 
 /// GetTypeForDeclarator - Convert the type for the specified
@@ -3292,7 +3425,6 @@ TypeSourceInfo *Sema::GetTypeForDeclarator(Declarator &D, Scope *S) {
 
   return GetFullTypeForDeclarator(state, T, ReturnTypeInfo);
 }
-
 static void transferARCOwnershipToDeclSpec(Sema &S,
                                            QualType &declSpecTy,
                                            Qualifiers::ObjCLifetime ownership) {
@@ -3823,9 +3955,10 @@ static void fillAtomicQualLoc(AtomicTypeLoc ATL, const DeclaratorChunk &Chunk) {
 TypeSourceInfo *
 Sema::GetTypeSourceInfoForDeclarator(Declarator &D, QualType T,
                                      TypeSourceInfo *ReturnTypeInfo) {
+
   TypeSourceInfo *TInfo = Context.CreateTypeSourceInfo(T);
   UnqualTypeLoc CurrTL = TInfo->getTypeLoc().getUnqualifiedLoc();
-
+  
   // Handle parameter packs whose type is a pack expansion.
   if (isa<PackExpansionType>(T)) {
     CurrTL.castAs<PackExpansionTypeLoc>().setEllipsisLoc(D.getEllipsisLoc());
@@ -5204,7 +5337,8 @@ bool Sema::RequireCompleteTypeImpl(SourceLocation Loc, QualType T,
     // that a pointer-to-member type is complete.
     if (Context.getTargetInfo().getCXXABI().isMicrosoft()) {
       if (const MemberPointerType *MPTy = T->getAs<MemberPointerType>()) {
-        if (!MPTy->getClass()->isDependentType()) {
+        if (!MPTy->getClass()->isDependentType() &&
+            !MPTy->getClass()->isUndeducedType()) {
           RequireCompleteType(Loc, QualType(MPTy->getClass(), 0), 0);
           assignInheritanceModel(*this, MPTy->getMostRecentCXXRecordDecl());
         }

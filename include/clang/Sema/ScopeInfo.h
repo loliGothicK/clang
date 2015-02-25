@@ -654,23 +654,7 @@ public:
   /// \brief Offsets into the ArrayIndexVars array at which each capture starts
   /// its list of array index variables.
   SmallVector<unsigned, 4> ArrayIndexStarts;
-  
-  /// \brief If this is a generic lambda, use this as the depth of 
-  /// each 'auto' parameter, during initial AST construction.
-  unsigned AutoTemplateParameterDepth;
 
-  /// \brief Store the list of the auto parameters for a generic lambda.
-  /// If this is a generic lambda, store the list of the auto 
-  /// parameters converted into TemplateTypeParmDecls into a vector
-  /// that can be used to construct the generic lambda's template
-  /// parameter list, during initial AST construction.
-  SmallVector<TemplateTypeParmDecl*, 4> AutoTemplateParams;
-
-  /// If this is a generic lambda, and the template parameter
-  /// list has been created (from the AutoTemplateParams) then
-  /// store a reference to it (cache it to avoid reconstructing it).
-  TemplateParameterList *GLTemplateParameterList;
-  
   /// \brief Contains all variable-referring-expressions (i.e. DeclRefExprs
   ///  or MemberExprs) that refer to local variables in a generic lambda
   ///  or a lambda in a potentially-evaluated-if-used context.
@@ -698,8 +682,7 @@ public:
   LambdaScopeInfo(DiagnosticsEngine &Diag)
     : CapturingScopeInfo(Diag, ImpCap_None), Lambda(nullptr),
       CallOperator(nullptr), NumExplicitCaptures(0), Mutable(false),
-      ExprNeedsCleanups(false), ContainsUnexpandedParameterPack(false),
-      AutoTemplateParameterDepth(0), GLTemplateParameterList(nullptr)
+      ExprNeedsCleanups(false), ContainsUnexpandedParameterPack(false)
   {
     Kind = SK_Lambda;
   }

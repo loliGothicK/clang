@@ -1188,7 +1188,7 @@ void CGDebugInfo::CollectCXXMemberFunctions(
     if (!Method || Method->isImplicit())
       continue;
 
-    if (Method->getType()->getAs<FunctionProtoType>()->getContainedAutoType())
+    if (Method->getType()->getAs<FunctionProtoType>()->containsAutoType())
       continue;
 
     // Reuse the existing member function declaration if it exists.

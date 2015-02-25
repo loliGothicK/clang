@@ -19,6 +19,7 @@
 #include "clang/Sema/DeclSpec.h"
 #include "clang/Sema/ParsedTemplate.h"
 #include "clang/Sema/Scope.h"
+#include "clang/Sema/Template.h"
 using namespace clang;
 
 /// \brief Parse a template declaration, explicit instantiation, or
@@ -63,7 +64,7 @@ Parser::ParseTemplateDeclarationOrSpecialization(unsigned Context,
                                                  AttributeList *AccessAttrs) {
   assert((Tok.is(tok::kw_export) || Tok.is(tok::kw_template)) &&
          "Token does not start a template declaration.");
-
+  ParsingFunctionDeclarationAbbreviatedTemplateInfo AFTI(Actions);
   // Enter template-parameter scope.
   ParseScope TemplateParmScope(this, Scope::TemplateParamScope);
 
@@ -1286,6 +1287,34 @@ SourceRange Parser::ParsedTemplateInfo::getSourceRange() const {
   return R;
 }
 
+void Parser::ParseAbbreviatedFunctionTemplateDefaultArgs(
+    Declarator &FunDeclarator) {
+  assert(FunDeclarator.isFunctionDeclarator());
+  assert(Actions.getAbbreviatedFunctionTemplateInfo()
+             ->AbbreviatedTemplateParameterList);
+  // Now that we know whether we had to create an abbreviated template parameter
+  // list, parse the default arguments.
+  TemplateParameterDepthRAII CurTemplateParameterDepth(TemplateParameterDepth);
+  // If we didn't have an explicitly provided template parameter list for this
+  // declarator, then add to the template parameter depth.
+  if (!Actions.getAbbreviatedFunctionTemplateInfo()
+           ->ExplicitlyProvidedTemplateParameterList)
+    ++CurTemplateParameterDepth;
+
+  const auto &FTI = FunDeclarator.getFunctionTypeInfo();
+  using LateParsedDefaultArgument = Parser::LateParsedDefaultArgument;
+  SmallVector<LateParsedDefaultArgument, 8> DefaultArgs;
+
+  for (unsigned I = 0, E = FTI.NumParams; I != E; ++I)
+    DefaultArgs.emplace_back(FTI.Params[I].Param,
+                             FTI.Params[I].DefaultArgTokens);
+
+  // Introduce the parameters into scope and parse their default arguments.
+  ParseScope DefaultArgParsingPrototypeScope(
+      this, Scope::FunctionPrototypeScope | Scope::FunctionDeclarationScope |
+                Scope::DeclScope);
+  ParseLexedDefaultArguments(DefaultArgs);
+}
 void Parser::LateTemplateParserCallback(void *P, LateParsedTemplate &LPT) {
   ((Parser *)P)->ParseLateTemplatedFuncDef(LPT);
 }

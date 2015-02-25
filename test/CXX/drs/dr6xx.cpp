@@ -1,7 +1,7 @@
 // RUN: %clang_cc1 -std=c++98 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
 // RUN: %clang_cc1 -std=c++11 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
 // RUN: %clang_cc1 -std=c++14 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
-// RUN: %clang_cc1 -std=c++1z %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++1z %s -verify -fexceptions -fcxx-exceptions -pedantic-errors -DCPP1Z
 
 namespace std { struct type_info {}; }
 
@@ -193,9 +193,16 @@ namespace dr621 {
 
 namespace dr625 { // dr625: yes
   template<typename T> struct A {};
-  A<auto> x = A<int>(); // expected-error {{'auto' not allowed in template argument}} expected-error 0-1{{extension}}
+  A<auto> x = A<int>(); 
+#ifndef CPP1Z
+  // expected-error@-2 {{'auto' not allowed in template argument}} expected-error@-2 0-1{{extension}}
+#endif
   void f(int);
-  void (*p)(auto) = f; // expected-error {{'auto' not allowed in function prototype}} expected-error 0-1{{extension}}
+  void (*p)(auto) = f;
+#ifndef CPP1Z
+  // expected-error@-2 {{'auto' not allowed in function prototype}} expected-error@-2 0-1{{extension}}
+#endif
+
 }
 
 namespace dr626 { // dr626: yes

@@ -8479,11 +8479,18 @@ Decl *Sema::ActOnAliasDeclaration(Scope *S,
 
   if (Type.isInvalid())
     return nullptr;
-
+  
   bool Invalid = false;
   DeclarationNameInfo NameInfo = GetNameFromUnqualifiedId(Name);
   TypeSourceInfo *TInfo = nullptr;
-  GetTypeFromParser(Type.get(), &TInfo);
+  QualType QTy = GetTypeFromParser(Type.get(), &TInfo);
+  // we can't have using-alias's have 'auto'
+  if (QTy->containsAutoType()) {
+      Diag(TInfo->getTypeLoc().getBeginLoc(), diag::err_auto_not_allowed)
+        << /*IsDeclTypeAuto*/false << 10 << TInfo->getTypeLoc().getSourceRange();
+    
+    return nullptr;
+  }
 
   if (DiagnoseClassNameShadow(CurContext, NameInfo))
     return nullptr;
@@ -12360,7 +12367,14 @@ NamedDecl *Sema::ActOnFriendFunctionDecl(Scope *S, Declarator &D,
 
   SourceLocation Loc = D.getIdentifierLoc();
   TypeSourceInfo *TInfo = GetTypeForDeclarator(D, S);
-
+  QualType R = TInfo->getType();
+  if (D.isFunctionDeclarator() && R->containsAutoType() &&
+      D.isFunctionDeclarationContext()) {
+    assert(getAbbreviatedFunctionTemplateInfo() &&
+           "Must have abbreviated function template info");
+    TInfo = normalizeAbbreviatedTemplateType(TInfo, TemplateParams, D);
+    R = TInfo->getType();
+  }
   // C++ [class.friend]p1
   //   A friend of a class is a function or class....
   // Note that this sees through typedefs, which is intended.

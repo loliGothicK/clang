@@ -105,7 +105,7 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
       DefinitionKind == FDK_Definition &&
       !D.getDeclSpec().isConstexprSpecified() &&
       !(FnD && FnD->getAsFunction() &&
-        FnD->getAsFunction()->getReturnType()->getContainedAutoType()) &&
+        FnD->getAsFunction()->getReturnType()->containsAutoType()) &&
       ((Actions.CurContext->isDependentContext() ||
         (TemplateInfo.Kind != ParsedTemplateInfo::NonTemplate &&
          TemplateInfo.Kind != ParsedTemplateInfo::ExplicitSpecialization)) &&
@@ -290,27 +290,14 @@ void Parser::ParseLexedMethodDeclarations(ParsingClass &Class) {
                                                  Class.TagOrTemplate);
 }
 
-void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
-  // If this is a member template, introduce the template parameter scope.
-  ParseScope TemplateScope(this, Scope::TemplateParamScope, LM.TemplateScope);
-  TemplateParameterDepthRAII CurTemplateDepthTracker(TemplateParameterDepth);
-  if (LM.TemplateScope) {
-    Actions.ActOnReenterTemplateScope(getCurScope(), LM.Method);
-    ++CurTemplateDepthTracker;
-  }
-  // Start the delayed C++ method declaration
-  Actions.ActOnStartDelayedCXXMethodDeclaration(getCurScope(), LM.Method);
-
-  // Introduce the parameters into scope and parse their default
-  // arguments.
-  ParseScope PrototypeScope(this, Scope::FunctionPrototypeScope |
-                            Scope::FunctionDeclarationScope | Scope::DeclScope);
-  for (unsigned I = 0, N = LM.DefaultArgs.size(); I != N; ++I) {
-    auto Param = cast<ParmVarDecl>(LM.DefaultArgs[I].Param);
+void Parser::ParseLexedDefaultArguments(
+    MutableArrayRef<LateParsedDefaultArgument> DefaultArgs) {
+  for (unsigned I = 0, N = DefaultArgs.size(); I != N; ++I) {
+    auto Param = cast<ParmVarDecl>(DefaultArgs[I].Param);    
+    const bool HasUnparsed = Param->hasUnparsedDefaultArg();
     // Introduce the parameter into scope.
-    bool HasUnparsed = Param->hasUnparsedDefaultArg();
     Actions.ActOnDelayedCXXMethodParameter(getCurScope(), Param);
-    if (CachedTokens *Toks = LM.DefaultArgs[I].Toks) {
+    if (CachedTokens *Toks = DefaultArgs[I].Toks) {
       // Mark the end of the default argument so that we know when to stop when
       // we parse it later on.
       Token LastDefaultArgToken = Toks->back();
@@ -371,10 +358,11 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
         ConsumeAnyToken();
 
       delete Toks;
-      LM.DefaultArgs[I].Toks = nullptr;
+      DefaultArgs[I].Toks = nullptr;
     } else if (HasUnparsed) {
       assert(Param->hasInheritedDefaultArg());
-      FunctionDecl *Old = cast<FunctionDecl>(LM.Method)->getPreviousDecl();
+      FunctionDecl *Old =
+          cast<FunctionDecl>(Param->getDeclContext())->getPreviousDecl();
       ParmVarDecl *OldParam = Old->getParamDecl(I);
       assert (!OldParam->hasUnparsedDefaultArg());
       if (OldParam->hasUninstantiatedDefaultArg())
@@ -384,6 +372,23 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
         Param->setDefaultArg(OldParam->getInit());
     }
   }
+}
+void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
+  // If this is a member template, introduce the template parameter scope.
+  ParseScope TemplateScope(this, Scope::TemplateParamScope, LM.TemplateScope);
+  TemplateParameterDepthRAII CurTemplateDepthTracker(TemplateParameterDepth);
+  if (LM.TemplateScope) {
+    Actions.ActOnReenterTemplateScope(getCurScope(), LM.Method);
+    ++CurTemplateDepthTracker;
+  }
+  // Start the delayed C++ method declaration
+  Actions.ActOnStartDelayedCXXMethodDeclaration(getCurScope(), LM.Method);
+
+  // Introduce the parameters into scope and parse their default
+  // arguments.
+  ParseScope PrototypeScope(this, Scope::FunctionPrototypeScope |
+                            Scope::FunctionDeclarationScope | Scope::DeclScope);
+  ParseLexedDefaultArguments(LM.DefaultArgs);
 
   // Parse a delayed exception-specification, if there is one.
   if (CachedTokens *Toks = LM.ExceptionSpecTokens) {
@@ -492,8 +497,10 @@ void Parser::ParseLexedMethodDef(LexedMethod &LM) {
   if (LM.TemplateScope) {
     Actions.ActOnReenterTemplateScope(getCurScope(), LM.D);
     ++CurTemplateDepthTracker;
+  } else if (isa<FunctionTemplateDecl>(LM.D)) {
+    // This must be an abbreviated function template ...
+    ++CurTemplateDepthTracker;
   }
-
   assert(!LM.Toks.empty() && "Empty body!");
   Token LastBodyToken = LM.Toks.back();
   Token BodyEnd;

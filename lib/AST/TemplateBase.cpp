@@ -104,10 +104,29 @@ bool TemplateArgument::isDependent() const {
   case Null:
     llvm_unreachable("Should not have a NULL template argument");
 
-  case Type:
+  case Type: {
+    
+    auto IsPackExpansionOfNonDependentTemplateAlias = [this] { 
+      // This is to prevent: 
+      //  template<typename ...Ts> struct S {};
+      //  template<typename T> using X = int; 
+      //  template<typename ...Ts> void h(S<X<Ts>...>) {} 
+      // http://llvm.org/bugs/show_bug.cgi?id=21289
+      // http://www2.open-std.org/jtc1/sc22/wg21/docs/cwg_active.html#1980
+      // Not sure if this is the intended direction...
+      QualType QTy = getAsType();
+      if (const PackExpansionType *PTy = dyn_cast<PackExpansionType>(QTy))
+        if (const TemplateSpecializationType *TTy =
+                dyn_cast<TemplateSpecializationType>(PTy->getPattern()))
+          if (TTy->isTypeAlias()) {
+            assert(!TTy->getAliasedType()->isDependentType());
+            return true;
+          }
+      return false;
+    };
     return getAsType()->isDependentType() ||
-           isa<PackExpansionType>(getAsType());
-
+           IsPackExpansionOfNonDependentTemplateAlias();
+  }
   case Template:
     return getAsTemplate().isDependent();
 

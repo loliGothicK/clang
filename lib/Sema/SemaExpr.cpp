@@ -4082,6 +4082,29 @@ ExprResult Sema::BuildCXXDefaultArgExpr(SourceLocation CallLoc,
       //   default argument expression appears.
       ContextRAII SavedContext(*this, FD);
       LocalInstantiationScope Local(*this);
+      
+      FunctionDecl *Pattern = FD->getTemplateInstantiationPattern();
+      if (!Pattern) {
+        // Triggered by explicit specializations - since they do not have an
+        // instantiation pattern. But since we inherit default arguments from
+        // the primary template, go digging for it.
+
+        // For e.g.
+        // template<typename T> void f4(T, int = 17);
+        // template<> void f4<int>(int, int); f4(i);
+        //
+        assert(FD->isFunctionTemplateSpecialization());
+        FunctionTemplateDecl *FTD = FD->getPrimaryTemplate();
+        assert(FTD);
+        Pattern = FTD->getTemplatedDecl();
+      }
+      assert(Pattern);
+      // Add the instantiated parameters to scope, since we should be able to
+      // refer to them in an unevaluated context.
+      addInstantiatedParametersToScope(
+          FD, 
+          Pattern, 
+          Local, MutiLevelArgList);
       Result = SubstExpr(UninstExpr, MutiLevelArgList);
     }
     if (Result.isInvalid())

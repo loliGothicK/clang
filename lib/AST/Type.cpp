@@ -20,6 +20,8 @@
 #include "clang/AST/Expr.h"
 #include "clang/AST/PrettyPrinter.h"
 #include "clang/AST/Type.h"
+#include "clang/AST/TypeLoc.h"
+#include "clang/AST/TypeLocVisitor.h"
 #include "clang/AST/TypeVisitor.h"
 #include "clang/Basic/Specifiers.h"
 #include "llvm/ADT/APSInt.h"
@@ -553,62 +555,184 @@ TagDecl *Type::getAsTagDecl() const {
   return nullptr;
 }
 
+
+
 namespace {
-  class GetContainedAutoVisitor :
-    public TypeVisitor<GetContainedAutoVisitor, AutoType*> {
+  // Make Sure Whatever changes are made to this, are also made to the analogous
+  // NonTypeLoc Visitor below that is location agnostic (GetContainedAutoVisitor).
+  class GetContainedAutoLocVisitor
+      : public TypeLocVisitor<GetContainedAutoLocVisitor> {
   public:
-    using TypeVisitor<GetContainedAutoVisitor, AutoType*>::Visit;
-    AutoType *Visit(QualType T) {
+    using ContainerTy = SmallVector<AutoTypeLoc, 4>;
+    ContainerTy ContainedAutoTypes;
+
+    GetContainedAutoLocVisitor() {}
+
+    // The 'auto' type itself.
+    void VisitAutoTypeLoc(AutoTypeLoc AT) { ContainedAutoTypes.push_back(AT); }
+
+    // Only these types can contain the desired 'auto' type.
+    void VisitPointerTypeLoc(PointerTypeLoc TL) {
+      return Visit(TL.getPointeeLoc());
+    }
+    void VisitBlockPointerTypeLoc(BlockPointerTypeLoc TL) {
+      return Visit(TL.getPointeeLoc());
+    }
+    void VisitQualifiedTypeLoc(QualifiedTypeLoc TL) {
+      return Visit(TL.getUnqualifiedLoc());
+    }
+    void VisitReferenceTypeLoc(ReferenceTypeLoc TL) {
+      return Visit(TL.getPointeeLoc());
+    }
+    void VisitMemberPointerTypeLoc(MemberPointerTypeLoc TL) {
+      Visit(TL.getPointeeLoc());
+      if (TL.getClassTInfo())
+        return Visit(TL.getClassTInfo()->getTypeLoc());
+    }
+    void VisitArrayTypeLoc(ArrayTypeLoc TL) { return Visit(TL.getElementLoc()); }
+
+    void VisitFunctionProtoTypeLoc(FunctionProtoTypeLoc TL) {
+      const bool HasTrailingReturn = TL.getTypePtr()->hasTrailingReturn();
+
+      if (!HasTrailingReturn)
+        Visit(TL.getReturnLoc());
+
+      for (ParmVarDecl *PD : TL.getParams()) {
+        if (PD) // We need this check for conversion from lambda to block-ptr
+          Visit(PD->getTypeSourceInfo()->getTypeLoc());
+      }
+      if (HasTrailingReturn)
+        Visit(TL.getReturnLoc());
+    }
+
+    void VisitParenTypeLoc(ParenTypeLoc TL) { return Visit(TL.getInnerLoc()); }
+    void VisitAttributedTypeLoc(AttributedTypeLoc TL) {
+      return Visit(TL.getModifiedLoc());
+    }
+    void VisitAdjustedTypeLoc(AdjustedTypeLoc TL) {
+      return Visit(TL.getOriginalLoc());
+    }
+    void VisitElaboratedTypeLoc(ElaboratedTypeLoc TL) {
+      NestedNameSpecifierLoc NNSLoc = TL.getQualifierLoc();
+      if (const NestedNameSpecifier *NNS = NNSLoc.getNestedNameSpecifier()) {
+        if (const Type *Ty = NNS->getAsType())
+          Visit(NNSLoc.getTypeLoc());
+      }
+      return Visit(TL.getNamedTypeLoc());
+    }
+    void VisitPackExpansionTypeLoc(PackExpansionTypeLoc TL) {
+      return Visit(TL.getPatternLoc());
+    }
+    void VisitTemplateSpecializationTypeLoc(TemplateSpecializationTypeLoc TL) {
+      for (unsigned I = 0, N = TL.getNumArgs(); I != N; ++I) {
+        TemplateArgumentLoc TAL = TL.getArgLoc(I);
+        if (TAL.getArgument().getKind() == TemplateArgument::Type)
+          Visit(TAL.getTypeSourceInfo()->getTypeLoc());
+      }
+    }
+  };
+  // Please ensure this visitor is synced with the GetContainedAutoLocVisitor Above.
+  class GetContainedAutoVisitor :
+    public TypeVisitor<GetContainedAutoVisitor> {
+    const bool FindOnlyFirstAuto;
+  public:
+    GetContainedAutoVisitor(bool FindOnlyFirstAuto = false)
+        : FindOnlyFirstAuto(FindOnlyFirstAuto) {}
+
+    using inherited = TypeVisitor < GetContainedAutoVisitor >; 
+    using ContainerTy = SmallVector<const AutoType *, 4>;
+    ContainerTy ContainedAutoTypes;
+    void Visit(QualType T) {
       if (T.isNull())
-        return nullptr;
-      return Visit(T.getTypePtr());
+        return;
+      if (FindOnlyFirstAuto && ContainedAutoTypes.size()) return;
+      inherited::Visit(T.getTypePtr());
     }
 
     // The 'auto' type itself.
-    AutoType *VisitAutoType(const AutoType *AT) {
-      return const_cast<AutoType*>(AT);
+    void VisitAutoType(const AutoType *AT) {
+      ContainedAutoTypes.push_back(AT);
     }
 
     // Only these types can contain the desired 'auto' type.
-    AutoType *VisitPointerType(const PointerType *T) {
+    void VisitPointerType(const PointerType *T) {
       return Visit(T->getPointeeType());
     }
-    AutoType *VisitBlockPointerType(const BlockPointerType *T) {
+    void VisitBlockPointerType(const BlockPointerType *T) {
       return Visit(T->getPointeeType());
     }
-    AutoType *VisitReferenceType(const ReferenceType *T) {
+    void VisitReferenceType(const ReferenceType *T) {
       return Visit(T->getPointeeTypeAsWritten());
     }
-    AutoType *VisitMemberPointerType(const MemberPointerType *T) {
-      return Visit(T->getPointeeType());
+    void VisitMemberPointerType(const MemberPointerType *T) {
+      Visit(T->getPointeeType());
+      Visit(QualType(T->getClass(),0));
+      return;
     }
-    AutoType *VisitArrayType(const ArrayType *T) {
+    void VisitArrayType(const ArrayType *T) {
       return Visit(T->getElementType());
     }
-    AutoType *VisitDependentSizedExtVectorType(
+    void VisitDependentSizedExtVectorType(
       const DependentSizedExtVectorType *T) {
       return Visit(T->getElementType());
     }
-    AutoType *VisitVectorType(const VectorType *T) {
+    void VisitVectorType(const VectorType *T) {
       return Visit(T->getElementType());
     }
-    AutoType *VisitFunctionType(const FunctionType *T) {
+    void VisitFunctionType(const FunctionType *T) {
       return Visit(T->getReturnType());
     }
-    AutoType *VisitParenType(const ParenType *T) {
+    void VisitParenType(const ParenType *T) {
       return Visit(T->getInnerType());
     }
-    AutoType *VisitAttributedType(const AttributedType *T) {
+    void VisitAttributedType(const AttributedType *T) {
       return Visit(T->getModifiedType());
     }
-    AutoType *VisitAdjustedType(const AdjustedType *T) {
+    void VisitAdjustedType(const AdjustedType *T) {
       return Visit(T->getOriginalType());
     }
+    void VisitElaboratedType(const ElaboratedType *T) {
+      if (const NestedNameSpecifier *NNS = T->getQualifier()) {
+        if (const Type *Ty = NNS->getAsType())
+          Visit(QualType(Ty, 0));
+      }
+      return Visit(T->getNamedType());
+    }
+    void VisitPackExpansionType(const PackExpansionType *T) {
+      return Visit(T->getPattern());
+    }
+    void VisitFunctionProtoType(const FunctionProtoType *T) {
+      Visit(T->getReturnType());
+      for (QualType Ty : T->getParamTypes())
+        Visit(Ty);
+    }
+    void VisitTemplateSpecializationType(const TemplateSpecializationType *T) {
+      for (unsigned I = 0, N = T->getNumArgs(); I != N; ++I) {
+        const TemplateArgument &TA = T->getArg(I);
+        if (TA.getKind() == TA.Type) 
+          Visit(TA.getAsType()); 
+      }  
+    }
+
   };
 }
+// This always returns the first auto-type encountered
+bool Type::containsAutoType() const {
+  GetContainedAutoVisitor AV(/*FindOnlyFirstAuto*/true);
+  AV.Visit(QualType(this, 0));
+  return AV.ContainedAutoTypes.size();
+}
 
-AutoType *Type::getContainedAutoType() const {
-  return GetContainedAutoVisitor().Visit(this);
+SmallVector<const AutoType *, 4> Type::getContainedAutoTypes() const {
+  GetContainedAutoVisitor AV;
+  AV.Visit(QualType(this, 0));
+  return AV.ContainedAutoTypes;
+}
+
+SmallVector<AutoTypeLoc, 4> Type::getContainedAutoTypeLocs(TypeLoc TL) {
+  GetContainedAutoLocVisitor AV;
+  AV.Visit(TL);
+  return AV.ContainedAutoTypes;
 }
 
 bool Type::hasIntegerRepresentation() const {
@@ -1993,7 +2117,6 @@ anyDependentTemplateArguments(const TemplateArgumentLoc *Args, unsigned N,
       InstantiationDependent = true;
       return true;
     }
-    
     if (Args[i].getArgument().isInstantiationDependent())
       InstantiationDependent = true;
   }

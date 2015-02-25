@@ -827,12 +827,14 @@ public:
   /// \brief Build a new C++11 auto type.
   ///
   /// By default, builds a new AutoType with the given deduced type.
-  QualType RebuildAutoType(QualType Deduced, bool IsDecltypeAuto) {
+  QualType RebuildAutoType(QualType Deduced, bool IsDecltypeAuto,
+                           bool IsParameterPack, unsigned Index) {
     // Note, IsDependent is always false here: we implicitly convert an 'auto'
     // which has been deduced to a dependent type into an undeduced 'auto', so
     // that we'll retry deduction after the transformation.
-    return SemaRef.Context.getAutoType(Deduced, IsDecltypeAuto, 
-                                       /*IsDependent*/ false);
+    return SemaRef.Context.getAutoType(Deduced, IsDecltypeAuto,
+                                       /*IsDependent*/ false, IsParameterPack
+                                       , Index);
   }
 
   /// \brief Build a new template specialization type.
@@ -3758,7 +3760,8 @@ TreeTransform<Derived>::TransformQualifiedType(TypeLocBuilder &TLB,
         Deduced = SemaRef.Context.getQualifiedType(Deduced.getUnqualifiedType(),
                                                    Qs);
         Result = SemaRef.Context.getAutoType(Deduced, AutoTy->isDecltypeAuto(), 
-                                AutoTy->isDependentType());
+                                AutoTy->isDependentType(), /*IsParameterPack*/false, 
+                                AutoTy->getIndex());
         TLB.TypeWasModifiedSafely(Result);
       } else {
         // Otherwise, complain about the addition of a qualifier to an
@@ -4344,17 +4347,18 @@ ParmVarDecl *TreeTransform<Derived>::TransformFunctionTypeParam(
                                                OldExpansionTL.getPatternLoc());
     if (Result.isNull())
       return nullptr;
-
-    Result = RebuildPackExpansionType(Result,
+    if (ExpectParameterPack) {
+      Result = RebuildPackExpansionType(Result,
                                 OldExpansionTL.getPatternLoc().getSourceRange(),
                                       OldExpansionTL.getEllipsisLoc(),
                                       NumExpansions);
-    if (Result.isNull())
-      return nullptr;
+      if (Result.isNull())
+        return nullptr;
 
-    PackExpansionTypeLoc NewExpansionTL
-      = TLB.push<PackExpansionTypeLoc>(Result);
-    NewExpansionTL.setEllipsisLoc(OldExpansionTL.getEllipsisLoc());
+      PackExpansionTypeLoc NewExpansionTL
+        = TLB.push<PackExpansionTypeLoc>(Result);
+      NewExpansionTL.setEllipsisLoc(OldExpansionTL.getEllipsisLoc());
+    }
     NewDI = TLB.getTypeSourceInfo(SemaRef.Context, Result);
   } else
     NewDI = getDerived().TransformType(OldDI);
@@ -4369,15 +4373,18 @@ ParmVarDecl *TreeTransform<Derived>::TransformFunctionTypeParam(
                                              OldParm->getInnerLocStart(),
                                              OldParm->getLocation(),
                                              OldParm->getIdentifier(),
-                                             NewDI->getType(),
+           SemaRef.Context.getAdjustedParameterType(NewDI->getType()),
                                              NewDI,
                                              OldParm->getStorageClass(),
                                              /* DefArg */ nullptr);
   newParm->setScopeInfo(OldParm->getFunctionScopeDepth(),
                         OldParm->getFunctionScopeIndex() + indexAdjustment);
+  // FVQUESTION: Must we teach the default transformedLocalDecl to handle
+  // function parameter packs correctly? Or can we leave that up to the deriving
+  // class?
+  getDerived().transformedLocalDecl(OldParm, newParm);
   return newParm;
 }
-
 template<typename Derived>
 bool TreeTransform<Derived>::
   TransformFunctionTypeParams(SourceLocation Loc,
@@ -4428,7 +4435,7 @@ bool TreeTransform<Derived>::
             ParmVarDecl *NewParm
               = getDerived().TransformFunctionTypeParam(OldParm,
                                                         indexAdjustment++,
-                                                        OrigNumExpansions,
+                                                        NumExpansions,
                                                 /*ExpectParameterPack=*/false);
             if (!NewParm)
               return true;
@@ -4446,7 +4453,7 @@ bool TreeTransform<Derived>::
               = getDerived().TransformFunctionTypeParam(OldParm,
                                                         indexAdjustment++,
                                                         OrigNumExpansions,
-                                                /*ExpectParameterPack=*/false);
+                                                /*ExpectParameterPack=*/true);
             if (!NewParm)
               return true;
 
@@ -4479,13 +4486,11 @@ bool TreeTransform<Derived>::
 
       if (!NewParm)
         return true;
-
       OutParamTypes.push_back(NewParm->getType());
       if (PVars)
         PVars->push_back(NewParm);
       continue;
     }
-
     // Deal with the possibility that we don't have a parameter
     // declaration for this parameter.
     QualType OldType = ParamTypes[i];
@@ -4619,7 +4624,6 @@ QualType TreeTransform<Derived>::TransformFunctionProtoType(
       //   and the end of the function-definition, member-declarator, or
       //   declarator.
       Sema::CXXThisScopeRAII ThisScope(SemaRef, ThisContext, ThisTypeQuals);
-
       ResultType = getDerived().TransformType(TLB, TL.getReturnLoc());
       if (ResultType.isNull())
         return QualType();
@@ -4962,7 +4966,9 @@ QualType TreeTransform<Derived>::TransformAutoType(TypeLocBuilder &TLB,
   QualType Result = TL.getType();
   if (getDerived().AlwaysRebuild() || NewDeduced != OldDeduced ||
       T->isDependentType()) {
-    Result = getDerived().RebuildAutoType(NewDeduced, T->isDecltypeAuto());
+    Result = getDerived().RebuildAutoType(NewDeduced, T->isDecltypeAuto(),
+                                          T->containsUnexpandedParameterPack(),
+                                          T->getIndex());
     if (Result.isNull())
       return QualType();
   }
@@ -9129,10 +9135,10 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
 
   LambdaScopeInfo *LSI = getSema().PushLambdaScope();
   Sema::FunctionScopeRAII FuncScopeCleanup(getSema());
-
+  
   // Transform the template parameters, and add them to the current
   // instantiation scope. The null case is handled correctly.
-  LSI->GLTemplateParameterList = getDerived().TransformTemplateParameterList(
+  TemplateParameterList *NewTPL = getDerived().TransformTemplateParameterList(
       E->getTemplateParameterList());
 
   // Transform the type of the original lambda's call operator.
@@ -9165,14 +9171,16 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
     = getSema().createLambdaClosureType(E->getIntroducerRange(),
                                         NewCallOpTSI,
                                         /*KnownDependent=*/false,
-                                        E->getCaptureDefault());
+                                        E->getCaptureDefault(),
+                                        static_cast<bool>(NewTPL));
   getDerived().transformedLocalDecl(E->getLambdaClass(), Class);
 
   // Build the call operator.
   CXXMethodDecl *NewCallOperator = getSema().startLambdaDefinition(
       Class, E->getIntroducerRange(), NewCallOpTSI,
       E->getCallOperator()->getLocEnd(),
-      NewCallOpTSI->getTypeLoc().castAs<FunctionProtoTypeLoc>().getParams());
+      NewCallOpTSI->getTypeLoc().castAs<FunctionProtoTypeLoc>().getParams(),
+      NewTPL);
   LSI->CallOperator = NewCallOperator;
 
   getDerived().transformAttrs(E->getCallOperator(), NewCallOperator);

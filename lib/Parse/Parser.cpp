@@ -20,6 +20,7 @@
 #include "clang/Sema/DeclSpec.h"
 #include "clang/Sema/ParsedTemplate.h"
 #include "clang/Sema/Scope.h"
+#include "clang/Sema/Template.h"
 #include "llvm/Support/raw_ostream.h"
 using namespace clang;
 
@@ -57,6 +58,7 @@ Parser::Parser(Preprocessor &pp, Sema &actions, bool skipFunctionBodies)
   Tok.startToken();
   Tok.setKind(tok::eof);
   Actions.CurScope = nullptr;
+  Actions.ParsingTemplateParameterDepthPtr = &TemplateParameterDepth;
   NumCachedScopes = 0;
   ParenCount = BracketCount = BraceCount = 0;
   CurParsedObjCImpl = nullptr;
@@ -832,6 +834,7 @@ Parser::DeclGroupPtrTy
 Parser::ParseDeclOrFunctionDefInternal(ParsedAttributesWithRange &attrs,
                                        ParsingDeclSpec &DS,
                                        AccessSpecifier AS) {
+  ParsingFunctionDeclarationAbbreviatedTemplateInfo AFTI(Actions);
   // Parse the common declaration-specifiers piece.
   ParseDeclarationSpecifiers(DS, ParsedTemplateInfo(), AS, DSC_top_level);
 
@@ -880,6 +883,7 @@ Parser::ParseDeclOrFunctionDefInternal(ParsedAttributesWithRange &attrs,
             ParseObjCAtInterfaceDeclaration(AtLoc, DS.getAttributes()));
   }
 
+  
   // If the declspec consisted only of 'extern' and we have a string
   // literal following it, this must be a C++ linkage specifier like
   // 'extern "C"'.
@@ -1031,13 +1035,24 @@ Decl *Parser::ParseFunctionDefinition(ParsingDeclarator &D,
 
   // Enter a scope for the function body.
   ParseScope BodyScope(this, Scope::FnScope|Scope::DeclScope);
-
   // Tell the actions module that we have entered a function definition with the
   // specified Declarator for the function.
   Decl *Res = TemplateInfo.TemplateParams?
       Actions.ActOnStartOfFunctionTemplateDef(getCurScope(),
                                               *TemplateInfo.TemplateParams, D)
     : Actions.ActOnStartOfFunctionDef(getCurScope(), D);
+
+  TemplateParameterDepthRAII CurTemplateParameterDepth(TemplateParameterDepth);
+  // If abbreviated template syntax was used to declare a function template then
+  // add one to the template-parameter-depth.
+  if (Actions.getAbbreviatedFunctionTemplateInfo() &&
+      Actions.getAbbreviatedFunctionTemplateInfo()
+          ->AbbreviatedTemplateParameterList) {
+    ParseAbbreviatedFunctionTemplateDefaultArgs(D);
+    if (!Actions.getAbbreviatedFunctionTemplateInfo()
+             ->ExplicitlyProvidedTemplateParameterList)
+      ++CurTemplateParameterDepth;
+  }
 
   // Break out of the ParsingDeclarator context before we parse the body.
   D.complete(Res);

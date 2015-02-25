@@ -28,7 +28,6 @@
 #include "clang/AST/MangleNumberingContext.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/AST/RecursiveASTVisitor.h"
-#include "clang/AST/TypeLoc.h"
 #include "clang/AST/VTableBuilder.h"
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/SourceManager.h"
@@ -3815,20 +3814,32 @@ QualType ASTContext::getUnaryTransformType(QualType BaseType,
 /// deduced to the given type, or to the canonical undeduced 'auto' type, or the
 /// canonical deduced-but-dependent 'auto' type.
 QualType ASTContext::getAutoType(QualType DeducedType, bool IsDecltypeAuto,
-                                 bool IsDependent) const {
-  if (DeducedType.isNull() && !IsDecltypeAuto && !IsDependent)
+                                 bool IsDependent,
+                                 bool IsParameterPack, unsigned Index) const {
+  if (DeducedType.isNull() && !IsDecltypeAuto && !IsDependent &&
+      !IsParameterPack && !Index)
     return getAutoDeductType();
 
   // Look in the folding set for an existing type.
   void *InsertPos = nullptr;
   llvm::FoldingSetNodeID ID;
-  AutoType::Profile(ID, DeducedType, IsDecltypeAuto, IsDependent);
+  AutoType::Profile(ID, DeducedType, IsDecltypeAuto, IsDependent,
+                    /*IsParameterPack*/ IsParameterPack, Index);
   if (AutoType *AT = AutoTypes.FindNodeOrInsertPos(ID, InsertPos))
     return QualType(AT, 0);
-
+  // An AutoType with a nonZero Index has its Zero Index counterpart as its
+  // canonical type, if it doesn't have a deduced type.
+  const AutoType *CanonicalAutoType = nullptr;
+  if (Index != 0 && DeducedType.isNull()) {
+    CanonicalAutoType =
+        cast<AutoType>(getAutoType(DeducedType, IsDecltypeAuto, IsDependent,
+                                   IsParameterPack, /*Index*/0).getTypePtr());
+  }
   AutoType *AT = new (*this, TypeAlignment) AutoType(DeducedType,
                                                      IsDecltypeAuto,
-                                                     IsDependent);
+                                                     IsDependent,
+                                                     IsParameterPack,
+                                                     Index, CanonicalAutoType);
   Types.push_back(AT);
   if (InsertPos)
     AutoTypes.InsertNode(AT, InsertPos);
@@ -3868,7 +3879,8 @@ QualType ASTContext::getAutoDeductType() const {
   if (AutoDeductTy.isNull())
     AutoDeductTy = QualType(
       new (*this, TypeAlignment) AutoType(QualType(), /*decltype(auto)*/false,
-                                          /*dependent*/false),
+                                          /*dependent*/false, 
+                                          /*IsParameterPack*/false, /*Index*/0, nullptr),
       0);
   return AutoDeductTy;
 }
@@ -3880,6 +3892,7 @@ QualType ASTContext::getAutoRRefDeductType() const {
   assert(!AutoRRefDeductTy.isNull() && "can't build 'auto &&' pattern");
   return AutoRRefDeductTy;
 }
+
 
 /// getTagDeclType - Return the unique reference to the type for the
 /// specified TagDecl (struct/union/class/enum) decl.

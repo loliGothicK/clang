@@ -5482,9 +5482,13 @@ QualType ASTReader::readTypeRecord(unsigned Index) {
 
   case TYPE_AUTO: {
     QualType Deduced = readType(*Loc.F, Record, Idx);
-    bool IsDecltypeAuto = Record[Idx++];
-    bool IsDependent = Deduced.isNull() ? Record[Idx++] : false;
-    return Context.getAutoType(Deduced, IsDecltypeAuto, IsDependent);
+    const bool IsDecltypeAuto = Record[Idx++];
+    const unsigned Index = Record[Idx++];
+    const bool IsDependent = Deduced.isNull() ? Record[Idx++] : false;
+    // FVTODO: Should this IsParameterPack below be false? Can we determine what
+    // the ContainsUnexpandedParameterPack of the type is first?
+    return Context.getAutoType(Deduced, IsDecltypeAuto, IsDependent,
+                               /*IsParameterPack*/false, Index);
   }
 
   case TYPE_RECORD: {
@@ -6030,8 +6034,10 @@ QualType ASTReader::GetType(TypeID ID) {
     case PREDEF_TYPE_IMAGE3D_ID:    T = Context.OCLImage3dTy;       break;
     case PREDEF_TYPE_SAMPLER_ID:    T = Context.OCLSamplerTy;       break;
     case PREDEF_TYPE_EVENT_ID:      T = Context.OCLEventTy;         break;
-    case PREDEF_TYPE_AUTO_DEDUCT:   T = Context.getAutoDeductType(); break;
-        
+    case PREDEF_TYPE_AUTO_DEDUCT:
+      T = Context.getAutoDeductType();
+      break;
+
     case PREDEF_TYPE_AUTO_RREF_DEDUCT: 
       T = Context.getAutoRRefDeductType(); 
       break;

@@ -399,10 +399,6 @@ private:
 
   ObjCDeclSpec *ObjCQualifiers;
 
-  static bool isTypeRep(TST T) {
-    return (T == TST_typename || T == TST_typeofType ||
-            T == TST_underlyingType || T == TST_atomic);
-  }
   static bool isExprRep(TST T) {
     return (T == TST_typeofExpr || T == TST_decltype);
   }
@@ -410,6 +406,10 @@ private:
   DeclSpec(const DeclSpec &) = delete;
   void operator=(const DeclSpec &) = delete;
 public:
+  static bool isTypeRep(TST T) {
+    return (T == TST_typename || T == TST_typeofType ||
+            T == TST_underlyingType || T == TST_atomic);
+  }
   static bool isDeclRep(TST T) {
     return (T == TST_enum || T == TST_struct ||
             T == TST_interface || T == TST_union ||

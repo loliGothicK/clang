@@ -1180,6 +1180,10 @@ private:
   void ParseLexedMethodDef(LexedMethod &LM);
   void ParseLexedMemberInitializers(ParsingClass &Class);
   void ParseLexedMemberInitializer(LateParsedMemberInitializer &MI);
+  void ParseLexedDefaultArguments(
+      MutableArrayRef<LateParsedDefaultArgument> DefaultArgs);
+  void ParseAbbreviatedFunctionTemplateDefaultArgs(
+      Declarator &FunDeclarator);
   void ParseLexedObjCMethodDefs(LexedMethod &LM, bool parseMethod);
   bool ConsumeAndStoreFunctionPrologue(CachedTokens &Toks);
   bool ConsumeAndStoreInitializer(CachedTokens &Toks, CachedInitKind CIK);

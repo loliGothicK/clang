@@ -148,6 +148,7 @@ namespace clang {
   class OverloadExpr;
   class ParenListExpr;
   class ParmVarDecl;
+  class ParsingFunctionDeclarationAbbreviatedTemplateInfo;
   class Preprocessor;
   class PseudoDestructorTypeStorage;
   class PseudoObjectExpr;
@@ -168,6 +169,7 @@ namespace clang {
   class TypedefDecl;
   class TypedefNameDecl;
   class TypeLoc;
+  class TypeLocBuilder;
   class TypoCorrectionConsumer;
   class UnqualifiedId;
   class UnresolvedLookupExpr;
@@ -204,9 +206,10 @@ namespace threadSafety {
   void threadSafetyCleanup(BeforeSet* Cache);
 }
 
-// FIXME: No way to easily map from TemplateTypeParmTypes to
+// FIXME: No way to easily map from TemplateTypeParmTypes or AutoTypes to
 // TemplateTypeParmDecls, so we have this horrible PointerUnion.
-typedef std::pair<llvm::PointerUnion<const TemplateTypeParmType*, NamedDecl*>,
+typedef std::pair<llvm::PointerUnion3<const TemplateTypeParmType *, NamedDecl *,
+                                      const AutoType *>,
                   SourceLocation> UnexpandedParameterPack;
 
 /// Sema - This implements semantic analysis and AST building for C.
@@ -1070,11 +1073,6 @@ public:
   void PushBlockScope(Scope *BlockScope, BlockDecl *Block);
   sema::LambdaScopeInfo *PushLambdaScope();
 
-  /// \brief This is used to inform Sema what the current TemplateParameterDepth
-  /// is during Parsing.  Currently it is used to pass on the depth
-  /// when parsing generic lambda 'auto' parameters.
-  void RecordParsingTemplateParameterDepth(unsigned Depth);
-  
   void PushCapturedRegionScope(Scope *RegionScope, CapturedDecl *CD,
                                RecordDecl *RD,
                                CapturedRegionKind K);
@@ -1086,7 +1084,7 @@ public:
   sema::FunctionScopeInfo *getCurFunction() const {
     return FunctionScopes.back();
   }
-  
+
   sema::FunctionScopeInfo *getEnclosingFunction() const {
     if (FunctionScopes.empty())
       return nullptr;
@@ -4803,14 +4801,16 @@ public:
   CXXRecordDecl *createLambdaClosureType(SourceRange IntroducerRange,
                                          TypeSourceInfo *Info,
                                          bool KnownDependent, 
-                                         LambdaCaptureDefault CaptureDefault);
+                                         LambdaCaptureDefault CaptureDefault,
+                                         bool IsGenericLambda);
 
   /// \brief Start the definition of a lambda expression.
   CXXMethodDecl *startLambdaDefinition(CXXRecordDecl *Class,
                                        SourceRange IntroducerRange,
                                        TypeSourceInfo *MethodType,
                                        SourceLocation EndLoc,
-                                       ArrayRef<ParmVarDecl *> Params);
+                                       ArrayRef<ParmVarDecl *> Params,
+                                       TemplateParameterList *GeneriLambdaTPL);
 
   /// \brief Endow the lambda scope info with the relevant properties.
   void buildLambdaScope(sema::LambdaScopeInfo *LSI, 
@@ -6227,6 +6227,63 @@ public:
   TypeSourceInfo* SubstAutoTypeSourceInfo(TypeSourceInfo *TypeWithAuto, 
                                           QualType Replacement);
 
+  ParsingFunctionDeclarationAbbreviatedTemplateInfo *
+  getAbbreviatedFunctionTemplateInfo() {
+    return CurAbbreviatedFunctionTemplateInfo;
+  }
+
+  TemplateTypeParmDecl *makeTemplateTypeParameter(
+      ASTContext &Context, const unsigned Depth, const unsigned Position,
+      const SourceLocation StartLoc, const bool IsParameterPack = false,
+      const std::string InventedTemplateParamPrefix = "$auto-");
+  
+  // Given an abbreviated function template type (that contains dependent
+  // AutoTypes within its parameters), any parsed template parameter lists for
+  // the current declarator, and a fully parsed function declarator, return a
+  // re-constructed normalized function type whose parameters contain
+  // corresponding references to template parameter types/decls.  This function
+  // takes any existing TPLs into account, determines if the explicit TPL (if
+  // any) belongs to the function declarator or to its parent scope, and either
+  // adds the 'auto' template parameters to the current TPL, or creates one,
+  // with each corresponding template parameter assigned the appropriate depth
+  // (from the parser) and the index (in order of appearance where it designates
+  // a placeholder). 
+  // For e.g.
+  //  auto f(auto (*)(auto))       ==> 
+  //          template<class T0, class T1> auto f(T0 (*)(T1)); 
+  //  auto f(auto (*)(auto)->auto) ==> 
+  //          template<class T0, class T1> auto f(T1 (*)(T0));
+
+  TypeSourceInfo *
+  normalizeAbbreviatedTemplateType(TypeSourceInfo *AutoContainingTSI,
+                                   MultiTemplateParamsArg CurTemplateParamLists,
+                                   Declarator &FunDeclarator);
+
+  TypeSourceInfo *replaceEachDependentAutoWithCorrespondingTemplateTypes(
+      TypeSourceInfo *AutoContainingTSI,
+      ArrayRef<QualType> CorrespondingTemplateTypes);
+
+  TypeSourceInfo *
+  makeAllContainedAutosVariadic(TypeSourceInfo *AutoContainingTSI);
+  TypeSourceInfo *
+  makeAllContainedAutosDependent(TypeSourceInfo *AutoContainingTSI);
+  QualType makeAllContainedAutosDependent(QualType AutoContainingType);
+
+  QualType getAppropriatelyDependentAutoType(bool HasEllipsis, Declarator *D);
+
+  std::vector<TemplateTypeParmDecl *>
+  Sema::getCorrespondingTemplateTypeParmDeclsForAutoTypes(
+      const unsigned TemplateParamDepthForAllAutos,
+      const unsigned TemplateParamIndexForFirstAuto,
+      ArrayRef<AutoTypeLoc> ContainedAutoTypeLocs);
+
+  static std::vector<QualType> Sema::getTypesFromTemplateTypeParamDecls(
+    ArrayRef<TemplateTypeParmDecl *> TemplateTypeParmDecls);
+
+  TemplateParameterList *getMatchingTemplateParameterListForDeclarator(
+      MultiTemplateParamsArg CurTemplateParamLists,
+      const Declarator &FunDeclarator);
+
   /// \brief Result type of DeduceAutoType.
   enum DeduceAutoResult {
     DAR_Succeeded,
@@ -6246,7 +6303,7 @@ public:
 
   bool DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
                                         SourceLocation ReturnLoc,
-                                        Expr *&RetExpr, AutoType *AT);
+                                        Expr *&RetExpr);
 
   FunctionTemplateDecl *getMoreSpecializedTemplate(FunctionTemplateDecl *FT1,
                                                    FunctionTemplateDecl *FT2,
@@ -6924,6 +6981,14 @@ public:
 
   void InstantiateExceptionSpec(SourceLocation PointOfInstantiation,
                                 FunctionDecl *Function);
+
+  /// Introduce the instantiated function parameters into the local
+  /// instantiation scope, and set the parameter names to those used in the
+  /// template.
+  bool addInstantiatedParametersToScope(
+      FunctionDecl *Function, const FunctionDecl *PatternDecl,
+      LocalInstantiationScope &Scope,
+      const MultiLevelTemplateArgumentList &TemplateArgs);
   void InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
                                      FunctionDecl *Function,
                                      bool Recursive = false,
@@ -8700,8 +8765,26 @@ private:
   /// The parser maintains this state here.
   Scope *CurScope;
 
+  /// \brief The parser's current TemplateParameterDepth to assign to the next
+  /// template parameter scope
+  ///
+  /// The parser maintains this state - Sema only reads it during initial AST
+  /// construction (do not rely on this during any subsequent
+  /// transformations/instantiations)
+  const unsigned *ParsingTemplateParameterDepthPtr;
   mutable IdentifierInfo *Ident_super;
   mutable IdentifierInfo *Ident___float128;
+public:
+  // Track information regarding abbreviated templates (i.e. 'auto' templates)
+  // when parsing (function declarators and lambda expressions) and initially
+  // constructing the AST.  
+  ParsingFunctionDeclarationAbbreviatedTemplateInfo *
+    CurAbbreviatedFunctionTemplateInfo;
+
+  const unsigned &getParsingTemplateParameterDepth() const {
+    assert(ParsingTemplateParameterDepthPtr);
+    return *ParsingTemplateParameterDepthPtr;
+  }
 
 protected:
   friend class Parser;

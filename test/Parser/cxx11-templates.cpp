@@ -39,8 +39,6 @@ namespace Ellipsis {
   // because the parameter is in scope in the default argument, so must be
   // passed to Sema before we reach the ellipsis.
   template<typename...T> void f(T n = 1 ...);
-  // expected-warning@-1 {{creates a C-style varargs}}
-  // expected-note@-2 {{place '...' immediately before declared identifier}}
-  // expected-note@-3 {{insert ','}}
-  // expected-error@-4 {{unexpanded parameter pack}}
+  // expected-error@-1 {{unexpanded parameter pack}}
+  // expected-error@-2 {{unexpected end of default argument expression}}
 }

@@ -127,6 +127,24 @@ namespace {
       return true;
     }
 
+    bool TraverseAutoType(AutoType *T) {
+      if (T->containsUnexpandedParameterPack()) {
+        assert(T->getDeducedType().isNull());
+        Unexpanded.push_back(std::make_pair(T, SourceLocation()));
+        return true;
+      }
+      return inherited::TraverseAutoType(T);
+    }
+
+    bool TraverseAutoTypeLoc(AutoTypeLoc TL) {
+      if (TL.getTypePtr()->containsUnexpandedParameterPack()) {
+        assert(TL.getTypePtr()->getDeducedType().isNull());
+        Unexpanded.push_back(std::make_pair(TL.getTypePtr(), TL.getNameLoc()));
+        return true;
+      }
+      return inherited::TraverseAutoTypeLoc(TL);
+    }
+
     /// \brief Suppress traversel into types with location information
     /// that do not contain unexpanded parameter packs.
     bool TraverseTypeLoc(TypeLoc TL) {
@@ -462,6 +480,11 @@ TypeResult Sema::ActOnPackExpansion(ParsedType Type,
   if (!TSInfo)
     return true;
 
+  // If we have any 'autos' in the template-id - convert the auto to a variadic autos.
+  // void f(X<auto...>);
+  if (TSInfo->getType()->containsAutoType())
+    TSInfo = makeAllContainedAutosVariadic(TSInfo);
+  
   TypeSourceInfo *TSResult = CheckPackExpansion(TSInfo, EllipsisLoc, None);
   if (!TSResult)
     return true;
@@ -557,8 +580,18 @@ bool Sema::CheckParameterPacksForExpansion(
     unsigned Depth = 0, Index = 0;
     IdentifierInfo *Name;
     bool IsFunctionParameterPack = false;
-    
-    if (const TemplateTypeParmType *TTP
+   
+    if (const AutoType *AutoPack = i->first.dyn_cast<const AutoType *>()) {
+      // We can not expand auto variadic packs - they can only be expanded
+      // during deduction from an initializer.  Variadic auto packs can end up
+      // here during substitution within variable templates or when 
+      // instantiating a template function body that contains a variable whose
+      // placeholder type contains a variadic auto pack - which will then be 
+      // deduced from its initializer.
+      ShouldExpand = false;
+      continue;
+    }
+    else if (const TemplateTypeParmType *TTP
         = i->first.dyn_cast<const TemplateTypeParmType *>()) {
       Depth = TTP->getDepth();
       Index = TTP->getIndex();

@@ -426,6 +426,7 @@ void Sema::PrintInstantiationStack() {
     switch (Active->Kind) {
     case ActiveTemplateInstantiation::TemplateInstantiation: {
       Decl *D = Active->Entity;
+      if (!D) break;
       if (CXXRecordDecl *Record = dyn_cast<CXXRecordDecl>(D)) {
         unsigned DiagID = diag::note_template_member_class_here;
         if (isa<ClassTemplateSpecializationDecl>(Record))
@@ -603,7 +604,7 @@ Optional<TemplateDeductionInfo *> Sema::isSFINAEContext() const {
     case ActiveTemplateInstantiation::TemplateInstantiation:
       // An instantiation of an alias template may or may not be a SFINAE
       // context, depending on what else is on the stack.
-      if (isa<TypeAliasTemplateDecl>(Active->Entity))
+      if (Active->Entity && isa<TypeAliasTemplateDecl>(Active->Entity))
         break;
       // Fall through.
     case ActiveTemplateInstantiation::DefaultFunctionArgumentInstantiation:
