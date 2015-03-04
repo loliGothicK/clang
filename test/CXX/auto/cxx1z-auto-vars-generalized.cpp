@@ -239,7 +239,19 @@ namespace variadic_deduction {
   } //end ns2
   
 }
+namespace dependent_deduction {
+  namespace ns1 {
+  
+    template<class ... Ts> struct V { };
 
+    template<class T> void f(T t) {
+      V<auto...> v = V<T>{};
+    }
+    int main() {
+      f(3.0);
+    }
+  }
+}
 
 namespace class_template_deduction {
 template<class T, class U = char> struct P { };
@@ -313,7 +325,23 @@ template<class T> auto (*fp)(auto, auto, T) = ft<T>;
 decltype(fp<int***>)*ip;
 }
 }
+namespace return_type_deduction_2 {
 
+template<class ... Ts> struct V { };
+template<class T, class T2> struct P { T t; T2 t2; };
+auto make_pair(auto p1, auto p2) { return P<decltype(p1), decltype(p2)>{p1, p2}; }
+
+P<auto...> f() { return make_pair([] { }, [] { }); }
+ 
+
+int main() {
+  auto p = f();
+  p.t();
+  p.t2();
+  
+}
+
+}
 namespace ill_formed_deduction_ctx {
 
 using fun_ptr = auto (); //expected-error{{not allowed}}

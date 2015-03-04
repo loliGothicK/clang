@@ -3326,8 +3326,7 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
       if (!T->containsUnexpandedParameterPack() || ContainsNonPackAuto) {
         if (ContainsNonPackAuto) {
           TypeSourceInfo *AutoContainingTSInfo =
-              S.GetTypeSourceInfoForDeclarator(D, T,
-                                               /*ReturnTypeInfo?? */ nullptr);
+              S.GetTypeSourceInfoForDeclarator(D, T, /*ReturnTypeInfo*/TInfo);
           assert(AutoContainingTSInfo);
           AutoContainingTSInfo =
               S.makeAllContainedAutosVariadic(AutoContainingTSInfo);

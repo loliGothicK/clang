@@ -458,4 +458,48 @@ template<class T> struct X {
 static_assert(sizeof(decltype(X<P<int, char**>&&>::Y<P<float&, double*>&&>{}.f(bar, P<int, char**>{}, P<float&, double*>{}))*), "");
 } //end ns6_1
 } //end ns6
+namespace ns7 {
+template<class ... Ts> struct V { };
+template<class T, class T2> struct P { T t; T2 t2; };
+
+template<class T, class R1, class R2, class R3> 
+V<R1, P<R2,R3>> ft(T) { return V<R1, P<R2,R3>>{}; }
+
+template<class T, class R1, class R2, class R3, class R4, class R5> 
+V<R1, P<R2,R3>, P<R4, R5>> ft2(T) { return V<R1, P<R2,R3>, P<R4, R5>>{}; }
+
+template<class T, class R1, class R2, class R3> 
+auto aft(T) { return V<R1, P<R2,R3>>{}; }
+
+template<class T, class R1, class R2, class R3, class R4, class R5> 
+auto aft2(T) { return V<R1, P<R2,R3>, P<R4, R5>>{}; }
+
+
+void f(auto (*...fp)(auto) -> V<auto, P<auto, auto>...>) { }
+void f2(auto (...fp)(auto) -> V<auto, P<auto, auto>...>) { }
+int main() {
+    f(ft<char*, double*, float*, short*>, ft<char**, double**, float*, short*>);
+    f(aft<char*, double*, float*, short*>, aft<char**, double**, float*, short*>);
+    f(ft<char*, double*, float*, short*>, ft<char**, double**, float*, short*>);
+    f(ft2<char*, double*, float*, short*, bool*, int*>, ft2<char**, double**, float*, short*, bool*, int*>);
+}
+
+} //end ns7
+
+namespace ns8 {
+
+template<class ... Ts> struct V { };
+template<class T, class T2> struct P { T t; T2 t2; };
+
+template<class T, class R1, class R2, class R3> 
+auto aft(T) { return V<R1, P<R2,R3>>{}; }
+
+// ensure decay to a function ptr 
+void f(auto (...fp)(auto) -> V<auto, P<auto, auto>...>) { }
+
+int main() {
+  f(aft<char*, double*, float*, short*>, aft<char**, double**, float*, short*>);
+}
+
+} // end ns8
 } //end variadic_tests

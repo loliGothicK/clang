@@ -4340,9 +4340,21 @@ const ArrayType *ASTContext::getAsArrayType(QualType T) const {
 }
 
 QualType ASTContext::getAdjustedParameterType(QualType T) const {
-  if (T->isArrayType() || T->isFunctionType())
-    return getDecayedType(T);
-  return T;
+  QualType RetTy = T;
+  // look through a parameter pack to ensure decay of the parameter type.
+  const PackExpansionType *Pack = RetTy->getAs<PackExpansionType>();
+  if (Pack)
+    RetTy = Pack->getPattern();
+  
+  if (RetTy->isArrayType() || RetTy->isFunctionType()) {
+    RetTy = getDecayedType(RetTy);
+    if (Pack)
+      RetTy = const_cast<ASTContext *>(this)
+                  ->getPackExpansionType(RetTy, Pack->getNumExpansions());  
+  } else if (Pack) 
+    RetTy = T;
+  
+  return RetTy;
 }
 
 QualType ASTContext::getSignatureParameterType(QualType T) const {
