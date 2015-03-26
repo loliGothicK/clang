@@ -1104,6 +1104,17 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     if (TryConsumeToken(tok::kw_mutable, MutableLoc))
       DeclEndLoc = MutableLoc;
 
+    //Parse 'constexpr'[opt]
+    SourceLocation ConstexprLoc;
+    if (TryConsumeToken(tok::kw_constexpr, ConstexprLoc)) {
+      const char *PrevSpec = nullptr;
+      unsigned DiagID = 0;
+      DS.SetConstexprSpec(ConstexprLoc, PrevSpec, DiagID);
+      assert(DiagID == 0);
+      assert(PrevSpec == nullptr);
+      DeclEndLoc = ConstexprLoc;
+    }
+
     // Parse exception-specification[opt].
     ExceptionSpecificationType ESpecType = EST_None;
     SourceRange ESpecRange;
@@ -1161,7 +1172,7 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
                                            TrailingReturnType),
                   Attr, DeclEndLoc);
   } else if (Tok.is(tok::kw_mutable) || Tok.is(tok::arrow) ||
-             Tok.is(tok::kw___attribute) ||
+             Tok.is(tok::kw___attribute) || Tok.is(tok::kw_constexpr) ||
              (Tok.is(tok::l_square) && NextToken().is(tok::l_square))) {
     // It's common to forget that one needs '()' before 'mutable', an attribute
     // specifier, or the result type. Deal with this.
@@ -1171,6 +1182,7 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     case tok::arrow: TokKind = 1; break;
     case tok::kw___attribute:
     case tok::l_square: TokKind = 2; break;
+    case tok::kw_constexpr: TokKind = 3; break;
     default: llvm_unreachable("Unknown token kind");
     }
 

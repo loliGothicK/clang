@@ -11743,7 +11743,7 @@ void Sema::PopExpressionEvaluationContext() {
   unsigned NumTypos = Rec.NumTypos;
 
   if (!Rec.Lambdas.empty()) {
-    if (Rec.isUnevaluated() || Rec.Context == ConstantEvaluated) {
+    if (Rec.isUnevaluated() /*|| Rec.Context == ConstantEvaluated*/) {
       unsigned D;
       if (Rec.isUnevaluated()) {
         // C++11 [expr.prim.lambda]p2:

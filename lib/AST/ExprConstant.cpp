@@ -36,6 +36,7 @@
 #include "clang/AST/APValue.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTDiagnostic.h"
+#include "clang/AST/ASTLambda.h"
 #include "clang/AST/CharUnits.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/RecordLayout.h"
@@ -53,12 +54,16 @@ using llvm::APSInt;
 using llvm::APFloat;
 
 static bool IsGlobalLValue(APValue::LValueBase B);
-
 namespace {
   struct LValue;
   struct CallStackFrame;
   struct EvalInfo;
-
+}
+static bool handleLValueToRValueConversion(EvalInfo &Info, const Expr *Conv,
+                                           QualType Type, const LValue &LVal,
+                                           APValue &RVal,
+                                           APValue **PtrToStoredRVal = nullptr);
+namespace {
   static QualType getType(APValue::LValueBase B) {
     if (!B) return QualType();
     if (const ValueDecl *D = B.dyn_cast<const ValueDecl*>())
@@ -305,7 +310,8 @@ namespace {
 
     /// Arguments - Parameter bindings for this function call, indexed by
     /// parameters' function scope indices.
-    APValue *Arguments;
+    APValue *const Arguments;
+    const unsigned NumArgs;
 
     // Note that we intentionally use std::map here so that references to
     // values are stable.
@@ -316,7 +322,7 @@ namespace {
 
     CallStackFrame(EvalInfo &Info, SourceLocation CallLoc,
                    const FunctionDecl *Callee, const LValue *This,
-                   APValue *Arguments);
+                   APValue *Arguments, unsigned NumArgs);
     ~CallStackFrame();
 
     APValue *getTemporary(const void *Key) {
@@ -511,7 +517,7 @@ namespace {
       : Ctx(const_cast<ASTContext &>(C)), EvalStatus(S), CurrentCall(nullptr),
         CallStackDepth(0), NextCallIndex(1),
         StepsLeft(getLangOpts().ConstexprStepLimit),
-        BottomFrame(*this, SourceLocation(), nullptr, nullptr, nullptr),
+        BottomFrame(*this, SourceLocation(), nullptr, nullptr, nullptr, 0),
         EvaluatingDecl((const ValueDecl *)nullptr),
         EvaluatingDeclValue(nullptr), HasActiveDiagnostic(false),
         EvalMode(Mode) {}
@@ -820,9 +826,9 @@ void SubobjectDesignator::diagnosePointerArithmetic(EvalInfo &Info,
 
 CallStackFrame::CallStackFrame(EvalInfo &Info, SourceLocation CallLoc,
                                const FunctionDecl *Callee, const LValue *This,
-                               APValue *Arguments)
+                               APValue *Arguments, unsigned NumArgs)
     : Info(Info), Caller(Info.CurrentCall), CallLoc(CallLoc), Callee(Callee),
-      Index(Info.NextCallIndex++), This(This), Arguments(Arguments) {
+      Index(Info.NextCallIndex++), This(This), Arguments(Arguments), NumArgs(NumArgs) {
   Info.CurrentCall = this;
   ++Info.CallStackDepth;
 }
@@ -1139,6 +1145,7 @@ static void describeCall(CallStackFrame *Frame, raw_ostream &Out) {
       Out << ", ";
 
     const ParmVarDecl *Param = *I;
+    assert(ArgIndex < Frame->NumArgs);
     const APValue &Arg = Frame->Arguments[ArgIndex];
     Arg.printPretty(Out, Frame->Info.Ctx, Param->getType());
 
@@ -1932,6 +1939,53 @@ static bool HandleLValueComplexElement(EvalInfo &Info, const Expr *E,
   return true;
 }
 
+// Given a LValue that refers to a Lambda Object/Subobject (captured field)
+// and the type of the Rvalue at the end of the (or a chain of) reference(s),
+// find the value of the (sub)object the lvalue refers to.
+// This must only be called if the LVal's complete object is a lambda object.
+static APValue *getEventualRValueFromLambdaLValue(EvalInfo &Info, LValue LVal,
+                                            const Expr *E, QualType RValType) {
+  APValue *RValOnStack = nullptr;
+  APValue ScratchAPVal;
+  // 
+  // Since we can have a reference refer to another reference (especially when
+  // processing lambda captures) we must see through each reference to get to
+  // the eventual value.
+  while (!RValOnStack || RValOnStack->isLValue()) {
+    if (RValOnStack)
+      LVal.setFrom(Info.Ctx, *RValOnStack);
+    RValOnStack = nullptr;
+    if (!handleLValueToRValueConversion(Info, E, RValType, LVal, ScratchAPVal,
+                                        &RValOnStack)) {
+      Info.Diag(E, diag::note_invalid_subexpr_in_const_expr);
+      return nullptr;
+    }
+    assert(
+        RValOnStack ||
+        ScratchAPVal.isUninit() &&
+            "An APValue was returned as a reference "
+            "parameter, but not via the pointer arugment referring to stable "
+            "storage of an APValue on the stack");
+  }
+  return RValOnStack;
+}
+
+// Given a frame, search its arguments or temporaries for the variable's value.
+static APValue *findVariableValueInFrame(const ValueDecl *Var,
+                                    CallStackFrame *Frame) {
+  APValue *VarAPVal = nullptr;
+  if (!Frame) return nullptr;
+  if (auto *PVD = dyn_cast<ParmVarDecl>(Var)) {
+    if (PVD->getDeclContext() == Frame->Callee &&
+        PVD->getFunctionScopeIndex() < Frame->NumArgs) {
+      VarAPVal = &Frame->Arguments[PVD->getFunctionScopeIndex()];
+    }
+  } else {
+    VarAPVal = Frame->getTemporary(Var);
+  }
+  return VarAPVal;
+}
+
 /// Try to evaluate the initializer for a variable declaration.
 ///
 /// \param Info   Information about the ongoing evaluation.
@@ -1943,28 +1997,134 @@ static bool HandleLValueComplexElement(EvalInfo &Info, const Expr *E,
 static bool evaluateVarDeclInit(EvalInfo &Info, const Expr *E,
                                 const VarDecl *VD, CallStackFrame *Frame,
                                 APValue *&Result) {
-  // If this is a parameter to an active constexpr function call, perform
-  // argument substitution.
+  
+  
+  assert((!Frame || VD->hasLocalStorage()) &&
+         "If we have a corresponding callstackframe then the Variable better "
+         "be a local variable");
+
+  // Check the constexpr call-frame (arguments and created local vars) in which
+  // this variable is being referenced for its current value...
+  if (APValue *const ValueOfLocalVarOnFrameItWasReferenced =
+          findVariableValueInFrame(VD, Frame)) {
+    Result = ValueOfLocalVarOnFrameItWasReferenced;
+    return true;
+  }
+
+  // .. if we didn't find a value for the variable on the frame in which it is
+  // referenced, check to see if we are within a lambda referring to a captured
+  // local variable from an enclosing function or lambda.
+  const CXXMethodDecl *LambdaCallOp =
+      Frame && isLambdaCallOperator(Frame->Callee)
+          ? cast<CXXMethodDecl>(Frame->Callee)
+          : nullptr;
+
+  const CXXRecordDecl *LambdaClass =
+      LambdaCallOp ? LambdaCallOp->getParent() : nullptr;
+
+  // ... If the value for a local variable does not exist on the frame in which
+  // the variable is being used, then the variable was most likely created
+  // during the execution of an enclosing constexpr lambda or function and has
+  // been captured by the current lambda in which it is being referenced, so
+  // check the lambda's capture-fields for its current value, and if not
+  // captured by the lambda, make sure it is a constant expression (since it
+  // might not have been odr-used by the lambda).
+  if (VD->hasLocalStorage() && LambdaClass) {
+
+    if (Info.checkingPotentialConstantExpression()) 
+      return false;
+
+    // If this variable was declared as a constant and its initializer is a
+    // constant expression, use the initializer value directly.
+    // FVTODO: refactor this to use the bottom half of the function thay digs
+    // into initializers of constant variables.
+    const VarDecl *VDef = nullptr;
+    VD->getAnyInitializer(VDef);
+    if (VD->isUsableInConstantExpressions(Info.Ctx) && VDef &&
+        VDef->checkInitIsICE()) {
+      Result = VDef->getEvaluatedValue();
+      return true;
+    }
+    // We handle all captures, except 'this' captures which is handled when
+    // evaluating 'this' via the pointerevaluator.
+    llvm::DenseMap<const VarDecl *, FieldDecl *> LambdaCaptureVarToFieldMap;
+    LambdaClass->getAllCaptureFieldsExceptForThis(LambdaCaptureVarToFieldMap);
+    if (FieldDecl *CorrespondingCaptureField =
+        LambdaCaptureVarToFieldMap.lookup(VD)) {
+      
+      QualType LambdaClosureType = Info.Ctx.getRecordType(LambdaClass);
+      
+
+      assert(Frame && "There must be a call stack frame when a lambda call "
+                      "operator is being evaluated!");
+      assert(Frame->This && "There must be a pointer to the lambda's closure "
+                            "type when the call operator is being evaluated!");
+   
+      APValue *LambdaRValObj =
+          getEventualRValueFromLambdaLValue(Info, *Frame->This, E, LambdaClosureType);
+      if (!LambdaRValObj) return false;
+      // Now that we have the corresponding object, extract the appropriate field
+      APValue &CaptureVal = LambdaRValObj->getStructField(
+          CorrespondingCaptureField->getFieldIndex());
+      Result = &CaptureVal;
+      // If this is an implicit or explicit reference capture of a non-reference
+      // variable on the constexpr stack, then the type of the field will not
+      // match the type of variable within the DeclRefExpr of the lambda in
+      // 'reference-ness' - but the evaluator expects an rvalue based on the
+      // declared type of the variable referred to in the lambda - but the
+      // subobject will be an lvalue if the field is a reference that refers to
+      // the variable - so find the value of that declared variable, and maintain its
+      // value-category (rvalueness) within the lambda.
+
+      // Note: A similar issue exists if a reference variable is captured by
+      // value, but that case is handled when the lambda expression is evaluated
+      // in the RecordEvaluator. The trick there is to dig out the rvalue of the
+      // variable being referred to by the reference ('x' below) at the time the
+      // lambda expression was evaluated, and invent an LValue that refers to a
+      // dummy synthesized variable that maps to the correct rvalue at the time
+      // of capture.
+      //
+
+      //  This example illustrates both scenarios:
+      //   constexpr int foo(int n) {
+      //     int &x = n;
+      //     auto L = [x, &n] { return x + n; };
+      //   }
+      //
+
+      if (CorrespondingCaptureField->getType()->isReferenceType() &&
+          !VD->getType()->isReferenceType()) {
+        assert(CaptureVal.isLValue());
+        
+        LValue CaptureAsLValue;
+        CaptureAsLValue.setFrom(Info.Ctx, CaptureVal);
+
+        APValue *RValueOfCapture =
+            getEventualRValueFromLambdaLValue(Info, CaptureAsLValue, E, VD->getType());
+        if (!RValueOfCapture) return false;
+       
+        assert(RValueOfCapture && !RValueOfCapture->isLValue());
+        Result = RValueOfCapture;
+      }
+      assert(!CaptureVal.isUninit());
+      return true;
+    }
+  }
+
   if (const ParmVarDecl *PVD = dyn_cast<ParmVarDecl>(VD)) {
-    // Assume arguments of a potential constant expression are unknown
-    // constant expressions.
+    // Assume arguments of a potential constant expression are unknown constant
+    // expressions.
     if (Info.checkingPotentialConstantExpression())
       return false;
-    if (!Frame || !Frame->Arguments) {
-      Info.Diag(E, diag::note_invalid_subexpr_in_const_expr);
-      return false;
-    }
-    Result = &Frame->Arguments[PVD->getFunctionScopeIndex()];
-    return true;
+    // If the var refers to a parameter, but does not have a corresponding frame
+    // or value on the frame, it can not be a constant expression, even if its
+    // default initializer is a constant expression.
+    Info.Diag(E, diag::note_invalid_subexpr_in_const_expr);
+    return false;
   }
 
-  // If this is a local variable, dig out its value.
-  if (Frame) {
-    Result = Frame->getTemporary(VD);
-    assert(Result && "missing value for local variable");
-    return true;
-  }
-
+  assert(!Frame && "If a frame exists, we are missing a value for our local variable");
+ 
   // Dig out the initializer, and use the declaration which it's attached to.
   const Expr *Init = VD->getAnyInitializer(VD);
   if (!Init || Init->isValueDependent()) {
@@ -2348,13 +2508,17 @@ namespace {
 struct ExtractSubobjectHandler {
   EvalInfo &Info;
   APValue &Result;
-
+  APValue **PointerToStoredResult; // If non-null, set this to point to 
+                                   // the subobject.
   static const AccessKinds AccessKind = AK_Read;
 
   typedef bool result_type;
   bool failed() { return false; }
   bool found(APValue &Subobj, QualType SubobjType) {
     Result = Subobj;
+    // If we are expecting a pointer to a stored subobject, store it.
+    if (PointerToStoredResult)
+      *PointerToStoredResult = &Subobj;
     return true;
   }
   bool found(APSInt &Value, QualType SubobjType) {
@@ -2379,8 +2543,9 @@ const AccessKinds ExtractSubobjectHandler::AccessKind;
 static bool extractSubobject(EvalInfo &Info, const Expr *E,
                              const CompleteObject &Obj,
                              const SubobjectDesignator &Sub,
-                             APValue &Result) {
-  ExtractSubobjectHandler Handler = { Info, Result };
+                             APValue &Result, 
+                             APValue **OutPointerToStoredResult) {
+  ExtractSubobjectHandler Handler = { Info, Result, OutPointerToStoredResult };
   return findSubobject(Info, E, Obj, Sub, Handler);
 }
 
@@ -2705,9 +2870,16 @@ static CompleteObject findCompleteObject(EvalInfo &Info, const Expr *E,
 ///               case of a non-class type).
 /// \param LVal - The glvalue on which we are attempting to perform this action.
 /// \param RVal - The produced value will be placed here.
+
+/// \param OutPointerToStoredRVal - Be very careful when using this optional
+/// parameter. If this is non-null, and a reference to the produced value is of
+/// the appropriate life-time, set this to point to that APValue (in addition to
+/// copying the value into RVal).  This is used when extracting out captures 
+/// from lambda objects.
 static bool handleLValueToRValueConversion(EvalInfo &Info, const Expr *Conv,
-                                           QualType Type,
-                                           const LValue &LVal, APValue &RVal) {
+                                           QualType Type, const LValue &LVal,
+                                           APValue &RVal,
+                                           APValue **OutPointerToStoredRVal) {
   if (LVal.Designator.Invalid)
     return false;
 
@@ -2728,19 +2900,20 @@ static bool handleLValueToRValueConversion(EvalInfo &Info, const Expr *Conv,
       if (!Evaluate(Lit, Info, CLE->getInitializer()))
         return false;
       CompleteObject LitObj(&Lit, Base->getType());
-      return extractSubobject(Info, Conv, LitObj, LVal.Designator, RVal);
+      return extractSubobject(Info, Conv, LitObj, LVal.Designator, RVal, nullptr);
     } else if (isa<StringLiteral>(Base) || isa<PredefinedExpr>(Base)) {
       // We represent a string literal array as an lvalue pointing at the
       // corresponding expression, rather than building an array of chars.
       // FIXME: Support ObjCEncodeExpr, MakeStringConstant
       APValue Str(Base, CharUnits::Zero(), APValue::NoLValuePath(), 0);
       CompleteObject StrObj(&Str, Base->getType());
-      return extractSubobject(Info, Conv, StrObj, LVal.Designator, RVal);
+      return extractSubobject(Info, Conv, StrObj, LVal.Designator, RVal, nullptr);
     }
   }
 
   CompleteObject Obj = findCompleteObject(Info, Conv, AK_Read, LVal, Type);
-  return Obj && extractSubobject(Info, Conv, Obj, LVal.Designator, RVal);
+  return Obj && extractSubobject(Info, Conv, Obj, LVal.Designator, RVal,
+                                 OutPointerToStoredRVal);
 }
 
 /// Perform an assignment of Val to LVal. Takes ownership of Val.
@@ -3038,7 +3211,6 @@ static bool EvaluateObjectArgument(EvalInfo &Info, const Expr *Object,
 
   if (Object->isGLValue())
     return EvaluateLValue(Object, This, Info);
-
   if (Object->getType()->isLiteralType(Info.Ctx))
     return EvaluateTemporary(Object, This, Info);
 
@@ -3718,7 +3890,8 @@ static bool HandleFunctionCall(SourceLocation CallLoc,
   if (!Info.CheckCallLimit(CallLoc))
     return false;
 
-  CallStackFrame Frame(Info, CallLoc, Callee, This, ArgValues.data());
+  CallStackFrame Frame(Info, CallLoc, Callee, This, ArgValues.data(),
+                       ArgValues.size());
 
   // For a trivial copy or move assignment, perform an APValue copy. This is
   // essential for unions, where the operations performed by the assignment
@@ -3771,7 +3944,8 @@ static bool HandleConstructorCall(SourceLocation CallLoc, const LValue &This,
     return false;
   }
 
-  CallStackFrame Frame(Info, CallLoc, Definition, &This, ArgValues.data());
+  CallStackFrame Frame(Info, CallLoc, Definition, &This, ArgValues.data(),
+                       ArgValues.size());
 
   // If it's a delegating constructor, just delegate.
   if (Definition->isDelegatingConstructor()) {
@@ -3981,7 +4155,9 @@ public:
   bool VisitExpr(const Expr *E) {
     return Error(E);
   }
-
+  bool VisitLambdaExpr(const LambdaExpr *E) {
+    return VisitExpr(E);
+  }
   bool VisitParenExpr(const ParenExpr *E)
     { return StmtVisitorTy::Visit(E->getSubExpr()); }
   bool VisitUnaryExtension(const UnaryOperator *E)
@@ -4132,6 +4308,7 @@ public:
       // Overloaded operator calls to member functions are represented as normal
       // calls with '*this' as the first argument.
       const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(FD);
+      const CXXMethodDecl *LambdaCallOpFromStaticInvoker = nullptr;
       if (MD && !MD->isStatic()) {
         // FIXME: When selecting an implicit conversion for an overloaded
         // operator delete, we sometimes try to evaluate calls to conversion
@@ -4143,11 +4320,39 @@ public:
           return false;
         This = &ThisVal;
         Args = Args.slice(1);
+      } else if (MD && MD->isLambdaStaticInvoker()) {
+        // Map the static invoker for the lambda back to the call operator.
+        // Conveniently, we don't have to slice out the 'this' argument as is
+        // being done above, since a static member function doesn't have an
+        // implicit argument passed in.
+        const CXXRecordDecl *ClosureObj = MD->getParent();
+        const CXXMethodDecl *LambdaCallOp = ClosureObj->getLambdaCallOperator();
+        LambdaCallOpFromStaticInvoker = LambdaCallOp;
+        // If the closure object represents a generic lambda, find the
+        // corresponding specialization of the call operator.
+        if (ClosureObj->isGenericLambda()) {
+          assert(MD->isFunctionTemplateSpecialization());
+          const TemplateArgumentList *TAL = MD->getTemplateSpecializationArgs();
+          FunctionTemplateDecl *CallOpTemplate =
+              LambdaCallOp->getDescribedFunctionTemplate();
+          void *InsertPos = nullptr;
+          FunctionDecl *CorrespondingCallOpSpecialization =
+              CallOpTemplate->findSpecialization(TAL->asArray(), InsertPos);
+          assert(CorrespondingCallOpSpecialization);
+          LambdaCallOpFromStaticInvoker =
+              cast<CXXMethodDecl>(CorrespondingCallOpSpecialization);
+        }
+        // number of captures better b zero.
+        assert(std::distance(ClosureObj->captures_begin(),
+                             ClosureObj->captures_end()) == 0);
       }
 
       // Don't call function pointers which have been cast to some other type.
       if (!Info.Ctx.hasSameType(CalleeType->getPointeeType(), FD->getType()))
         return Error(E);
+      // If 'FD' is the static invoker, map it back to the call operator.
+      FD = LambdaCallOpFromStaticInvoker ? LambdaCallOpFromStaticInvoker : FD;
+
     } else
       return Error(E);
 
@@ -4213,7 +4418,7 @@ public:
     Designator.addDeclUnchecked(FD);
 
     APValue Result;
-    return extractSubobject(Info, E, Obj, Designator, Result) &&
+    return extractSubobject(Info, E, Obj, Designator, Result, nullptr) &&
            DerivedSuccess(Result, E);
   }
 
@@ -4785,8 +4990,27 @@ public:
       else
         Info.Diag(E);
       return false;
+    } else if (isLambdaCallOperator(Info.CurrentCall->Callee)) {
+      // The only way we can have a CXXThisExpr within a lambda call operator is
+      // if 'this' was captured.
+      const CXXRecordDecl *ClosureObj =
+          cast<CXXMethodDecl>(Info.CurrentCall->Callee)->getParent();
+      FieldDecl *CapturedThis = ClosureObj->getCaptureFieldForThis();
+      if (!CapturedThis) {
+        Info.Diag(E);
+        return false;
+      }
+      const APValue *LambdaClosureObjAPVal = getEventualRValueFromLambdaLValue(
+          Info, *Info.CurrentCall->This, E, Info.Ctx.getRecordType(ClosureObj));
+      if (!LambdaClosureObjAPVal) return false;
+
+      const APValue &CapturedThisAPVal =
+          LambdaClosureObjAPVal->getStructField(CapturedThis->getFieldIndex());
+      Result.setFrom(Info.Ctx, CapturedThisAPVal);
+
+    } else {
+      Result = *Info.CurrentCall->This;
     }
-    Result = *Info.CurrentCall->This;
     return true;
   }
 
@@ -5148,6 +5372,7 @@ namespace {
     bool VisitInitListExpr(const InitListExpr *E);
     bool VisitCXXConstructExpr(const CXXConstructExpr *E);
     bool VisitCXXStdInitializerListExpr(const CXXStdInitializerListExpr *E);
+    bool VisitLambdaExpr(const LambdaExpr *E);
   };
 }
 
@@ -5259,6 +5484,193 @@ bool RecordExprEvaluator::VisitCastExpr(const CastExpr *E) {
     return true;
   }
   }
+}
+
+// Evaluate the lambda expression by processing the captures.
+bool RecordExprEvaluator::VisitLambdaExpr(const LambdaExpr *E) {
+  const CXXRecordDecl *ClosureClass = E->getLambdaClass();
+  if (ClosureClass->isInvalidDecl())
+    return false;
+  if (Info.checkingPotentialConstantExpression())
+    return true;
+  const ASTRecordLayout &Layout = Info.Ctx.getASTRecordLayout(ClosureClass);
+  assert(!ClosureClass->isUnion());
+  const size_t NumFields =
+      std::distance(ClosureClass->field_begin(), ClosureClass->field_end());
+
+  assert(NumFields ==
+             std::distance(E->capture_init_begin(), E->capture_init_end()) &&
+         "The number of lambda capture initializers should equal the number of "
+         "fields within the closure type");
+  Result = APValue(APValue::UninitStruct(), 0, NumFields);
+
+  bool Success = true;
+
+  // Get iterators for the capture initializers, the fields, and
+  // capture-information - they start off in-sync, and as long as they are
+  // incremented in-sync, they will remain in-sync.
+  Expr **CaptureInitIt = E->capture_init_begin();
+  const LambdaCapture *CaptureIt = ClosureClass->captures_begin();
+ 
+  for (const auto *Field : ClosureClass->fields()) {
+    assert(CaptureInitIt != E->capture_init_end());
+    // 'This' refers to the closure object being constructed - which is
+    // different from CurrentCall->This - which refers to the object of the
+    // enclosing member function (if any) that is being executed that contains
+    // the construction of the object referred to by 'This' (i.e. the closure
+    // object we are currently constructing)
+    LValue Subobject = This;
+
+    // Find the initializer for this field.  (Remember the iterators are all in
+    // sync)
+    Expr *const CurFieldInit = *CaptureInitIt++;
+    // If this is a variable capture (i.e. not 'this', or a dynamic array), get
+    // at its decl.
+    const VarDecl *const VD =
+        CaptureIt->capturesVariable() ? CaptureIt->getCapturedVar() : nullptr;
+    ++CaptureIt;
+
+    // Make sure we transform nested captures as follows: 
+    // If the current capture is a by ref capture and: 
+    //   - if the enclosing capture is a by value capture of that variable, 
+    //     then refer to the enclosing lambda's data member subobject (not 
+    //     the referenced variable itself) 
+    //   - If the enclsoing capture is a byref capture, then refer to the 
+    //     same entity that the enclosing lambda's data member refers to.
+    llvm::DenseMap<const VarDecl *, FieldDecl *> EnclosingCaptures;
+    const CXXRecordDecl *EnclosingClosureClass = nullptr;
+    const LValue *EnclosingClosureThis = nullptr;
+
+    if (const bool IsNestedLambda =
+            isLambdaCallOperator(ClosureClass->getParent())) {
+
+      EnclosingClosureClass =
+          cast<CXXRecordDecl>(ClosureClass->getParent()->getParent());
+
+      if (EnclosingClosureClass->isBeingDefined()) {
+        // If an inner lambda is being constexpr-evaluated while the enclosing
+        // lambda has not been completely defined, error. This can occur during
+        // template transformations of nested variadic lambdas (I believe)
+        assert(Info.EvalMode != Info.EM_ConstantFold);
+        return Error(E);
+      }
+      if (!Info.CurrentCall->This) {
+        // If we are checking to see if the expression is evaluatable as a
+        // constant expression in any way possible, and we are checking to
+        // see if the lambda can be folded, but it requires an enclosing 'this'
+        // pointer, and if it is not valid, then error.
+        assert(Info.EvalMode != Info.EM_ConstantFold);
+        return Error(E);
+      }
+      EnclosingClosureClass->getAllCaptureFieldsExceptForThis(
+          EnclosingCaptures);
+      EnclosingClosureThis = Info.CurrentCall->This;
+    }
+    
+    const FieldDecl *CorrespondingFieldInEnclosingLambda =
+        VD ? EnclosingCaptures.lookup(VD) : nullptr;
+
+    // The value of this capture in the enclosing scope, be it an enclosing
+    // capture or an enclosing local variable.
+    APValue EnclosingLocalValue;
+
+    if (CorrespondingFieldInEnclosingLambda &&
+        Field->getType()->isReferenceType()) {
+      // Create an LValue that refers to the data member within the enclosing
+      // lambda, and store it in within the corresponding APValue.
+      LValue EnclosingLambdaSubobject = *EnclosingClosureThis;
+      EnclosingLambdaSubobject.addDecl(Info, E,
+                                       CorrespondingFieldInEnclosingLambda);
+      EnclosingLambdaSubobject.moveInto(
+          EnclosingLocalValue);
+    } else if (Field->getType()->isArrayType()) {
+      // If we have a correspoding capture in the enclosing lambda, get its
+      // rvalue.
+      if (CorrespondingFieldInEnclosingLambda) {
+        LValue EnclosingLambdaSubobject = *EnclosingClosureThis;
+        EnclosingLambdaSubobject.addDecl(Info, E,
+                                       CorrespondingFieldInEnclosingLambda);
+
+        APValue *ArrayRVal = getEventualRValueFromLambdaLValue(
+              Info, EnclosingLambdaSubobject, E, Field->getType());
+        if (!ArrayRVal) return Error(E);
+        EnclosingLocalValue = *ArrayRVal;
+      } else {
+        APValue *ArrayAPValOnStack = nullptr;
+        // There is no enclosing capture of this array so crawl down the stack
+        // looking for the most recent instance (if recursive) of the array on
+        // the stack.
+        for (CallStackFrame *CurFrame = Info.CurrentCall; CurFrame;
+             CurFrame = CurFrame->Caller)
+          if (ArrayAPValOnStack = CurFrame->getTemporary(VD))
+            break;
+
+        if (!ArrayAPValOnStack)
+          return Error(E);
+        // If we are capturing by copy, but the variable we are capturing is a
+        // reference to an array, then get the rvalue of the array and copy that
+        // over: 
+        // int arr[10] = { ... }; 
+        // int &rarr = arr; 
+        //  auto L = [rarr] { ... };
+        //
+        if (ArrayAPValOnStack->isLValue()) {
+          assert(VD->getType()->isReferenceType());
+          LValue LVal;
+          LVal.setFrom(Info.Ctx, *ArrayAPValOnStack);
+          if (!handleLValueToRValueConversion(Info, E, Field->getType(), LVal,
+                                              *ArrayAPValOnStack))
+            return Error(E);
+        }
+        EnclosingLocalValue = *ArrayAPValOnStack;
+      }
+
+    }
+    
+    APValue &FieldVal = Result.getStructField(Field->getFieldIndex());
+
+    // Create our subobject
+    if (!HandleLValueMember(Info, CurFieldInit,
+                            Subobject, Field, &Layout))
+      return false;
+    // If we computed the value of this capture above (for by-val arrays or
+    // nested captures), assign it, else evaluate the initialization expression
+    // to determine its value.
+    if (!EnclosingLocalValue.isUninit()) {
+      FieldVal = EnclosingLocalValue;
+    } else if (!EvaluateInPlace(FieldVal, Info, Subobject, CurFieldInit)) {
+      if (!Info.keepEvaluatingAfterFailure())
+        return false;
+      Success = false;
+    }
+    // If a variable declared as a reference is being captured by value, we
+    // create a variable that maps to the value the 'referred to' variable had
+    // when the lambda expression was executed. We then use that variable to
+    // create an lvalue APValue that maintains the category of the DeclRefExpr
+    // within the body of the lambda, since within the lambda the DeclRefExpr
+    // has a value category of 'lvalue' that refers back directly to the
+    // declared variable which was declared as a reference.
+    if (!Field->getType()->isReferenceType() && VD &&
+        VD->getType()->isReferenceType()) {
+      SourceLocation Loc = E->getExprLoc();
+      TypeSourceInfo *TSI =
+          Info.Ctx.getTrivialTypeSourceInfo(Field->getType(), Loc);
+
+      VarDecl *NewVD = VarDecl::Create(
+          Info.Ctx, const_cast<FunctionDecl *>(Info.CurrentCall->Callee), Loc,
+          Loc, /*Id*/ nullptr, Field->getType(), TSI, SC_Auto);
+      // Map this invented variable to a copy of the value of the variable right now.
+      APValue &VarOnStack = Info.CurrentCall->createTemporary(NewVD, true);
+      VarOnStack = FieldVal;
+      // Create an lvalue that uses this invented variable as the base.
+      LValue DeclaredRefToVar;
+      DeclaredRefToVar.set(NewVD, Info.CurrentCall->Index);
+      DeclaredRefToVar.moveInto(FieldVal);
+    }
+  }
+  assert(CaptureInitIt == E->capture_init_end());
+  assert(CaptureIt == ClosureClass->captures_end());
+  return Success;
 }
 
 bool RecordExprEvaluator::VisitInitListExpr(const InitListExpr *E) {
@@ -5476,6 +5888,9 @@ public:
     return VisitConstructExpr(E);
   }
   bool VisitCXXStdInitializerListExpr(const CXXStdInitializerListExpr *E) {
+    return VisitConstructExpr(E);
+  }
+  bool VisitLambdaExpr(const LambdaExpr *E) {
     return VisitConstructExpr(E);
   }
 };
@@ -8410,10 +8825,10 @@ static bool Evaluate(APValue &Result, EvalInfo &Info, const Expr *E) {
 static bool EvaluateInPlace(APValue &Result, EvalInfo &Info, const LValue &This,
                             const Expr *E, bool AllowNonLiteralTypes) {
   assert(!E->isValueDependent());
-
+    
   if (!AllowNonLiteralTypes && !CheckLiteralType(Info, E, &This))
     return false;
-
+  
   if (E->isRValue()) {
     // Evaluate arrays and record types in-place, so that later initializers can
     // refer to earlier-initialized members of the object.
@@ -9119,7 +9534,7 @@ bool Expr::EvaluateWithSubstitution(APValue &Value, ASTContext &Ctx,
 
   // Build fake call to Callee.
   CallStackFrame Frame(Info, Callee->getLocation(), Callee, /*This*/nullptr,
-                       ArgValues.data());
+                       ArgValues.data(), ArgValues.size());
   return Evaluate(Value, Info, this) && !Info.EvalStatus.HasSideEffects;
 }
 
@@ -9181,7 +9596,8 @@ bool Expr::isPotentialConstantExprUnevaluated(Expr *E,
   (void)Success;
   assert(Success &&
          "Failed to set up arguments for potential constant evaluation");
-  CallStackFrame Frame(Info, SourceLocation(), FD, nullptr, ArgValues.data());
+  CallStackFrame Frame(Info, SourceLocation(), FD, nullptr, ArgValues.data(),
+                       ArgValues.size());
 
   APValue ResultScratch;
   Evaluate(ResultScratch, Info, E);

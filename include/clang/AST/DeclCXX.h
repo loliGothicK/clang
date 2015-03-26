@@ -540,10 +540,9 @@ class CXXRecordDecl : public RecordDecl {
       IsLambda = true;
 
       // C++11 [expr.prim.lambda]p3:
-      //   This class type is neither an aggregate nor a literal type.
+      //   This class type is not an aggregate ...
       Aggregate = false;
       PlainOldData = false;
-      HasNonLiteralTypeFieldsOrBases = true;
     }
 
     /// \brief Whether this lambda is known to be dependent, even if its
@@ -1064,6 +1063,22 @@ public:
   void getCaptureFields(llvm::DenseMap<const VarDecl *, FieldDecl *> &Captures,
                         FieldDecl *&ThisCapture) const;
 
+  /// \brief For a closure type, retrieve the mapping from captured
+  /// variables EXCEPT \c 'this' to the non-static data members that store the
+  /// values or references of the captures.
+  ///
+  /// \param Captures Will be populated with the mapping from captured
+  /// variables to the corresponding fields.
+  
+  void getAllCaptureFieldsExceptForThis(
+      llvm::DenseMap<const VarDecl *, FieldDecl *> &Captures) const;
+
+  /// \brief For a closure type, retrieve the mapping from a captured
+  /// 'this' to its corresponding non-static data member that stores its value.
+  /// return null if 'this' was not captured.
+
+  FieldDecl *getCaptureFieldForThis() const;
+
   typedef const LambdaCapture *capture_const_iterator;
   typedef llvm::iterator_range<capture_const_iterator> capture_const_range;
 
@@ -1313,10 +1328,13 @@ public:
   ///
   /// We resolve DR1361 by ignoring the second bullet. We resolve DR1452 by
   /// treating types with trivial default constructors as literal types.
+
+  /// To enable constexpr lambdas, we allow lambdas that contain literals as
+  /// fields, to behave as a literal-type for constexpr checking.
   bool isLiteral() const {
     return hasTrivialDestructor() &&
            (isAggregate() || hasConstexprNonCopyMoveConstructor() ||
-            hasTrivialDefaultConstructor()) &&
+            hasTrivialDefaultConstructor() || isLambda()) &&
            !hasNonLiteralTypeFieldsOrBases();
   }
 

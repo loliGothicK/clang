@@ -354,7 +354,8 @@ CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
                                            SourceRange IntroducerRange,
                                            TypeSourceInfo *MethodTypeInfo,
                                            SourceLocation EndLoc,
-                                           ArrayRef<ParmVarDecl *> Params) {
+                                           ArrayRef<ParmVarDecl *> Params,
+                                           const bool IsConstexprSpecified) {
   QualType MethodType = MethodTypeInfo->getType();
   TemplateParameterList *TemplateParams = 
             getGenericLambdaTemplateParameterList(getCurLambda(), *this);
@@ -391,7 +392,7 @@ CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
                             MethodType, MethodTypeInfo,
                             SC_None,
                             /*isInline=*/true,
-                            /*isConstExpr=*/false,
+                            /*isConstExpr=*/IsConstexprSpecified,
                             EndLoc);
   Method->setAccess(AS_public);
   
@@ -919,7 +920,8 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
                                                  KnownDependent, Intro.Default);
 
   CXXMethodDecl *Method = startLambdaDefinition(Class, Intro.Range,
-                                                MethodTyInfo, EndLoc, Params);
+                                                MethodTyInfo, EndLoc, Params, 
+                                                ParamInfo.getDeclSpec().isConstexprSpecified());
   if (ExplicitParams)
     CheckCXXDefaultArguments(Method);
   
@@ -1271,7 +1273,7 @@ static void addFunctionPointerConversion(Sema &S,
                                 ConvTy, 
                                 ConvTSI,
                                 /*isInline=*/true, /*isExplicit=*/false,
-                                /*isConstexpr=*/false, 
+                   /*isConstexpr=*/true /*S.getLangOpts().CPlusPlus1z*/,
                                 CallOperator->getBody()->getLocEnd());
   Conversion->setAccess(AS_public);
   Conversion->setImplicit(true);
@@ -1374,10 +1376,9 @@ static void addBlockPointerConversion(Sema &S,
   Conversion->setImplicit(true);
   Class->addDecl(Conversion);
 }
-         
-ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body, 
-                                 Scope *CurScope, 
-                                 bool IsInstantiation) {
+
+ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
+                                 Scope *CurScope, bool IsInstantiation) {
   // Collect information from the lambda scope.
   SmallVector<LambdaCapture, 4> Captures;
   SmallVector<Expr *, 4> CaptureInits;
@@ -1531,6 +1532,16 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
                                           CaptureInits, ArrayIndexVars, 
                                           ArrayIndexStarts, Body->getLocEnd(),
                                           ContainsUnexpandedParameterPack);
+ 
+  if (/*getLangOpts().CPlusPlus1z && */ !CallOperator->isInvalidDecl() &&
+      !CallOperator->isConstexpr()) {
+    if (!Class->getDeclContext()->isDependentContext()) {
+      TentativeAnalysisScope DiagnosticScopeGuard(*this);
+      bool IsDeclCExpr = CheckConstexprFunctionDecl(CallOperator);
+      bool IsBodyCExpr = CheckConstexprFunctionBody(CallOperator, Body);
+      CallOperator->setConstexpr(IsDeclCExpr && IsBodyCExpr);
+    }
+  }
 
   if (!CurContext->isDependentContext()) {
     switch (ExprEvalContexts.back().Context) {

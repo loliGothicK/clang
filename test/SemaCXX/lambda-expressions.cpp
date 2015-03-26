@@ -154,6 +154,7 @@ namespace ModifyingCapture {
 }
 
 namespace VariadicPackExpansion {
+
   template<typename T, typename U> using Fst = T;
   template<typename...Ts> bool g(Fst<bool, Ts> ...bools);
   template<typename...Ts> bool f(Ts &&...ts) {
@@ -228,6 +229,7 @@ namespace VariadicPackExpansion {
   template void nested2(int); // ok
   template void nested2(int, int); // expected-note {{in instantiation of}}
 }
+
 
 namespace PR13860 {
   void foo() {
@@ -331,7 +333,6 @@ namespace PR18128 {
     int (*f())[true ? 1 : ([=]{ return n; }(), 0)];
     // expected-error@-1 {{non-local lambda expression cannot have a capture-default}}
     // expected-error@-2 {{invalid use of non-static data member 'n'}}
-    // expected-error@-3 {{a lambda expression may not appear inside of a constant expression}}
     int g(int k = ([=]{ return n; }(), 0));
     // expected-error@-1 {{non-local lambda expression cannot have a capture-default}}
     // expected-error@-2 {{invalid use of non-static data member 'n'}}

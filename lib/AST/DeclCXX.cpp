@@ -119,6 +119,8 @@ CXXRecordDecl::CreateLambda(const ASTContext &C, DeclContext *DC,
   R->DefinitionData =
       new (C) struct LambdaDefinitionData(R, Info, Dependent, IsGeneric,
                                           CaptureDefault);
+  if (false/*!C.getLangOpts().CPlusPlus1z*/)
+    R->DefinitionData.get()->HasNonLiteralTypeFieldsOrBases = true;
   R->MayHaveOutOfDateDef = false;
   R->setImplicit(true);
   C.getTypeDeclType(R, /*PrevDecl=*/nullptr);
@@ -1036,6 +1038,21 @@ void CXXRecordDecl::getCaptureFields(
   }
   assert(Field == field_end());
 }
+
+void CXXRecordDecl::getAllCaptureFieldsExceptForThis(
+    llvm::DenseMap<const VarDecl *, FieldDecl *> &Captures) const {
+  FieldDecl *IgnoreThis = nullptr;
+  getCaptureFields(Captures, IgnoreThis);
+}
+
+
+FieldDecl *CXXRecordDecl::getCaptureFieldForThis() const {
+  llvm::DenseMap<const VarDecl *, FieldDecl *> IgnoreCapMap;
+  FieldDecl *FieldForThis = nullptr;
+  getCaptureFields(IgnoreCapMap, FieldForThis);
+  return FieldForThis;
+}
+
 
 TemplateParameterList * 
 CXXRecordDecl::getGenericLambdaTemplateParameterList() const {
