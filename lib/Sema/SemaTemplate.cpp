@@ -3213,7 +3213,8 @@ SubstDefaultTemplateArgument(Sema &SemaRef,
     TemplateArgLists.addOuterTemplateArguments(None);
 
   Sema::ContextRAII SavedContext(SemaRef, Template->getDeclContext());
-  EnterExpressionEvaluationContext Unevaluated(SemaRef, Sema::Unevaluated);
+  EnterExpressionEvaluationContext Unevaluated(SemaRef, 
+                                               Sema::ConstantEvaluated);
   return SemaRef.SubstExpr(Param->getDefaultArgument(), TemplateArgLists);
 }
 
