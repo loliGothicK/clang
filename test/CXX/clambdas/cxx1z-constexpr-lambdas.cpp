@@ -924,6 +924,11 @@ namespace ns2 {
   auto L = []() constexpr { static int I; return 0; }; //expected-error{{not permitted in a constexpr function}}
   
 }
-
-
 } //end test_explicit_constexpr
+
+namespace test_default_template_arguments {
+namespace ns1 {
+template<int I = ([]{ return 5; })()> constexpr int f() { return I; }
+static_assert(f() == 5, "");
+} //end ns1
+} // end test_default_template_arguments
