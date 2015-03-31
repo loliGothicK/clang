@@ -48,7 +48,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include <cstring>
 #include <functional>
-
+#include <set>
 using namespace clang;
 using llvm::APSInt;
 using llvm::APFloat;
@@ -63,6 +63,7 @@ static bool handleLValueToRValueConversion(EvalInfo &Info, const Expr *Conv,
                                            QualType Type, const LValue &LVal,
                                            APValue &RVal,
                                            APValue **PtrToStoredRVal = nullptr);
+
 namespace {
   static QualType getType(APValue::LValueBase B) {
     if (!B) return QualType();
@@ -291,10 +292,10 @@ namespace {
 
   /// A stack frame in the constexpr call stack.
   struct CallStackFrame {
-    EvalInfo &Info;
+    EvalInfo *Info;
 
     /// Parent - The caller of this stack frame.
-    CallStackFrame *Caller;
+    std::weak_ptr<CallStackFrame> Caller;
 
     /// CallLoc - The location of the call expression for this call.
     SourceLocation CallLoc;
@@ -308,9 +309,10 @@ namespace {
     /// This - The binding for the this pointer in this call, if any.
     const LValue *This;
 
+    SmallVector<APValue, 8> ArgumentsVector;
     /// Arguments - Parameter bindings for this function call, indexed by
     /// parameters' function scope indices.
-    APValue *const Arguments;
+    APValue *Arguments;
     const unsigned NumArgs;
 
     // Note that we intentionally use std::map here so that references to
@@ -405,6 +407,12 @@ namespace {
       *Value.getPointer() = APValue();
     }
   };
+  template<bool IsFullExpression>
+  class ScopeRAII;
+  typedef ScopeRAII<false> BlockScopeRAII;
+  typedef ScopeRAII<true> FullExpressionRAII;
+  
+  static std::set<std::shared_ptr<CallStackFrame>> SavedLambdaFramesForever;
 
   /// EvalInfo - This is a private struct used by the evaluator to capture
   /// information about a subexpression as it is folded.  It retains information
@@ -422,18 +430,24 @@ namespace {
   /// certain things in certain situations.
   struct EvalInfo {
     ASTContext &Ctx;
+    
+    
+    using CleanupScopeTy =
+        llvm::PointerUnion<FullExpressionRAII *, BlockScopeRAII *>;
+    SmallVector<CleanupScopeTy, 8> LifetimeScopeManagersOnStack;
+    unsigned VariablesOnStackPriorToMostRecentScope;
 
+    
     /// EvalStatus - Contains information about the evaluation.
     Expr::EvalStatus &EvalStatus;
-
+    std::set<std::shared_ptr<CallStackFrame>> SavedLambdaFrames;
     /// CurrentCall - The top of the constexpr call stack.
-    CallStackFrame *CurrentCall;
-
+    std::weak_ptr<CallStackFrame> CurrentCall;
     /// CallStackDepth - The number of calls in the call stack right now.
     unsigned CallStackDepth;
 
-    /// NextCallIndex - The next call index to assign.
-    unsigned NextCallIndex;
+    /// NextCallDepth - keep a track of the next call depth
+    unsigned NextCallDepth;
 
     /// StepsLeft - The remaining number of evaluation steps we're permitted
     /// to perform. This is essentially a limit for the number of statements
@@ -442,7 +456,7 @@ namespace {
 
     /// BottomFrame - The frame in which evaluation started. This must be
     /// initialized after CurrentCall and CallStackDepth.
-    CallStackFrame BottomFrame;
+    std::shared_ptr<CallStackFrame> BottomFrame;
 
     /// A stack of values whose lifetimes end at the end of some surrounding
     /// evaluation frame.
@@ -512,16 +526,29 @@ namespace {
     // FIXME: We should check for any kind of undefined or suspicious behavior
     // in such constructs, not just overflow.
     bool checkingForOverflow() { return EvalMode == EM_EvaluateForOverflow; }
-
+    bool FramesAreCaptured;
     EvalInfo(const ASTContext &C, Expr::EvalStatus &S, EvaluationMode Mode)
-      : Ctx(const_cast<ASTContext &>(C)), EvalStatus(S), CurrentCall(nullptr),
-        CallStackDepth(0), NextCallIndex(1),
+      : Ctx(const_cast<ASTContext &>(C)), VariablesOnStackPriorToMostRecentScope(0), EvalStatus(S), 
+        CallStackDepth(0), NextCallDepth(1),
         StepsLeft(getLangOpts().ConstexprStepLimit),
-        BottomFrame(*this, SourceLocation(), nullptr, nullptr, nullptr, 0),
         EvaluatingDecl((const ValueDecl *)nullptr),
         EvaluatingDeclValue(nullptr), HasActiveDiagnostic(false),
-        EvalMode(Mode) {}
-
+        EvalMode(Mode), FramesAreCaptured(false) {
+      BottomFrame.reset(new CallStackFrame(
+          *this, SourceLocation(), nullptr, nullptr, nullptr, 0));
+      CurrentCall = BottomFrame;
+      SavedLambdaFrames.insert(SavedLambdaFramesForever.begin(),
+                               SavedLambdaFramesForever.end());
+    }
+    ~EvalInfo() {
+      // Set all the EvalInfo pointers to null - if there is a capture.
+      if (FramesAreCaptured) {
+        for (auto CurFrame = CurrentCall; CurFrame.lock().get();
+             CurFrame = CurFrame.lock()->Caller) {
+          CurFrame.lock()->Info = nullptr;
+        }
+      }
+    }
     void setEvaluatingDecl(APValue::LValueBase Base, APValue &Value) {
       EvaluatingDecl = Base;
       EvaluatingDeclValue = &Value;
@@ -534,8 +561,8 @@ namespace {
       // when checking a potential constant expression.
       if (checkingPotentialConstantExpression() && CallStackDepth > 1)
         return false;
-      if (NextCallIndex == 0) {
-        // NextCallIndex has wrapped around.
+      if (NextCallDepth == 0) {
+        // NextCallDepth has wrapped around.
         Diag(Loc, diag::note_constexpr_call_limit_exceeded);
         return false;
       }
@@ -548,12 +575,13 @@ namespace {
 
     CallStackFrame *getCallFrame(unsigned CallIndex) {
       assert(CallIndex && "no call index in getCallFrame");
-      // We will eventually hit BottomFrame, which has Index 1, so Frame can't
-      // be null in this loop.
-      CallStackFrame *Frame = CurrentCall;
-      while (Frame->Index > CallIndex)
-        Frame = Frame->Caller;
-      return (Frame->Index == CallIndex) ? Frame : nullptr;
+      // We will eventually hit BottomFrame...
+      for (CallStackFrame *Frame = CurrentCall.lock().get(); Frame;
+           Frame = Frame->Caller.lock().get()) {
+        if (Frame->Index == CallIndex)
+          return Frame;
+      }
+      return nullptr;
     }
 
     bool nextStep(const Stmt *S) {
@@ -714,6 +742,36 @@ namespace {
     }
   };
 
+
+  static void
+  saveFrameDuringConstexprEval(EvalInfo &Info,
+                               std::shared_ptr<CallStackFrame> Frame) {
+    // We save this frame, and all frames below it on the stack.
+    while (Frame) {
+      Info.SavedLambdaFrames.insert(Frame);
+      Frame = Frame->Caller.lock();
+    }
+  }
+
+  static void saveFrameForever(std::shared_ptr<CallStackFrame> Frame) {
+    // We save this frame, and all frames below it on the stack.
+    while (Frame) {
+      SavedLambdaFramesForever.insert(Frame);
+      Frame = Frame->Caller.lock();
+    }
+  }
+
+  static CallStackFrame *findSavedFrame(EvalInfo &Info,
+                                        const unsigned FrameIndex) {
+    if (FrameIndex) {
+      // TODO: There shold be a way to not have to do a linear search for this
+      for (auto &&FSPtr : Info.SavedLambdaFrames)
+        if (FSPtr->Index == FrameIndex)
+          return FSPtr.get();
+    }
+    return nullptr;
+  }
+
   /// Object used to treat all foldable expressions as constant expressions.
   struct FoldConstant {
     EvalInfo &Info;
@@ -768,16 +826,26 @@ namespace {
   class ScopeRAII {
     EvalInfo &Info;
     unsigned OldStackSize;
+    
   public:
     ScopeRAII(EvalInfo &Info)
-        : Info(Info), OldStackSize(Info.CleanupStack.size()) {}
+        : Info(Info), OldStackSize(Info.CleanupStack.size()) {
+      Info.LifetimeScopeManagersOnStack.push_back(this);
+      Info.VariablesOnStackPriorToMostRecentScope = OldStackSize;
+    }
     ~ScopeRAII() {
       // Body moved to a static method to encourage the compiler to inline away
       // instances of this class.
       cleanup(Info, OldStackSize);
+      Info.LifetimeScopeManagersOnStack.pop_back();
     }
   private:
     static void cleanup(EvalInfo &Info, unsigned OldStackSize) {
+      // FVTODO: Determine exactly which LValues and frames are captured and
+      // only extend the lifetimes of those values.
+      if (Info.FramesAreCaptured)
+        return;
+
       unsigned NewEnd = OldStackSize;
       for (unsigned I = OldStackSize, N = Info.CleanupStack.size();
            I != N; ++I) {
@@ -795,8 +863,7 @@ namespace {
                               Info.CleanupStack.end());
     }
   };
-  typedef ScopeRAII<false> BlockScopeRAII;
-  typedef ScopeRAII<true> FullExpressionRAII;
+  
 }
 
 bool SubobjectDesignator::checkSubobject(EvalInfo &Info, const Expr *E,
@@ -827,23 +894,84 @@ void SubobjectDesignator::diagnosePointerArithmetic(EvalInfo &Info,
 CallStackFrame::CallStackFrame(EvalInfo &Info, SourceLocation CallLoc,
                                const FunctionDecl *Callee, const LValue *This,
                                APValue *Arguments, unsigned NumArgs)
-    : Info(Info), Caller(Info.CurrentCall), CallLoc(CallLoc), Callee(Callee),
-      Index(Info.NextCallIndex++), This(This), Arguments(Arguments), NumArgs(NumArgs) {
-  Info.CurrentCall = this;
+    : Info(&Info), CallLoc(CallLoc), Callee(Callee),
+      Index(reinterpret_cast<unsigned>(this)), This(This), Arguments(Arguments),
+      NumArgs(NumArgs) {
+  Info.NextCallDepth++;
   ++Info.CallStackDepth;
+  ArgumentsVector.resize(NumArgs);
+  std::copy(Arguments, Arguments + NumArgs, ArgumentsVector.begin());
+  this->Arguments = ArgumentsVector.data();
 }
 
-CallStackFrame::~CallStackFrame() {
-  assert(Info.CurrentCall == this && "calls retired out of order");
-  --Info.CallStackDepth;
-  Info.CurrentCall = Caller;
-}
+struct CheckIfContainsReferenceCapturingLambda
+    : ConstStmtVisitor<CheckIfContainsReferenceCapturingLambda, bool> {
+  
+  EvalInfo &Info;
+
+  static bool isLambdaWithReferenceCapture(const CXXRecordDecl *Closure) {
+    if (!Closure || !Closure->isLambda())
+      return false;
+
+    for (const FieldDecl *DataMember : Closure->fields())
+      if (DataMember->getType()->isReferenceType())
+        return true;
+
+    return false;
+  }
+  
+  static bool isLambdaWithReferenceCapture(QualType Ty) {
+    return isLambdaWithReferenceCapture(Ty->getAsCXXRecordDecl());
+  }
+  
+  static bool isLambdaOrClassContainingLambdaWithReferenceCapture(QualType Ty) {
+    return isLambdaOrClassContainingLambdaWithReferenceCapture(
+        Ty->getAsCXXRecordDecl());
+  }
+
+  static bool
+  isLambdaOrClassContainingLambdaWithReferenceCapture(const CXXRecordDecl *RD) {
+    
+    if (!RD) return false;
+    
+    if (RD->isLambda()) return isLambdaWithReferenceCapture(RD);
+
+    // First check the bases
+    for (const CXXBaseSpecifier &Base : RD->bases()) {
+      if (isLambdaOrClassContainingLambdaWithReferenceCapture(Base.getType()))
+        return true;
+    }
+    // Now check the fields
+    for (const FieldDecl *F : RD->fields()) {
+      if (isLambdaOrClassContainingLambdaWithReferenceCapture(F->getType()))
+        return true;
+    }
+    return false;
+  }
+  
+  CheckIfContainsReferenceCapturingLambda(EvalInfo &Info) : Info(Info) {}
+
+  bool VisitLambdaExpr(const LambdaExpr *E) {
+    assert(false && "How can we get here without going through a "
+                    "CXXConstructExpr when returning a lambda!");
+    return true;
+  }
+
+  bool VisitCXXConstructExpr(const CXXConstructExpr *E) {
+    assert(!E->getType().isNull() &&
+           "how can we analyze a constructexpr without a type!");
+    return isLambdaOrClassContainingLambdaWithReferenceCapture(E->getType());
+  }
+};
+
+CallStackFrame::~CallStackFrame() { }
 
 APValue &CallStackFrame::createTemporary(const void *Key,
                                          bool IsLifetimeExtended) {
+  assert(Info);
   APValue &Result = Temporaries[Key];
   assert(Result.isUninit() && "temporary created multiple times");
-  Info.CleanupStack.push_back(Cleanup(&Result, IsLifetimeExtended));
+  Info->CleanupStack.push_back(Cleanup(&Result, IsLifetimeExtended));
   return Result;
 }
 
@@ -860,8 +988,8 @@ void EvalInfo::addCallStack(unsigned Limit) {
 
   // Walk the call stack and add the diagnostics.
   unsigned CallIdx = 0;
-  for (CallStackFrame *Frame = CurrentCall; Frame != &BottomFrame;
-       Frame = Frame->Caller, ++CallIdx) {
+  for (CallStackFrame *Frame = CurrentCall.lock().get(); Frame != BottomFrame.get();
+       Frame = Frame->Caller.lock().get(), ++CallIdx) {
     // Skip this call?
     if (CallIdx >= SkipStart && CallIdx < SkipEnd) {
       if (CallIdx == SkipStart) {
@@ -927,6 +1055,13 @@ namespace {
     SubobjectDesignator Designator;
 
     const APValue::LValueBase getLValueBase() const { return Base; }
+    const ValueDecl *getLValueBaseAsDecl() const {
+      return Base.dyn_cast<const ValueDecl *>();
+    }
+    const Expr *getLValueBaseAsExpr() const {
+      return Base.dyn_cast<const Expr *>();
+    }
+
     CharUnits &getLValueOffset() { return Offset; }
     const CharUnits &getLValueOffset() const { return Offset; }
     unsigned getLValueCallIndex() const { return CallIndex; }
@@ -1132,7 +1267,7 @@ static void describeCall(CallStackFrame *Frame, raw_ostream &Out) {
   if (Frame->This && IsMemberCall) {
     APValue Val;
     Frame->This->moveInto(Val);
-    Val.printPretty(Out, Frame->Info.Ctx,
+    Val.printPretty(Out, Frame->Info->Ctx,
                     Frame->This->Designator.MostDerivedType);
     // FIXME: Add parens around Val if needed.
     Out << "->" << *Frame->Callee << '(';
@@ -1147,7 +1282,7 @@ static void describeCall(CallStackFrame *Frame, raw_ostream &Out) {
     const ParmVarDecl *Param = *I;
     assert(ArgIndex < Frame->NumArgs);
     const APValue &Arg = Frame->Arguments[ArgIndex];
-    Arg.printPretty(Out, Frame->Info.Ctx, Param->getType());
+    Arg.printPretty(Out, Frame->Info->Ctx, Param->getType());
 
     if (ArgIndex == 0 && IsMemberCall)
       Out << "->" << *Frame->Callee << '(';
@@ -1247,6 +1382,23 @@ static void NoteLValueLocation(EvalInfo &Info, APValue::LValueBase Base) {
               diag::note_constexpr_temporary_here);
 }
 
+
+static bool isCapturedLValue(EvalInfo &Info, const LValue &LVal) {
+  // Check if this lvalue was captured in a frame, and if so, then save the
+  // frame outside the current constexpr evaluation.
+
+  if (const unsigned FrameIndex = LVal.getLValueCallIndex()) {
+    for (auto &&FSPtr : Info.SavedLambdaFrames) {
+      if (FSPtr->Index == FrameIndex) {
+        SavedLambdaFramesForever.insert(FSPtr);
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 /// Check that this reference or pointer core constant expression is a valid
 /// value for an address or reference constant expression. Return true if we
 /// can fold this expression, whether or not it's a constant expression.
@@ -1260,7 +1412,7 @@ static bool CheckLValueConstantExpression(EvalInfo &Info, SourceLocation Loc,
   // Check that the object is a global. Note that the fake 'this' object we
   // manufacture when checking potential constant expressions is conservatively
   // assumed to be global here.
-  if (!IsGlobalLValue(Base)) {
+  if (!IsGlobalLValue(Base) && !isCapturedLValue(Info, LVal)) {
     if (Info.getLangOpts().CPlusPlus11) {
       const ValueDecl *VD = Base.dyn_cast<const ValueDecl*>();
       Info.Diag(Loc, diag::note_constexpr_non_global, 1)
@@ -1274,7 +1426,7 @@ static bool CheckLValueConstantExpression(EvalInfo &Info, SourceLocation Loc,
     return false;
   }
   assert((Info.checkingPotentialConstantExpression() ||
-          LVal.getLValueCallIndex() == 0) &&
+          LVal.getLValueCallIndex() == 0 || Info.FramesAreCaptured) &&
          "have call index for global lvalue");
 
   if (const ValueDecl *VD = Base.dyn_cast<const ValueDecl*>()) {
@@ -2091,7 +2243,6 @@ static bool evaluateVarDeclInit(EvalInfo &Info, const Expr *E,
       //     auto L = [x, &n] { return x + n; };
       //   }
       //
-
       if (CorrespondingCaptureField->getType()->isReferenceType() &&
           !VD->getType()->isReferenceType()) {
         assert(CaptureVal.isLValue());
@@ -2110,7 +2261,6 @@ static bool evaluateVarDeclInit(EvalInfo &Info, const Expr *E,
       return true;
     }
   }
-
   if (const ParmVarDecl *PVD = dyn_cast<ParmVarDecl>(VD)) {
     // Assume arguments of a potential constant expression are unknown constant
     // expressions.
@@ -2679,10 +2829,13 @@ static CompleteObject findCompleteObject(EvalInfo &Info, const Expr *E,
   if (LVal.CallIndex) {
     Frame = Info.getCallFrame(LVal.CallIndex);
     if (!Frame) {
-      Info.Diag(E, diag::note_constexpr_lifetime_ended, 1)
-        << AK << LVal.Base.is<const ValueDecl*>();
-      NoteLValueLocation(Info, LVal.Base);
-      return CompleteObject();
+      Frame = findSavedFrame(Info, LVal.CallIndex);
+      if (!Frame) {
+        Info.Diag(E, diag::note_constexpr_lifetime_ended, 1)
+          << AK << LVal.Base.is<const ValueDecl*>();
+        NoteLValueLocation(Info, LVal.Base);
+        return CompleteObject();
+      }
     }
   }
 
@@ -3389,11 +3542,9 @@ static bool EvaluateDecl(EvalInfo &Info, const Decl *D) {
     // We don't need to evaluate the initializer for a static local.
     if (!VD->hasLocalStorage())
       return true;
-
     LValue Result;
-    Result.set(VD, Info.CurrentCall->Index);
-    APValue &Val = Info.CurrentCall->createTemporary(VD, true);
-
+    Result.set(VD, Info.CurrentCall.lock()->Index);
+    APValue &Val = Info.CurrentCall.lock()->createTemporary(VD, true);
     const Expr *InitE = VD->getInit();
     if (!InitE) {
       Info.Diag(D->getLocStart(), diag::note_constexpr_uninitialized)
@@ -3611,6 +3762,17 @@ static EvalStmtResult EvaluateStmt(APValue &Result, EvalInfo &Info,
 
   case Stmt::ReturnStmtClass: {
     const Expr *RetExpr = cast<ReturnStmt>(S)->getRetValue();
+    if (!Info.checkingPotentialConstantExpression()) {
+      // Check the return expr's for any expressions that allow a lambda that
+      // has a reference capture to escape from this function.
+      if (Info.CurrentCall.lock()->Callee) {
+        CheckIfContainsReferenceCapturingLambda CLC(Info);
+        if (bool HasReferenceCapturingLambda = CLC.Visit(RetExpr)) {
+          saveFrameDuringConstexprEval(Info, Info.CurrentCall.lock());
+          Info.FramesAreCaptured = true;
+        }
+      }
+    }
     FullExpressionRAII Scope(Info);
     if (RetExpr && !Evaluate(Result, Info, RetExpr))
       return ESR_Failed;
@@ -3877,7 +4039,26 @@ static bool EvaluateArgs(ArrayRef<const Expr*> Args, ArgVector &ArgValues,
   }
   return Success;
 }
-
+namespace {
+// Ensure that the CurrentCall Frame is appropriately adjusted when we are done
+// evaluating functions.
+struct FramePointerAdjusterRAII {
+  EvalInfo &Info;
+  std::weak_ptr<CallStackFrame> CurFrame;
+  FramePointerAdjusterRAII(EvalInfo &Info,
+                           std::weak_ptr<CallStackFrame> CurFrame)
+      : Info(Info), CurFrame(CurFrame) {
+    CurFrame.lock()->Caller = Info.CurrentCall.lock();
+    Info.CurrentCall = CurFrame;
+  }
+  ~FramePointerAdjusterRAII() {
+    assert(Info.CurrentCall.lock().get() == CurFrame.lock().get() &&
+           "calls retired out of order");
+    Info.CurrentCall = CurFrame.lock()->Caller;
+    --Info.CallStackDepth;
+  }
+};
+}
 /// Evaluate a function call.
 static bool HandleFunctionCall(SourceLocation CallLoc,
                                const FunctionDecl *Callee, const LValue *This,
@@ -3889,10 +4070,10 @@ static bool HandleFunctionCall(SourceLocation CallLoc,
 
   if (!Info.CheckCallLimit(CallLoc))
     return false;
-
-  CallStackFrame Frame(Info, CallLoc, Callee, This, ArgValues.data(),
-                       ArgValues.size());
-
+  std::shared_ptr<CallStackFrame> Frame = std::make_shared<CallStackFrame>(
+      Info, CallLoc, Callee, This, ArgValues.data(), ArgValues.size());
+  FramePointerAdjusterRAII FrameScopeManager(Info, Frame);
+  
   // For a trivial copy or move assignment, perform an APValue copy. This is
   // essential for unions, where the operations performed by the assignment
   // operator cannot be represented as statements.
@@ -3915,8 +4096,8 @@ static bool HandleFunctionCall(SourceLocation CallLoc,
       return false;
     This->moveInto(Result);
     return true;
-  }
-
+  } 
+  
   EvalStmtResult ESR = EvaluateStmt(Result, Info, Body);
   if (ESR == ESR_Succeeded) {
     if (Callee->getReturnType()->isVoidType())
@@ -3944,9 +4125,11 @@ static bool HandleConstructorCall(SourceLocation CallLoc, const LValue &This,
     return false;
   }
 
-  CallStackFrame Frame(Info, CallLoc, Definition, &This, ArgValues.data(),
-                       ArgValues.size());
-
+  std::shared_ptr<CallStackFrame> Frame = std::make_shared<CallStackFrame>(
+      Info, CallLoc, Definition, &This, ArgValues.data(), ArgValues.size());
+  
+  FramePointerAdjusterRAII FrameScopeManager(Info, Frame);
+  
   // If it's a delegating constructor, just delegate.
   if (Definition->isDelegatingConstructor()) {
     CXXConstructorDecl::init_const_iterator I = Definition->init_begin();
@@ -4217,7 +4400,7 @@ public:
   bool VisitBinaryConditionalOperator(const BinaryConditionalOperator *E) {
     // Evaluate and cache the common expression. We treat it as a temporary,
     // even though it's not quite the same thing.
-    if (!Evaluate(Info.CurrentCall->createTemporary(E->getOpaqueValue(), false),
+    if (!Evaluate(Info.CurrentCall.lock()->createTemporary(E->getOpaqueValue(), false),
                   Info, E->getCommon()))
       return false;
 
@@ -4250,7 +4433,7 @@ public:
   }
 
   bool VisitOpaqueValueExpr(const OpaqueValueExpr *E) {
-    if (APValue *Value = Info.CurrentCall->getTemporary(E))
+    if (APValue *Value = Info.CurrentCall.lock()->getTemporary(E))
       return DerivedSuccess(*Value, E);
 
     const Expr *Source = E->getSourceExpr();
@@ -4718,8 +4901,9 @@ bool LValueExprEvaluator::VisitDeclRefExpr(const DeclRefExpr *E) {
 
 bool LValueExprEvaluator::VisitVarDecl(const Expr *E, const VarDecl *VD) {
   CallStackFrame *Frame = nullptr;
-  if (VD->hasLocalStorage() && Info.CurrentCall->Index > 1)
-    Frame = Info.CurrentCall;
+  if (VD->hasLocalStorage() && Info.CurrentCall.lock() &&
+      Info.CurrentCall.lock() != Info.BottomFrame) //.lock()->Index > 1)
+    Frame = Info.CurrentCall.lock().get();
 
   if (!VD->getType()->isReferenceType()) {
     if (Frame) {
@@ -4762,9 +4946,9 @@ bool LValueExprEvaluator::VisitMaterializeTemporaryExpr(
     *Value = APValue();
     Result.set(E);
   } else {
-    Value = &Info.CurrentCall->
+    Value = &Info.CurrentCall.lock()->
         createTemporary(E, E->getStorageDuration() == SD_Automatic);
-    Result.set(E, Info.CurrentCall->Index);
+    Result.set(E, Info.CurrentCall.lock()->Index);
   }
 
   QualType Type = Inner->getType();
@@ -4984,24 +5168,24 @@ public:
     // Can't look at 'this' when checking a potential constant expression.
     if (Info.checkingPotentialConstantExpression())
       return false;
-    if (!Info.CurrentCall->This) {
+    if (!Info.CurrentCall.lock()->This) {
       if (Info.getLangOpts().CPlusPlus11)
         Info.Diag(E, diag::note_constexpr_this) << E->isImplicit();
       else
         Info.Diag(E);
       return false;
-    } else if (isLambdaCallOperator(Info.CurrentCall->Callee)) {
+    } else if (isLambdaCallOperator(Info.CurrentCall.lock()->Callee)) {
       // The only way we can have a CXXThisExpr within a lambda call operator is
       // if 'this' was captured.
       const CXXRecordDecl *ClosureObj =
-          cast<CXXMethodDecl>(Info.CurrentCall->Callee)->getParent();
+          cast<CXXMethodDecl>(Info.CurrentCall.lock()->Callee)->getParent();
       FieldDecl *CapturedThis = ClosureObj->getCaptureFieldForThis();
       if (!CapturedThis) {
         Info.Diag(E);
         return false;
       }
       const APValue *LambdaClosureObjAPVal = getEventualRValueFromLambdaLValue(
-          Info, *Info.CurrentCall->This, E, Info.Ctx.getRecordType(ClosureObj));
+          Info, *Info.CurrentCall.lock()->This, E, Info.Ctx.getRecordType(ClosureObj));
       if (!LambdaClosureObjAPVal) return false;
 
       const APValue &CapturedThisAPVal =
@@ -5009,7 +5193,7 @@ public:
       Result.setFrom(Info.Ctx, CapturedThisAPVal);
 
     } else {
-      Result = *Info.CurrentCall->This;
+      Result = *Info.CurrentCall.lock()->This;
     }
     return true;
   }
@@ -5131,8 +5315,8 @@ bool PointerExprEvaluator::VisitCastExpr(const CastExpr* E) {
       if (!EvaluateLValue(SubExpr, Result, Info))
         return false;
     } else {
-      Result.set(SubExpr, Info.CurrentCall->Index);
-      if (!EvaluateInPlace(Info.CurrentCall->createTemporary(SubExpr, false),
+      Result.set(SubExpr, Info.CurrentCall.lock()->Index);
+      if (!EvaluateInPlace(Info.CurrentCall.lock()->createTemporary(SubExpr, false),
                            Info, Result, SubExpr))
         return false;
     }
@@ -5554,7 +5738,7 @@ bool RecordExprEvaluator::VisitLambdaExpr(const LambdaExpr *E) {
         assert(Info.EvalMode != Info.EM_ConstantFold);
         return Error(E);
       }
-      if (!Info.CurrentCall->This) {
+      if (!Info.CurrentCall.lock()->This) {
         // If we are checking to see if the expression is evaluatable as a
         // constant expression in any way possible, and we are checking to
         // see if the lambda can be folded, but it requires an enclosing 'this'
@@ -5564,7 +5748,7 @@ bool RecordExprEvaluator::VisitLambdaExpr(const LambdaExpr *E) {
       }
       EnclosingClosureClass->getAllCaptureFieldsExceptForThis(
           EnclosingCaptures);
-      EnclosingClosureThis = Info.CurrentCall->This;
+      EnclosingClosureThis = Info.CurrentCall.lock()->This;
     }
     
     const FieldDecl *CorrespondingFieldInEnclosingLambda =
@@ -5600,8 +5784,8 @@ bool RecordExprEvaluator::VisitLambdaExpr(const LambdaExpr *E) {
         // There is no enclosing capture of this array so crawl down the stack
         // looking for the most recent instance (if recursive) of the array on
         // the stack.
-        for (CallStackFrame *CurFrame = Info.CurrentCall; CurFrame;
-             CurFrame = CurFrame->Caller)
+        for (CallStackFrame *CurFrame = Info.CurrentCall.lock().get(); CurFrame;
+             CurFrame = CurFrame->Caller.lock().get())
           if (ArrayAPValOnStack = CurFrame->getTemporary(VD))
             break;
 
@@ -5657,14 +5841,14 @@ bool RecordExprEvaluator::VisitLambdaExpr(const LambdaExpr *E) {
           Info.Ctx.getTrivialTypeSourceInfo(Field->getType(), Loc);
 
       VarDecl *NewVD = VarDecl::Create(
-          Info.Ctx, const_cast<FunctionDecl *>(Info.CurrentCall->Callee), Loc,
+          Info.Ctx, const_cast<FunctionDecl *>(Info.CurrentCall.lock()->Callee), Loc,
           Loc, /*Id*/ nullptr, Field->getType(), TSI, SC_Auto);
       // Map this invented variable to a copy of the value of the variable right now.
-      APValue &VarOnStack = Info.CurrentCall->createTemporary(NewVD, true);
+      APValue &VarOnStack = Info.CurrentCall.lock()->createTemporary(NewVD, true);
       VarOnStack = FieldVal;
       // Create an lvalue that uses this invented variable as the base.
       LValue DeclaredRefToVar;
-      DeclaredRefToVar.set(NewVD, Info.CurrentCall->Index);
+      DeclaredRefToVar.set(NewVD, Info.CurrentCall.lock()->Index);
       DeclaredRefToVar.moveInto(FieldVal);
     }
   }
@@ -5697,7 +5881,7 @@ bool RecordExprEvaluator::VisitInitListExpr(const InitListExpr *E) {
       return false;
 
     // Temporarily override This, in case there's a CXXDefaultInitExpr in here.
-    ThisOverrideRAII ThisOverride(*Info.CurrentCall, &This,
+    ThisOverrideRAII ThisOverride(*Info.CurrentCall.lock(), &This,
                                   isa<CXXDefaultInitExpr>(InitExpr));
 
     return EvaluateInPlace(Result.getUnionValue(), Info, Subobject, InitExpr);
@@ -5731,7 +5915,7 @@ bool RecordExprEvaluator::VisitInitListExpr(const InitListExpr *E) {
     const Expr *Init = HaveInit ? E->getInit(ElementNo++) : &VIE;
 
     // Temporarily override This, in case there's a CXXDefaultInitExpr in here.
-    ThisOverrideRAII ThisOverride(*Info.CurrentCall, &This,
+    ThisOverrideRAII ThisOverride(*Info.CurrentCall.lock(), &This,
                                   isa<CXXDefaultInitExpr>(Init));
 
     APValue &FieldVal = Result.getStructField(Field->getFieldIndex());
@@ -5864,8 +6048,8 @@ public:
 
   /// Visit an expression which constructs the value of this temporary.
   bool VisitConstructExpr(const Expr *E) {
-    Result.set(E, Info.CurrentCall->Index);
-    return EvaluateInPlace(Info.CurrentCall->createTemporary(E, false),
+    Result.set(E, Info.CurrentCall.lock()->Index);
+    return EvaluateInPlace(Info.CurrentCall.lock()->createTemporary(E, false),
                            Info, Result, E);
   }
 
@@ -8787,15 +8971,15 @@ static bool Evaluate(APValue &Result, EvalInfo &Info, const Expr *E) {
     return true;
   } else if (T->isArrayType()) {
     LValue LV;
-    LV.set(E, Info.CurrentCall->Index);
-    APValue &Value = Info.CurrentCall->createTemporary(E, false);
+    LV.set(E, Info.CurrentCall.lock()->Index);
+    APValue &Value = Info.CurrentCall.lock()->createTemporary(E, false);
     if (!EvaluateArray(E, LV, Value, Info))
       return false;
     Result = Value;
   } else if (T->isRecordType()) {
     LValue LV;
-    LV.set(E, Info.CurrentCall->Index);
-    APValue &Value = Info.CurrentCall->createTemporary(E, false);
+    LV.set(E, Info.CurrentCall.lock()->Index);
+    APValue &Value = Info.CurrentCall.lock()->createTemporary(E, false);
     if (!EvaluateRecord(E, LV, Value, Info))
       return false;
     Result = Value;
@@ -9533,8 +9717,11 @@ bool Expr::EvaluateWithSubstitution(APValue &Value, ASTContext &Ctx,
   }
 
   // Build fake call to Callee.
-  CallStackFrame Frame(Info, Callee->getLocation(), Callee, /*This*/nullptr,
-                       ArgValues.data(), ArgValues.size());
+  std::shared_ptr<CallStackFrame> Frame = std::make_shared<CallStackFrame>(
+      Info, Callee->getLocation(), Callee, /*This*/ nullptr, ArgValues.data(),
+      ArgValues.size());
+  FramePointerAdjusterRAII FrameScopeManager(Info, Frame);
+  
   return Evaluate(Value, Info, this) && !Info.EvalStatus.HasSideEffects;
 }
 
@@ -9560,7 +9747,7 @@ bool Expr::isPotentialConstantExpr(const FunctionDecl *FD,
   // is a temporary being used as the 'this' pointer.
   LValue This;
   ImplicitValueInitExpr VIE(RD ? Info.Ctx.getRecordType(RD) : Info.Ctx.IntTy);
-  This.set(&VIE, Info.CurrentCall->Index);
+  This.set(&VIE, Info.CurrentCall.lock()->Index);
 
   ArrayRef<const Expr*> Args;
 
@@ -9596,9 +9783,10 @@ bool Expr::isPotentialConstantExprUnevaluated(Expr *E,
   (void)Success;
   assert(Success &&
          "Failed to set up arguments for potential constant evaluation");
-  CallStackFrame Frame(Info, SourceLocation(), FD, nullptr, ArgValues.data(),
-                       ArgValues.size());
-
+  std::shared_ptr<CallStackFrame> Frame = std::make_shared<CallStackFrame>(
+      Info, SourceLocation(), FD, nullptr, ArgValues.data(), ArgValues.size());
+  FramePointerAdjusterRAII FrameScopeManager(Info, Frame);
+  
   APValue ResultScratch;
   Evaluate(ResultScratch, Info, E);
   return Diags.empty();

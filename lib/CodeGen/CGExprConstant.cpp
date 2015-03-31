@@ -466,7 +466,6 @@ void ConstStructBuilder::Build(const APValue &Val, const RecordDecl *RD,
     // Don't emit anonymous bitfields, they just affect layout.
     if (Field->isUnnamedBitfield())
       continue;
-
     // Emit the value of the initializer.
     const APValue &FieldValue =
       RD->isUnion() ? Val.getUnionValue() : Val.getStructField(FieldNo);
@@ -988,7 +987,11 @@ public:
     }
     case Expr::MaterializeTemporaryExprClass: {
       MaterializeTemporaryExpr *MTE = cast<MaterializeTemporaryExpr>(E);
-      assert(MTE->getStorageDuration() == SD_Static);
+      // Constexpr lambda's that capture by reference, might capture a reference
+      // initialized by a temporary expression - they should never be called at
+      // runtime. Return null for now, since they get emitted as nullptrs.
+      if (MTE->getStorageDuration() != SD_Static)
+        return nullptr;
       SmallVector<const Expr *, 2> CommaLHSs;
       SmallVector<SubobjectAdjustment, 2> Adjustments;
       const Expr *Inner = MTE->GetTemporaryExpr()
@@ -1109,7 +1112,18 @@ llvm::Constant *CodeGenModule::EmitConstantValue(const APValue &Value,
       }
 
       C = ConstExprEmitter(*this, CGF).EmitLValue(LVBase);
-
+      
+      if (!C && DestType->isReferenceType()) {
+        // FVTODO: If we were unable to emit this lvalue as a constant - check
+        // to see if we are a reference capture of a constexpr lambda - if so,
+        // then use the saved lambda frames to get the rvalue of this lvalue,
+        // create a variable, and emit it with that value and have this lvalue
+        // be that variables address. Until then, we just emit a nullptr - which
+        // should cause a crash if this lvalue is ever referenced at run-time.  
+        // Perhaps it is better to have it crash each time, since this is really
+        // undefined behavior anyways.
+        C = llvm::Constant::getNullValue(DestTy);
+      }
       // Apply offset if necessary.
       if (!Offset->isNullValue()) {
         unsigned AS = C->getType()->getPointerAddressSpace();

@@ -482,13 +482,13 @@ namespace ns2 {
 } //end array_captures::ns2
 namespace ns3 {
   constexpr auto array_by_ref(int n) {
-    int arr[2][3] = { { 1, n, 3 }, { n, 5, 6 } }; //expected-note{{declared here}}
-    auto L = [&arr] { return arr[0][1] + arr[1][0] + arr[1][2]; };
+    int arr[2][3] = { { 1, n, 3 }, { n, 5, 6 } }; 
+    auto L = [&arr] { return ++arr[0][1] + ++arr[1][0] + ++arr[1][2]; };
     return L;
   }
-  constexpr auto L = array_by_ref(3); //expected-error {{must be initialized by a constant expression}} \
-                                      //expected-note{{reference to 'arr'}}
-   
+  constexpr auto L = array_by_ref(3); 
+  static_assert(L() == 15, "");
+  static_assert(L() == 18, "");
 } //end array_cap::ns3
 namespace ns4 {
   constexpr int array_by_ref(int n) {
