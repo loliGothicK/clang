@@ -300,6 +300,19 @@ namespace ref_captures {
       static_assert(I2 == 11, "");
     }
   } //end ref_captures::ns2
+  namespace ns3 {
+  constexpr int foo(int n) {
+    int &r1 = n;
+    int &r2 = r1;
+    auto L = [&] {
+
+      return ++r2;
+    };
+    n += 100;
+    return L();
+  }
+  static_assert(foo(10) == 111, "");
+  } // end ns3
 } //end ns ref_captures
 
 namespace gen_lambdas {
@@ -460,6 +473,7 @@ static_assert(&LambVal == &LocObj, "");
 
 
 } // end capture_this
+
 namespace array_captures {
 namespace ns1 {
   constexpr int array_by_val(int n) {
@@ -574,11 +588,102 @@ constexpr auto L = foo(3);
 static_assert(L()()() == 7, "");
 } // end ns7
 
+namespace ns8 {
+constexpr auto obj1(int n) {
+  const char *str = "abcdefghijklmnopqrstuvwxyz";
+  auto L = [&]  { return str[n++]; };
+  auto M1 = [&] { str = "123456789@#$"; return L(); };
+  auto M2 = [&] { str = "!@#$%^&*()-_=+{}<>"; return L(); };
+  struct { char first; char second; char third; } ret = { L(), M1(), M2() };
+  return ret;
+}
+constexpr auto P = obj1(1);
+static_assert(P.first == 'b', "");
+static_assert(P.second == '3', "");
+static_assert(P.third == '$', "");
+} //end ns8
+
+namespace ns9 {
+constexpr auto obj1(int n) {
+  const char *str = "abcdefghijklmnopqrstuvwxyz";
+  auto L = [=] () mutable { return str[n++]; };
+  auto M1 = [=, &L] () mutable { str = "123456789@#$"; return L(); };
+  auto M2 = [=, &L] () mutable { str = "!@#$%^&*()-_=+{}<>"; return L(); };
+  struct { char first; char second; char third; } ret = { L(), M1(), M2() };
+  return ret;
+}
+constexpr auto P = obj1(1);
+static_assert(P.first == 'b', "");
+static_assert(P.second == 'c', "");
+static_assert(P.third == 'd', "");
+} //end ns9
+
+namespace ns10 {
+
+constexpr int foo(int n) {
+  const char *pc = "hello world";
+  auto L = [&] {
+    return [&] { return pc[n]; };
+  };
+  return L()();
+}
+static_assert(foo(0) == 'h', "");
+
+} //end ns10
+namespace ns11 {
+constexpr int foo(int n) {
+  struct X {
+    char c;
+  } x = { 'h' };
+  auto L = [&] {
+    x.c = 'i';
+    return [&] { return x.c; };
+  };
+  return L()();
+}
+
+static_assert(foo(0) == 'i', "");
 
 
+} // end ns11
 } //end array_captures
-
 } // end lambda_captures
+
+namespace test_pointer_captures {
+
+namespace ns1 {
+const int g = 10;
+const int h = 20;
+constexpr auto obj2(int n) {
+  const int *p = &g;
+  auto L = [&] { return *p + *p + n; };
+  p = &h;
+  ++n;
+  return L();
+}
+constexpr auto P = obj2(1);
+static_assert( P == 42, "");
+
+} // end ns1
+
+
+namespace ns2 {
+
+constexpr auto obj2(int n) {
+  const int *p = nullptr;
+  auto L = [&] { return *p + *p + n; };
+  p = &n;
+  ++n;
+  return L();
+}
+constexpr auto P = obj2(1);
+static_assert( P == 6, "");
+
+} // end ns2
+
+
+} // end test_pointer_captures
+
 } //end test_lambdas_within_constexpr_functions
 
 namespace test_recursion {

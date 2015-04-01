@@ -234,8 +234,8 @@ constexpr auto obj1(int n) {
   return make_pair(M1, M2);
 }
 constexpr auto P = obj1(1);
-static_assert(P.first(100) == 'b', "");
-static_assert(P.second(100) == 'c', "");
+static_assert(P.first(100) == '2', "");
+static_assert(P.second(100) == '#', "");
 } // end ns13
 
 } //end test_ref_capture
