@@ -1939,33 +1939,16 @@ static bool HandleLValueComplexElement(EvalInfo &Info, const Expr *E,
   return true;
 }
 
-// Given a LValue that refers to a Lambda Object/Subobject (captured field)
-// and the type of the Rvalue at the end of the (or a chain of) reference(s),
-// find the value of the (sub)object the lvalue refers to.
-// This must only be called if the LVal's complete object is a lambda object.
-static APValue *getEventualRValueFromLambdaLValue(EvalInfo &Info, LValue LVal,
-                                            const Expr *E, QualType RValType) {
+// Given a LValue dereference it one level or .
+static APValue *dereferenceLValue(EvalInfo &Info, LValue LVal, const Expr *E,
+                                  QualType RValType) {
   APValue *RValOnStack = nullptr;
   APValue ScratchAPVal;
-  // 
-  // Since we can have a reference refer to another reference (especially when
-  // processing lambda captures) we must see through each reference to get to
-  // the eventual value.
-  while (!RValOnStack || RValOnStack->isLValue()) {
-    if (RValOnStack)
-      LVal.setFrom(Info.Ctx, *RValOnStack);
-    RValOnStack = nullptr;
-    if (!handleLValueToRValueConversion(Info, E, RValType, LVal, ScratchAPVal,
-                                        &RValOnStack)) {
-      Info.Diag(E, diag::note_invalid_subexpr_in_const_expr);
-      return nullptr;
-    }
-    assert(
-        RValOnStack ||
-        ScratchAPVal.isUninit() &&
-            "An APValue was returned as a reference "
-            "parameter, but not via the pointer arugment referring to stable "
-            "storage of an APValue on the stack");
+
+  if (!handleLValueToRValueConversion(Info, E, RValType, LVal, ScratchAPVal,
+                                      &RValOnStack)) {
+    Info.Diag(E, diag::note_invalid_subexpr_in_const_expr);
+    return nullptr;
   }
   return RValOnStack;
 }
@@ -2059,10 +2042,12 @@ static bool evaluateVarDeclInit(EvalInfo &Info, const Expr *E,
                       "operator is being evaluated!");
       assert(Frame->This && "There must be a pointer to the lambda's closure "
                             "type when the call operator is being evaluated!");
-   
       APValue *LambdaRValObj =
-          getEventualRValueFromLambdaLValue(Info, *Frame->This, E, LambdaClosureType);
-      if (!LambdaRValObj) return false;
+          dereferenceLValue(Info, *Frame->This, E, LambdaClosureType);
+      if (!LambdaRValObj)
+        return false;
+     
+      assert(LambdaRValObj->isStruct());
       // Now that we have the corresponding object, extract the appropriate field
       APValue &CaptureVal = LambdaRValObj->getStructField(
           CorrespondingCaptureField->getFieldIndex());
@@ -2095,15 +2080,15 @@ static bool evaluateVarDeclInit(EvalInfo &Info, const Expr *E,
       if (CorrespondingCaptureField->getType()->isReferenceType() &&
           !VD->getType()->isReferenceType()) {
         assert(CaptureVal.isLValue());
-        
+
         LValue CaptureAsLValue;
         CaptureAsLValue.setFrom(Info.Ctx, CaptureVal);
 
         APValue *RValueOfCapture =
-            getEventualRValueFromLambdaLValue(Info, CaptureAsLValue, E, VD->getType());
-        if (!RValueOfCapture) return false;
-       
-        assert(RValueOfCapture && !RValueOfCapture->isLValue());
+            dereferenceLValue(Info, CaptureAsLValue, E, VD->getType());
+        if (!RValueOfCapture)
+          return false;
+
         Result = RValueOfCapture;
       }
       assert(!CaptureVal.isUninit());
@@ -2523,15 +2508,18 @@ struct ExtractSubobjectHandler {
   }
   bool found(APSInt &Value, QualType SubobjType) {
     Result = APValue(Value);
+    assert(!PointerToStoredResult);
     return true;
   }
   bool found(APFloat &Value, QualType SubobjType) {
     Result = APValue(Value);
+    assert(!PointerToStoredResult);
     return true;
   }
   bool foundString(APValue &Subobj, QualType SubobjType, uint64_t Character) {
     Result = APValue(extractStringLiteralCharacter(
         Info, Subobj.getLValueBase().get<const Expr *>(), Character));
+    assert(!PointerToStoredResult);
     return true;
   }
 };
@@ -2900,14 +2888,16 @@ static bool handleLValueToRValueConversion(EvalInfo &Info, const Expr *Conv,
       if (!Evaluate(Lit, Info, CLE->getInitializer()))
         return false;
       CompleteObject LitObj(&Lit, Base->getType());
-      return extractSubobject(Info, Conv, LitObj, LVal.Designator, RVal, nullptr);
+      return extractSubobject(Info, Conv, LitObj, LVal.Designator, RVal,
+                              OutPointerToStoredRVal);
     } else if (isa<StringLiteral>(Base) || isa<PredefinedExpr>(Base)) {
       // We represent a string literal array as an lvalue pointing at the
       // corresponding expression, rather than building an array of chars.
       // FIXME: Support ObjCEncodeExpr, MakeStringConstant
       APValue Str(Base, CharUnits::Zero(), APValue::NoLValuePath(), 0);
       CompleteObject StrObj(&Str, Base->getType());
-      return extractSubobject(Info, Conv, StrObj, LVal.Designator, RVal, nullptr);
+      return extractSubobject(Info, Conv, StrObj, LVal.Designator, RVal, 
+                              OutPointerToStoredRVal);
     }
   }
 
@@ -5000,7 +4990,7 @@ public:
         Info.Diag(E);
         return false;
       }
-      const APValue *LambdaClosureObjAPVal = getEventualRValueFromLambdaLValue(
+      const APValue *LambdaClosureObjAPVal = dereferenceLValue(
           Info, *Info.CurrentCall->This, E, Info.Ctx.getRecordType(ClosureObj));
       if (!LambdaClosureObjAPVal) return false;
 
@@ -5486,6 +5476,7 @@ bool RecordExprEvaluator::VisitCastExpr(const CastExpr *E) {
   }
 }
 
+
 // Evaluate the lambda expression by processing the captures.
 bool RecordExprEvaluator::VisitLambdaExpr(const LambdaExpr *E) {
   const CXXRecordDecl *ClosureClass = E->getLambdaClass();
@@ -5519,7 +5510,7 @@ bool RecordExprEvaluator::VisitLambdaExpr(const LambdaExpr *E) {
     // enclosing member function (if any) that is being executed that contains
     // the construction of the object referred to by 'This' (i.e. the closure
     // object we are currently constructing)
-    LValue Subobject = This;
+    LValue ClosureDataMember = This;
 
     // Find the initializer for this field.  (Remember the iterators are all in
     // sync)
@@ -5576,25 +5567,60 @@ bool RecordExprEvaluator::VisitLambdaExpr(const LambdaExpr *E) {
 
     if (CorrespondingFieldInEnclosingLambda &&
         Field->getType()->isReferenceType()) {
-      // Create an LValue that refers to the data member within the enclosing
-      // lambda, and store it in within the corresponding APValue.
-      LValue EnclosingLambdaSubobject = *EnclosingClosureThis;
-      EnclosingLambdaSubobject.addDecl(Info, E,
-                                       CorrespondingFieldInEnclosingLambda);
-      EnclosingLambdaSubobject.moveInto(
-          EnclosingLocalValue);
+      // If the enclosing capture is by reference, then refer to the same object
+      // that the enclosing capture refers to
+      if (CorrespondingFieldInEnclosingLambda->getType()->isReferenceType()) {
+        APValue EnclosingClosureObjAPVal;
+        if (!handleLValueToRValueConversion(Info, E, Field->getType(),
+                                            *EnclosingClosureThis,
+                                            EnclosingClosureObjAPVal))
+          return Error(E);
+        EnclosingLocalValue = EnclosingClosureObjAPVal.getStructField(
+            CorrespondingFieldInEnclosingLambda->getFieldIndex());
+      } else {
+        // else create an LValue that refers to the data member within the enclosing
+        // lambda, and store it in within the corresponding APValue.
+
+        LValue EnclosingLambdaSubobject = *EnclosingClosureThis;
+
+        if (!HandleLValueMember(Info, CurFieldInit,
+                            EnclosingLambdaSubobject, CorrespondingFieldInEnclosingLambda))
+          return false;
+        EnclosingLambdaSubobject.moveInto(
+            EnclosingLocalValue);
+      }
     } else if (Field->getType()->isArrayType()) {
       // If we have a correspoding capture in the enclosing lambda, get its
       // rvalue.
       if (CorrespondingFieldInEnclosingLambda) {
-        LValue EnclosingLambdaSubobject = *EnclosingClosureThis;
-        EnclosingLambdaSubobject.addDecl(Info, E,
-                                       CorrespondingFieldInEnclosingLambda);
+        LValue EnclosingLambdaDataMember = *EnclosingClosureThis;
+        if (!HandleLValueMember(Info, CurFieldInit, EnclosingLambdaDataMember,
+                                CorrespondingFieldInEnclosingLambda))
+          return false;
+        
+        // Get the value contained within the field member and store it within
+        // ArrayRVal.
+        
+        APValue ArrayRVal;
+        if (!handleLValueToRValueConversion(Info, E, Field->getType(),
+                                            EnclosingLambdaDataMember,
+                                            ArrayRVal))
+          return Error(E);
 
-        APValue *ArrayRVal = getEventualRValueFromLambdaLValue(
-              Info, EnclosingLambdaSubobject, E, Field->getType());
-        if (!ArrayRVal) return Error(E);
-        EnclosingLocalValue = *ArrayRVal;
+        // The enclosing field is a reference capture, and we are capturing by
+        // value, so dereference the lvalue we got from the enclosing field
+        // further.
+        if (CorrespondingFieldInEnclosingLambda->getType()->isReferenceType()) {
+          assert(ArrayRVal.isLValue());
+          LValue ArrayLVal;
+          ArrayLVal.setFrom(Info.Ctx, ArrayRVal);
+          if (!handleLValueToRValueConversion(Info, E, Field->getType(),
+                                            ArrayLVal,
+                                            ArrayRVal))
+            return Error(E);
+        }
+        assert(ArrayRVal.isArray());
+        EnclosingLocalValue = ArrayRVal;
       } else {
         APValue *ArrayAPValOnStack = nullptr;
         // There is no enclosing capture of this array so crawl down the stack
@@ -5614,8 +5640,8 @@ bool RecordExprEvaluator::VisitLambdaExpr(const LambdaExpr *E) {
         // int &rarr = arr; 
         //  auto L = [rarr] { ... };
         //
-        if (ArrayAPValOnStack->isLValue()) {
-          assert(VD->getType()->isReferenceType());
+        if (VD->getType()->isReferenceType()) {
+          assert(ArrayAPValOnStack->isLValue());
           LValue LVal;
           LVal.setFrom(Info.Ctx, *ArrayAPValOnStack);
           if (!handleLValueToRValueConversion(Info, E, Field->getType(), LVal,
@@ -5626,19 +5652,15 @@ bool RecordExprEvaluator::VisitLambdaExpr(const LambdaExpr *E) {
       }
 
     }
-    
+ 
     APValue &FieldVal = Result.getStructField(Field->getFieldIndex());
 
-    // Create our subobject
-    if (!HandleLValueMember(Info, CurFieldInit,
-                            Subobject, Field, &Layout))
-      return false;
     // If we computed the value of this capture above (for by-val arrays or
     // nested captures), assign it, else evaluate the initialization expression
     // to determine its value.
     if (!EnclosingLocalValue.isUninit()) {
       FieldVal = EnclosingLocalValue;
-    } else if (!EvaluateInPlace(FieldVal, Info, Subobject, CurFieldInit)) {
+    } else if (!EvaluateInPlace(FieldVal, Info, ClosureDataMember, CurFieldInit)) {
       if (!Info.keepEvaluatingAfterFailure())
         return false;
       Success = false;
@@ -5652,6 +5674,12 @@ bool RecordExprEvaluator::VisitLambdaExpr(const LambdaExpr *E) {
     // declared variable which was declared as a reference.
     if (!Field->getType()->isReferenceType() && VD &&
         VD->getType()->isReferenceType()) {
+      // FVFIXME: Instead of using the bottomFrame here to store the dummy
+      // variable, we could create the dummy variable when we execute the
+      // lambda's call operator, but that might not be without issues either
+      // since we'd be creating a variable each time we'd execute the call
+      // operator - and we need to really create a unique variable each time we
+      // execute the lambda expression.
       SourceLocation Loc = E->getExprLoc();
       TypeSourceInfo *TSI =
           Info.Ctx.getTrivialTypeSourceInfo(Field->getType(), Loc);
@@ -5659,12 +5687,16 @@ bool RecordExprEvaluator::VisitLambdaExpr(const LambdaExpr *E) {
       VarDecl *NewVD = VarDecl::Create(
           Info.Ctx, const_cast<FunctionDecl *>(Info.CurrentCall->Callee), Loc,
           Loc, /*Id*/ nullptr, Field->getType(), TSI, SC_Auto);
-      // Map this invented variable to a copy of the value of the variable right now.
-      APValue &VarOnStack = Info.CurrentCall->createTemporary(NewVD, true);
+
+      // Map this invented variable to a copy of the value of the variable right
+      // now - but avoid letting this variable be cleaned up, so store it within
+      // the bottom frame.
+      APValue &VarOnStack = Info.BottomFrame.Temporaries[NewVD];
+      // Have this variable map to the value of the current field value.
       VarOnStack = FieldVal;
       // Create an lvalue that uses this invented variable as the base.
       LValue DeclaredRefToVar;
-      DeclaredRefToVar.set(NewVD, Info.CurrentCall->Index);
+      DeclaredRefToVar.set(NewVD, Info.BottomFrame.Index);
       DeclaredRefToVar.moveInto(FieldVal);
     }
   }
