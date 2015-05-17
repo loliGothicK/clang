@@ -204,3 +204,39 @@ void main() {
 } //end ns3
 } //end ns test_condition_var
 
+namespace constexpr_func_tests {
+
+namespace ns1 {
+struct X {
+  constexpr operator int () { return 5; }
+  void operator ++() { }
+};
+constexpr int fac(int n) {
+  if (n >= 0) return fac(n - 1) * n;
+  return n;
+}
+
+template<class T>
+void f(T t) {
+
+  static_if (const bool B = fac(t)) {
+    ++t;
+  }
+
+}
+
+constexpr int foor(int n) { //expected-note{{declared here}}
+  static_if(foor(n - 1)) { //expected-error{{not an integral constant expression}} expected-note{{undefined}}
+    return 1;
+  }
+  return 0;
+}
+
+void main() {
+  f(X{});
+}
+
+
+}
+
+} // end ns constexpr_func_tests
