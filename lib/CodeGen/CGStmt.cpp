@@ -512,8 +512,10 @@ void CodeGenFunction::EmitIfStmt(const IfStmt &S) {
   // C99 6.8.4.1: The first substatement is executed if the expression compares
   // unequal to 0.  The condition must be a scalar type.
   LexicalScope ConditionScope(*this, S.getCond()->getSourceRange());
-
-  if (S.getConditionVariable())
+  const bool IsStaticIf = S.isStaticIf();
+  // We don't need to emit the condition of a static-if since that is a constant
+  // expression.
+  if (S.getConditionVariable() && !IsStaticIf)
     EmitAutoVarDecl(*S.getConditionVariable());
 
   // If the condition constant folds and can be elided, try to avoid emitting
@@ -528,7 +530,7 @@ void CodeGenFunction::EmitIfStmt(const IfStmt &S) {
 
     // If the skipped block has no labels in it, just emit the executed block.
     // This avoids emitting dead code and simplifies the CFG substantially.
-    if (!ContainsLabel(Skipped)) {
+    if (IsStaticIf || !ContainsLabel(Skipped)) {
       if (CondConstant)
         incrementProfileCounter(&S);
       if (Executed) {
@@ -538,7 +540,7 @@ void CodeGenFunction::EmitIfStmt(const IfStmt &S) {
       return;
     }
   }
-
+  assert(!IsStaticIf && "For static if, the condition must be const foldable");
   // Otherwise, the condition did not fold, or we couldn't elide it.  Just emit
   // the conditional branch.
   llvm::BasicBlock *ThenBlock = createBasicBlock("if.then");

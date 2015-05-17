@@ -190,6 +190,8 @@ void ASTStmtReader::VisitIfStmt(IfStmt *S) {
   S->setElse(Reader.ReadSubStmt());
   S->setIfLoc(ReadSourceLocation(Record, Idx));
   S->setElseLoc(ReadSourceLocation(Record, Idx));
+  if (Record[Idx++])
+    S->setIsStaticIf();
 }
 
 void ASTStmtReader::VisitSwitchStmt(SwitchStmt *S) {

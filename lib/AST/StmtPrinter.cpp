@@ -176,7 +176,10 @@ void StmtPrinter::VisitAttributedStmt(AttributedStmt *Node) {
 }
 
 void StmtPrinter::PrintRawIfStmt(IfStmt *If) {
-  OS << "if (";
+  if (If->isStaticIf())
+    OS << "static_if (";
+  else 
+    OS << "if (";
   if (const DeclStmt *DS = If->getConditionVariableDeclStmt())
     PrintRawDeclStmt(DS);
   else

@@ -885,14 +885,16 @@ class IfStmt : public Stmt {
 
   SourceLocation IfLoc;
   SourceLocation ElseLoc;
+  bool IsStaticIf : 1;
 
 public:
   IfStmt(const ASTContext &C, SourceLocation IL, VarDecl *var, Expr *cond,
-         Stmt *then, SourceLocation EL = SourceLocation(),
+         Stmt *then, bool IsStaticIf, SourceLocation EL = SourceLocation(),
          Stmt *elsev = nullptr);
 
   /// \brief Build an empty if/then/else statement
-  explicit IfStmt(EmptyShell Empty) : Stmt(IfStmtClass, Empty) { }
+  explicit IfStmt(EmptyShell Empty) : Stmt(IfStmtClass, Empty), 
+    IsStaticIf(false) { }
 
   /// \brief Retrieve the variable declared in this "if" statement, if any.
   ///
@@ -934,7 +936,8 @@ public:
     else
       return SubExprs[THEN]->getLocEnd();
   }
-
+  bool isStaticIf() const { return IsStaticIf; }
+  void setIsStaticIf() { IsStaticIf = true; }
   // Iterators over subexpressions.  The iterators will include iterating
   // over the initialization expression referenced by the condition variable.
   child_range children() {

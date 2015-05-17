@@ -4635,9 +4635,11 @@ Stmt *ASTNodeImporter::VisitIfStmt(IfStmt *S) {
   Stmt *ToElseStmt = Importer.Import(S->getElse());
   if (!ToElseStmt && S->getElse())
     return nullptr;
+  const bool IsStaticIf = S->isStaticIf();
   return new (Importer.getToContext()) IfStmt(Importer.getToContext(),
                                               ToIfLoc, ToConditionVariable,
-                                              ToCondition, ToThenStmt,
+                                              ToCondition, ToThenStmt, 
+                                              IsStaticIf,
                                               ToElseLoc, ToElseStmt);
 }
 

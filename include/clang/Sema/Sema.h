@@ -3152,7 +3152,8 @@ public:
   StmtResult ActOnIfStmt(SourceLocation IfLoc,
                          FullExprArg CondVal, Decl *CondVar,
                          Stmt *ThenVal,
-                         SourceLocation ElseLoc, Stmt *ElseVal);
+                         SourceLocation ElseLoc, Stmt *ElseVal,
+                         bool IsStaticIf);
   StmtResult ActOnStartOfSwitchStmt(SourceLocation SwitchLoc,
                                             Expr *Cond,
                                             Decl *CondVar);

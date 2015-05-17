@@ -1137,8 +1137,10 @@ public:
   /// Subclasses may override this routine to provide different behavior.
   StmtResult RebuildIfStmt(SourceLocation IfLoc, Sema::FullExprArg Cond,
                            VarDecl *CondVar, Stmt *Then,
-                           SourceLocation ElseLoc, Stmt *Else) {
-    return getSema().ActOnIfStmt(IfLoc, Cond, CondVar, Then, ElseLoc, Else);
+                           SourceLocation ElseLoc, Stmt *Else, 
+                           const bool IsStaticIf) {
+    return getSema().ActOnIfStmt(IfLoc, Cond, CondVar, Then, ElseLoc, Else, 
+                                 IsStaticIf);
   }
 
   /// \brief Start building a new switch statement.
@@ -5768,6 +5770,7 @@ TreeTransform<Derived>::TransformIfStmt(IfStmt *S) {
   // Transform the condition
   ExprResult Cond;
   VarDecl *ConditionVar = nullptr;
+  const bool IsStaticIf = S->isStaticIf();
   if (S->getConditionVariable()) {
     ConditionVar
       = cast_or_null<VarDecl>(
@@ -5776,6 +5779,12 @@ TreeTransform<Derived>::TransformIfStmt(IfStmt *S) {
                                                     S->getConditionVariable()));
     if (!ConditionVar)
       return StmtError();
+    if (IsStaticIf) {
+      Cond =
+          getSema().CheckConditionVariable(ConditionVar, S->getIfLoc(), true);
+      if (Cond.isInvalid())
+        return StmtError();
+    }
   } else {
     Cond = getDerived().TransformExpr(S->getCond());
 
@@ -5797,13 +5806,30 @@ TreeTransform<Derived>::TransformIfStmt(IfStmt *S) {
   if (!S->getConditionVariable() && S->getCond() && !FullCond.get())
     return StmtError();
 
+  llvm::APSInt StaticIfCondValue;
+  if (IsStaticIf && !FullCond.get()->isTypeDependent() &&
+      !FullCond.get()->isValueDependent()) {
+    if (getSema()
+            .VerifyIntegerConstantExpression(
+                 FullCond.get(), &StaticIfCondValue,
+                 diag::err_static_if_condition_is_not_constant,
+                 /*AllowFold=*/true)
+            .isInvalid())
+      return StmtError();
+  }
+  const bool TransformElse = !IsStaticIf || !StaticIfCondValue;
+  const bool TransformThen = !IsStaticIf || !TransformElse;
+
+  
   // Transform the "then" branch.
-  StmtResult Then = getDerived().TransformStmt(S->getThen());
+  StmtResult Then =
+      TransformThen ? getDerived().TransformStmt(S->getThen()) : S->getThen();
   if (Then.isInvalid())
     return StmtError();
 
   // Transform the "else" branch.
-  StmtResult Else = getDerived().TransformStmt(S->getElse());
+  StmtResult Else =
+      TransformElse ? getDerived().TransformStmt(S->getElse()) : S->getElse();
   if (Else.isInvalid())
     return StmtError();
 
@@ -5816,7 +5842,7 @@ TreeTransform<Derived>::TransformIfStmt(IfStmt *S) {
 
   return getDerived().RebuildIfStmt(S->getIfLoc(), FullCond, ConditionVar,
                                     Then.get(),
-                                    S->getElseLoc(), Else.get());
+                                    S->getElseLoc(), Else.get(), S->isStaticIf());
 }
 
 template<typename Derived>

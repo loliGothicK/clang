@@ -475,6 +475,7 @@ namespace  {
 
     // Stmts.
     void VisitStmt(const Stmt *Node);
+    void VisitIfStmt(const IfStmt *Node);
     void VisitDeclStmt(const DeclStmt *Node);
     void VisitAttributedStmt(const AttributedStmt *Node);
     void VisitLabelStmt(const LabelStmt *Node);
@@ -1598,6 +1599,12 @@ void ASTDumper::dumpStmt(const Stmt *S) {
     for (Stmt::const_child_range CI = S->children(); CI; ++CI)
       dumpStmt(*CI);
   });
+}
+
+void ASTDumper::VisitIfStmt(const IfStmt *Node) {
+  VisitStmt(Node);
+  if (Node->isStaticIf())
+    OS << " 'static_if'";
 }
 
 void ASTDumper::VisitStmt(const Stmt *Node) {

@@ -481,7 +481,7 @@ StmtResult Sema::ActOnAttributedStmt(SourceLocation AttrLoc,
 StmtResult
 Sema::ActOnIfStmt(SourceLocation IfLoc, FullExprArg CondVal, Decl *CondVar,
                   Stmt *thenStmt, SourceLocation ElseLoc,
-                  Stmt *elseStmt) {
+                  Stmt *elseStmt, const bool IsStaticIf) {
   // If the condition was invalid, discard the if statement.  We could recover
   // better by replacing it with a valid expr, but don't do that yet.
   if (!CondVal.get() && !CondVar) {
@@ -501,6 +501,15 @@ Sema::ActOnIfStmt(SourceLocation IfLoc, FullExprArg CondVal, Decl *CondVar,
   Expr *ConditionExpr = CondResult.getAs<Expr>();
   if (!ConditionExpr)
     return StmtError();
+  // For a static_if, ensure that the condition is an integer constant 
+  // expression
+  if (IsStaticIf && !ConditionExpr->isTypeDependent() &&
+      !ConditionExpr->isValueDependent()) {
+    VerifyIntegerConstantExpression(
+        ConditionExpr, /*Result*/ nullptr,
+        diag::err_static_if_condition_is_not_constant,
+        /*AllowFold=*/true);
+  }
 
   DiagnoseUnusedExprResult(thenStmt);
 
@@ -512,7 +521,7 @@ Sema::ActOnIfStmt(SourceLocation IfLoc, FullExprArg CondVal, Decl *CondVar,
   DiagnoseUnusedExprResult(elseStmt);
 
   return new (Context) IfStmt(Context, IfLoc, ConditionVar, ConditionExpr,
-                              thenStmt, ElseLoc, elseStmt);
+                              thenStmt, IsStaticIf, ElseLoc, elseStmt);
 }
 
 namespace {

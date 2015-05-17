@@ -242,7 +242,7 @@ static Stmt *create_dispatch_once(ASTContext &C, const FunctionDecl *D) {
                                            SourceLocation());
   
   // (5) Create the 'if' statement.
-  IfStmt *If = new (C) IfStmt(C, SourceLocation(), nullptr, UO, CS);
+  IfStmt *If = new (C) IfStmt(C, SourceLocation(), nullptr, UO, CS, false);
   return If;
 }
 
@@ -347,7 +347,7 @@ static Stmt *create_OSAtomicCompareAndSwap(ASTContext &C, const FunctionDecl *D)
   /// Construct the If.
   Stmt *If =
     new (C) IfStmt(C, SourceLocation(), nullptr, Comparison, Body,
-                   SourceLocation(), Else);
+                   false, SourceLocation(), Else);
 
   return If;  
 }

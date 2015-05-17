@@ -26,6 +26,9 @@
 #ifndef CXX11_KEYWORD
 #define CXX11_KEYWORD(X,Y) KEYWORD(X,KEYCXX11|(Y))
 #endif
+#ifndef CXX1Z_KEYWORD
+#define CXX1Z_KEYWORD(X,Y) KEYWORD(X,KEYCXX1Z|(Y))
+#endif
 #ifndef TYPE_TRAIT
 #define TYPE_TRAIT(N,I,K) KEYWORD(I,K)
 #endif
@@ -343,6 +346,9 @@ CXX11_KEYWORD(noexcept              , 0)
 CXX11_KEYWORD(nullptr               , 0)
 CXX11_KEYWORD(static_assert         , 0)
 CXX11_KEYWORD(thread_local          , 0)
+
+// C++1Z keywords
+CXX1Z_KEYWORD(static_if             , 0)
 
 // GNU Extensions (in impl-reserved namespace)
 KEYWORD(_Decimal32                  , KEYALL)

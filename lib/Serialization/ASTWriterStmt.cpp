@@ -125,6 +125,7 @@ void ASTStmtWriter::VisitIfStmt(IfStmt *S) {
   Writer.AddStmt(S->getElse());
   Writer.AddSourceLocation(S->getIfLoc(), Record);
   Writer.AddSourceLocation(S->getElseLoc(), Record);
+  Record.push_back(S->isStaticIf());
   Code = serialization::STMT_IF;
 }
 

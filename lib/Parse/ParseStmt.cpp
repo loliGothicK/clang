@@ -32,14 +32,16 @@ using namespace clang;
 
 /// \brief Parse a standalone statement (for instance, as the body of an 'if',
 /// 'while', or 'for').
-StmtResult Parser::ParseStatement(SourceLocation *TrailingElseLoc) {
+StmtResult Parser::ParseStatement(SourceLocation *TrailingElseLoc,
+                                  const bool JustParsedStaticIfElse) {
   StmtResult Res;
 
   // We may get back a null statement if we found a #pragma. Keep going until
   // we get an actual statement.
   do {
     StmtVector Stmts;
-    Res = ParseStatementOrDeclaration(Stmts, true, TrailingElseLoc);
+    Res = ParseStatementOrDeclaration(Stmts, true, TrailingElseLoc, 
+                                      JustParsedStaticIfElse);
   } while (!Res.isInvalid() && !Res.get());
 
   return Res;
@@ -96,7 +98,8 @@ StmtResult Parser::ParseStatement(SourceLocation *TrailingElseLoc) {
 ///
 StmtResult
 Parser::ParseStatementOrDeclaration(StmtVector &Stmts, bool OnlyStatement,
-                                    SourceLocation *TrailingElseLoc) {
+                                    SourceLocation *TrailingElseLoc, 
+                                    const bool JustParsedStaticIfElse) {
 
   ParenBraceBracketBalancer BalancerRAIIObj(*this);
 
@@ -104,7 +107,8 @@ Parser::ParseStatementOrDeclaration(StmtVector &Stmts, bool OnlyStatement,
   MaybeParseCXX11Attributes(Attrs, nullptr, /*MightBeObjCMessageSend*/ true);
 
   StmtResult Res = ParseStatementOrDeclarationAfterAttributes(Stmts,
-                                 OnlyStatement, TrailingElseLoc, Attrs);
+                                 OnlyStatement, TrailingElseLoc, Attrs, 
+                                 JustParsedStaticIfElse);
 
   assert((Attrs.empty() || Res.isInvalid() || Res.isUsable()) &&
          "attributes on empty statement");
@@ -150,7 +154,8 @@ private:
 StmtResult
 Parser::ParseStatementOrDeclarationAfterAttributes(StmtVector &Stmts,
           bool OnlyStatement, SourceLocation *TrailingElseLoc,
-          ParsedAttributesWithRange &Attrs) {
+          ParsedAttributesWithRange &Attrs, 
+          const bool JustParsedStaticIfElse) {
   const char *SemiError = nullptr;
   StmtResult Res;
 
@@ -231,9 +236,10 @@ Retry:
     bool HasLeadingEmptyMacro = Tok.hasLeadingEmptyMacro();
     return Actions.ActOnNullStmt(ConsumeToken(), HasLeadingEmptyMacro);
   }
-
+  case tok::kw_static_if:
+    return ParseIfStatement(TrailingElseLoc, /*IsStaticIf*/true);
   case tok::kw_if:                  // C99 6.8.4.1: if-statement
-    return ParseIfStatement(TrailingElseLoc);
+    return ParseIfStatement(TrailingElseLoc, JustParsedStaticIfElse);
   case tok::kw_switch:              // C99 6.8.4.2: switch-statement
     return ParseSwitchStatement(TrailingElseLoc);
 
@@ -577,7 +583,8 @@ StmtResult Parser::ParseLabeledStatement(ParsedAttributesWithRange &attrs) {
       // can't handle GNU attributes), so only call it in the one case where
       // GNU attributes are allowed.
       SubStmt = ParseStatementOrDeclarationAfterAttributes(
-          Stmts, /*OnlyStmts*/ true, nullptr, TempAttrs);
+          Stmts, /*OnlyStmts*/ true, nullptr, TempAttrs,
+          /*JustParsedStaticIfElse*/false);
       if (!TempAttrs.empty() && !SubStmt.isInvalid())
         SubStmt = Actions.ProcessStmtAttributes(
             SubStmt.get(), TempAttrs.getList(), TempAttrs.Range);
@@ -1026,12 +1033,14 @@ StmtResult Parser::ParseCompoundStatementBody(bool isStmtExpr) {
 bool Parser::ParseParenExprOrCondition(ExprResult &ExprResult,
                                        Decl *&DeclResult,
                                        SourceLocation Loc,
-                                       bool ConvertToBoolean) {
+                                       bool ConvertToBoolean,
+                                       const bool IsConditionOfStaticIf) {
   BalancedDelimiterTracker T(*this, tok::l_paren);
   T.consumeOpen();
 
   if (getLangOpts().CPlusPlus)
-    ParseCXXCondition(ExprResult, DeclResult, Loc, ConvertToBoolean);
+    ParseCXXCondition(ExprResult, DeclResult, Loc, ConvertToBoolean,
+                      IsConditionOfStaticIf);
   else {
     ExprResult = ParseExpression();
     DeclResult = nullptr;
@@ -1076,8 +1085,11 @@ bool Parser::ParseParenExprOrCondition(ExprResult &ExprResult,
 /// [C++]   'if' '(' condition ')' statement
 /// [C++]   'if' '(' condition ')' statement 'else' statement
 ///
-StmtResult Parser::ParseIfStatement(SourceLocation *TrailingElseLoc) {
-  assert(Tok.is(tok::kw_if) && "Not an if stmt!");
+StmtResult Parser::ParseIfStatement(SourceLocation *TrailingElseLoc,
+                                    const bool IsStaticIf) {
+  assert((Tok.is(tok::kw_if) || Tok.is(tok::kw_static_if)) &&
+         "Not an if stmt!");
+  
   SourceLocation IfLoc = ConsumeToken();  // eat the 'if'.
 
   if (Tok.isNot(tok::l_paren)) {
@@ -1105,7 +1117,8 @@ StmtResult Parser::ParseIfStatement(SourceLocation *TrailingElseLoc) {
   // Parse the condition.
   ExprResult CondExp;
   Decl *CondVar = nullptr;
-  if (ParseParenExprOrCondition(CondExp, CondVar, IfLoc, true))
+  if (ParseParenExprOrCondition(CondExp, CondVar, IfLoc, 
+                                /*ConvertToBoolean*/true, IsStaticIf))
     return StmtError();
 
   FullExprArg FullCondExp(Actions.MakeFullExpr(CondExp.get(), IfLoc));
@@ -1162,7 +1175,7 @@ StmtResult Parser::ParseIfStatement(SourceLocation *TrailingElseLoc) {
     //
     ParseScope InnerScope(this, Scope::DeclScope, C99orCXX, Tok.is(tok::l_brace));
 
-    ElseStmt = ParseStatement();
+    ElseStmt = ParseStatement(nullptr, IsStaticIf);
 
     // Pop the 'else' scope if needed.
     InnerScope.Exit();
@@ -1193,7 +1206,7 @@ StmtResult Parser::ParseIfStatement(SourceLocation *TrailingElseLoc) {
     ElseStmt = Actions.ActOnNullStmt(ElseStmtLoc);
 
   return Actions.ActOnIfStmt(IfLoc, FullCondExp, CondVar, ThenStmt.get(),
-                             ElseLoc, ElseStmt.get());
+                             ElseLoc, ElseStmt.get(), IsStaticIf);
 }
 
 /// ParseSwitchStatement
@@ -1232,7 +1245,7 @@ StmtResult Parser::ParseSwitchStatement(SourceLocation *TrailingElseLoc) {
   // Parse the condition.
   ExprResult Cond;
   Decl *CondVar = nullptr;
-  if (ParseParenExprOrCondition(Cond, CondVar, SwitchLoc, false))
+  if (ParseParenExprOrCondition(Cond, CondVar, SwitchLoc, false, false))
     return StmtError();
 
   StmtResult Switch
@@ -1320,7 +1333,7 @@ StmtResult Parser::ParseWhileStatement(SourceLocation *TrailingElseLoc) {
   // Parse the condition.
   ExprResult Cond;
   Decl *CondVar = nullptr;
-  if (ParseParenExprOrCondition(Cond, CondVar, WhileLoc, true))
+  if (ParseParenExprOrCondition(Cond, CondVar, WhileLoc, true, false))
     return StmtError();
 
   FullExprArg FullCond(Actions.MakeFullExpr(Cond.get(), WhileLoc));
@@ -1634,7 +1647,8 @@ StmtResult Parser::ParseForStatement(SourceLocation *TrailingElseLoc) {
     } else {
       ExprResult Second;
       if (getLangOpts().CPlusPlus)
-        ParseCXXCondition(Second, SecondVar, ForLoc, true);
+        ParseCXXCondition(Second, SecondVar, ForLoc, true,
+                          /*IsConditionOfStaticIf*/false);
       else {
         Second = ParseExpression();
         if (!Second.isInvalid())
@@ -1854,7 +1868,8 @@ StmtResult Parser::ParsePragmaLoopHint(StmtVector &Stmts, bool OnlyStatement,
   MaybeParseCXX11Attributes(Attrs);
 
   StmtResult S = ParseStatementOrDeclarationAfterAttributes(
-      Stmts, OnlyStatement, TrailingElseLoc, Attrs);
+      Stmts, OnlyStatement, TrailingElseLoc, Attrs, 
+      /*JustParsedStaticIfElse*/false);
 
   Attrs.takeAllFrom(TempAttrs);
   return S;

@@ -1659,7 +1659,8 @@ Parser::ParseCXXTypeConstructExpression(const DeclSpec &DS) {
 bool Parser::ParseCXXCondition(ExprResult &ExprOut,
                                Decl *&DeclOut,
                                SourceLocation Loc,
-                               bool ConvertToBoolean) {
+                               bool ConvertToBoolean,
+                               const bool IsConditionOfStaticIf) {
   if (Tok.is(tok::code_completion)) {
     Actions.CodeCompleteOrdinaryName(getCurScope(), Sema::PCC_Condition);
     cutOffParsing();
@@ -1673,7 +1674,8 @@ bool Parser::ParseCXXCondition(ExprResult &ExprOut,
     ProhibitAttributes(attrs);
 
     // Parse the expression.
-    ExprOut = ParseExpression(); // expression
+    ExprOut =
+        IsConditionOfStaticIf ? ParseConstantExpression() : ParseExpression();
     DeclOut = nullptr;
     if (ExprOut.isInvalid())
       return true;
@@ -1684,6 +1686,9 @@ bool Parser::ParseCXXCondition(ExprResult &ExprOut,
         = Actions.ActOnBooleanCondition(getCurScope(), Loc, ExprOut.get());
     return ExprOut.isInvalid();
   }
+  // FVTODO: If this is a static if, this better be a constexpr variable,
+  //  - should we have to require spelling the constexpr, or should it be 
+  // optional?
 
   // type-specifier-seq
   DeclSpec DS(AttrFactory);

@@ -1505,7 +1505,8 @@ private:
   //===--------------------------------------------------------------------===//
   // C++ if/switch/while condition expression.
   bool ParseCXXCondition(ExprResult &ExprResult, Decl *&DeclResult,
-                         SourceLocation Loc, bool ConvertToBoolean);
+                         SourceLocation Loc, bool ConvertToBoolean,
+                         bool IsConditionOfStaticIf);
 
   //===--------------------------------------------------------------------===//
   // C++ types
@@ -1566,15 +1567,18 @@ private:
   /// A SmallVector of types.
   typedef SmallVector<ParsedType, 12> TypeVector;
 
-  StmtResult ParseStatement(SourceLocation *TrailingElseLoc = nullptr);
+  StmtResult ParseStatement(SourceLocation *TrailingElseLoc = nullptr, 
+                            bool JustParsedStaticIfElse = false);
   StmtResult
   ParseStatementOrDeclaration(StmtVector &Stmts, bool OnlyStatement,
-                              SourceLocation *TrailingElseLoc = nullptr);
+                              SourceLocation *TrailingElseLoc = nullptr,
+                              bool JustParsedStaticIfElse = false);
   StmtResult ParseStatementOrDeclarationAfterAttributes(
                                          StmtVector &Stmts,
                                          bool OnlyStatement,
                                          SourceLocation *TrailingElseLoc,
-                                         ParsedAttributesWithRange &Attrs);
+                                         ParsedAttributesWithRange &Attrs,
+                                         bool JustParsedStaticIfElse);
   StmtResult ParseExprStatement();
   StmtResult ParseLabeledStatement(ParsedAttributesWithRange &attrs);
   StmtResult ParseCaseStatement(bool MissingCase = false,
@@ -1588,8 +1592,9 @@ private:
   bool ParseParenExprOrCondition(ExprResult &ExprResult,
                                  Decl *&DeclResult,
                                  SourceLocation Loc,
-                                 bool ConvertToBoolean);
-  StmtResult ParseIfStatement(SourceLocation *TrailingElseLoc);
+                                 bool ConvertToBoolean, 
+                                 bool IsConditionOfStaticIf);
+  StmtResult ParseIfStatement(SourceLocation *TrailingElseLoc, bool IsStaticIf);
   StmtResult ParseSwitchStatement(SourceLocation *TrailingElseLoc);
   StmtResult ParseWhileStatement(SourceLocation *TrailingElseLoc);
   StmtResult ParseDoStatement();

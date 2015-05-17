@@ -109,6 +109,7 @@ namespace {
     KEYNOOPENCL = 0x02000,
     WCHARSUPPORT = 0x04000,
     HALFSUPPORT = 0x08000,
+    KEYCXX1Z    = 0x10000,
     KEYALL = (0xffff & ~KEYNOMS18 &
               ~KEYNOOPENCL) // KEYNOMS18 and KEYNOOPENCL are used to exclude.
   };
@@ -129,6 +130,7 @@ static KeywordStatus getKeywordStatus(const LangOptions &LangOpts,
   if (Flags == KEYALL) return KS_Enabled;
   if (LangOpts.CPlusPlus && (Flags & KEYCXX)) return KS_Enabled;
   if (LangOpts.CPlusPlus11 && (Flags & KEYCXX11)) return KS_Enabled;
+  if (LangOpts.CPlusPlus1z && (Flags & KEYCXX1Z)) return KS_Enabled;
   if (LangOpts.C99 && (Flags & KEYC99)) return KS_Enabled;
   if (LangOpts.GNUKeywords && (Flags & KEYGNU)) return KS_Extension;
   if (LangOpts.MicrosoftExt && (Flags & KEYMS)) return KS_Extension;
