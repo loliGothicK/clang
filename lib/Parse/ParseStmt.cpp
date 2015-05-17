@@ -1175,7 +1175,7 @@ StmtResult Parser::ParseIfStatement(SourceLocation *TrailingElseLoc,
     //
     ParseScope InnerScope(this, Scope::DeclScope, C99orCXX, Tok.is(tok::l_brace));
 
-    ElseStmt = ParseStatement(nullptr, IsStaticIf);
+    ElseStmt = ParseStatement(nullptr/*, IsStaticIf*/);
 
     // Pop the 'else' scope if needed.
     InnerScope.Exit();

@@ -14,11 +14,11 @@ void foo(int n) { //expected-note{{declared here}}
 
 
 namespace ns2 {
-void foo(int n) { //expected-note{{declared here}}
+void foo(int n) { 
   static_if( true ) { 
   
-  } else if( n == 1) {  //expected-error{{not an integral constant expression}}\
-                          expected-note{{read of non-const variable}}
+  } else if( n == 1) {  // this is ok - not a static if
+                          
   }
 }
 } // end ns2
@@ -46,10 +46,22 @@ struct X1 {
 
 template<int C, class T>
 void f(T n) {
-  static_if (T::value == C) {
+  static_if (T::value == 1) {
     typename T::type1 t;
-  } else if (T::value == C) {
+  } else static_if (T::value == 2) {
     typename T::type2 t;
+  } else {
+    typename T::type3 t;
+  }  
+}
+
+
+template<int C, class T>
+void f2(T n) {
+  static_if (T::value == 1) {
+    typename T::type1 t;
+  } else if (T::value == 2) {
+    typename T::type2 t;  //expected-error{{no type named 'type2'}}
   } else {
     typename T::type3 t;
   }  
@@ -57,6 +69,8 @@ void f(T n) {
 
 void main() {
   f<1>(X1{});
+  struct X3 { using type3 = int; enum { value = 3 }; };
+  f2<3>(X3{}); //expected-note{{in instantiation}}
 }
 
 } //end ns1 
